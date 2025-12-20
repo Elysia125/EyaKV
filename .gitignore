@@ -1,0 +1,21 @@
+# Build artifacts
+/build/
+/bin/
+/*.o
+/*.obj
+/*.exe
+/*.log
+
+# IDE files
+.vscode/
+*.code-workspace
+
+# CMake files
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# OS files
+.DS_Store
+Thumbs.db
