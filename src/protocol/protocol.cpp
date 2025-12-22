@@ -1,7 +1,7 @@
 #include "protocol/protocol.h"
 
-namespace tinykv::protocol {
+namespace eyakv::protocol {
 
 // Implementation placeholder
 
-} // namespace tinykv::protocol
+} // namespace eyakv::protocol

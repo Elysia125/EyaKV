@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package tinykv.pb;
+package eyakv.pb;
 
 message GetRequest {
   string key = 1;

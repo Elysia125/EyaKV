@@ -1,12 +1,14 @@
 #ifndef CONFIG_H
 #define CONFIG_H
-
 #include <string>
 #include <unordered_map>
 #include <fstream>
 #include <algorithm>
 #include <optional>
 #include "common/path_utils.h"
+
+#undef ERROR // 避免与 LogLevel 枚举冲突
+
 // 日志级别枚举
 enum class LogLevel
 {
@@ -16,7 +18,12 @@ enum class LogLevel
     ERROR,     // 错误
     FATAL      // 致命错误
 };
-
+enum class DataFlushStrategy
+{
+    BACKGROUND_THREAD = 0, // 后台线程定时刷新
+    IMMEDIATE_ON_WRITE,    // 写入时立即刷新
+    OS_BUFFERED            // 写入到内核缓冲区，依靠操作系统刷新
+};
 #define DEFAULT_PORT 5210
 #define DEFAULT_READ_ONLY false
 #define DEFAULT_LOG_LEVEL LogLevel::INFO
@@ -36,10 +43,6 @@ enum class LogLevel
 #define DEFAULT_MEMORY_POOL_SIZE 1024 * 3 // 内存池大小
 #define DEFAULT_WAITING_QUEUE_SIZE 100    //  等待队列大小
 #define DEFAULT_MAX_WAITING_TIME 30       // 最大等待时间 s
-
-const std::string DEFAULT_WAL_DIR = PathUtils::GetTargetFilePath("data/wal");
-const std::string DEFAULT_LOG_DIR = PathUtils::GetTargetFilePath("logs");
-const std::string DEFAULT_DATA_DIR = PathUtils::GetTargetFilePath("data");
 
 #define PORT_KEY "port"
 #define READ_ONLY_KEY "read_only"
@@ -64,14 +67,12 @@ const std::string DEFAULT_DATA_DIR = PathUtils::GetTargetFilePath("data");
 #define LOG_DIR_KEY "log_dir"
 #define DATA_DIR_KEY "data_dir"
 
-const std::string CONFIG_FILE = PathUtils::GetTargetFilePath("conf/tinykv.conf");
-
-class TinyKVConfig
+class EyaKVConfig
 {
 private:
-    std::string config_file_ = CONFIG_FILE;
+    std::string config_file_ = PathUtils::GetTargetFilePath("conf/eyakv.conf");
     std::unordered_map<std::string, std::string> config_map_;
-    TinyKVConfig()
+    EyaKVConfig()
     {
         LoadDefaultConfig();
         LoadConfig();
@@ -107,7 +108,7 @@ private:
 
     void LoadDefaultConfig()
     {
-        config_map_[LOG_DIR_KEY] = DEFAULT_LOG_DIR;
+        config_map_[LOG_DIR_KEY] = PathUtils::GetTargetFilePath("logs");
         config_map_[LOG_LEVEL_KEY] = std::to_string(static_cast<int>(DEFAULT_LOG_LEVEL));
         config_map_[LOG_ROTATE_SIZE_KEY] = std::to_string(DEFAULT_LOG_ROTATE_SIZE);
         config_map_[PORT_KEY] = std::to_string(DEFAULT_PORT);
@@ -117,7 +118,7 @@ private:
         config_map_[SKIPLIST_MAX_NODE_COUNT_KEY] = std::to_string(DEFAULT_SKIPLIST_MAX_NODE_COUNT);
         config_map_[MEMTABLE_SIZE_KEY] = std::to_string(DEFAULT_MEMTABLE_SIZE);
         config_map_[WAL_ENABLE_KEY] = std::to_string(DEFAULT_WAL_ENABLE);
-        config_map_[WAL_DIR_KEY] = DEFAULT_WAL_DIR;
+        config_map_[WAL_DIR_KEY] = PathUtils::GetTargetFilePath("data/wal");
         config_map_[WAL_FILE_SIZE_KEY] = std::to_string(DEFAULT_WAL_FILE_SIZE);
         config_map_[WAL_FILE_MAX_COUNT_KEY] = std::to_string(DEFAULT_WAL_FILE_MAX_COUNT);
         config_map_[WAL_SYNC_INTERVAL_KEY] = std::to_string(DEFAULT_WAL_SYNC_INTERVAL);
@@ -128,7 +129,7 @@ private:
         config_map_[MEMORY_POOL_SIZE_KEY] = std::to_string(DEFAULT_MEMORY_POOL_SIZE);
         config_map_[WAITING_QUEUE_SIZE_KEY] = std::to_string(DEFAULT_WAITING_QUEUE_SIZE);
         config_map_[MAX_WAITING_TIME_KEY] = std::to_string(DEFAULT_MAX_WAITING_TIME);
-        config_map_[DATA_DIR_KEY] = DEFAULT_DATA_DIR;
+        config_map_[DATA_DIR_KEY] = PathUtils::GetTargetFilePath("data");
     }
 
     std::string trim(const std::string &str)
@@ -146,23 +147,24 @@ private:
     }
 
 public:
-    static TinyKVConfig &GetInstance()
+    static EyaKVConfig &GetInstance()
     {
-        static TinyKVConfig instance;
+        static EyaKVConfig instance;
         return instance;
     }
     std::optional<std::string> GetConfig(const std::string &key) const
     {
-        auto it = config_map_.find(key);
-        if (it != config_map_.end())
+
+        size_t count = config_map_.count(key);
+        if (count > 0)
         {
-            return it->second;
+            return config_map_.at(key);
         }
         else
         {
             return std::nullopt;
         }
     }
-    ~TinyKVConfig() = default;
+    ~EyaKVConfig() = default;
 };
 #endif

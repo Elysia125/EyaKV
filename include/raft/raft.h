@@ -2,7 +2,7 @@
 
 #include <string>
 
-namespace tinykv::raft {
+namespace eyakv::raft {
 
 class RaftNode {
 public:
@@ -13,4 +13,4 @@ public:
     void Stop();
 };
 
-} // namespace tinykv::raft
+} // namespace eyakv::raft

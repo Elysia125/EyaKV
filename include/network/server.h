@@ -6,16 +6,15 @@
 #include <vector>
 #include "storage/storage.h"
 
-namespace tinykv::network {
-
 class Connection; // Forward declaration
 
 /**
  * @brief Server 负责监听端口并接受连接 (Reactor 模式/Asio).
  */
-class Server {
+class Server
+{
 public:
-    Server(tinykv::storage::Storage* storage, unsigned short port);
+    Server(Storage *storage, unsigned short port);
     ~Server();
 
     /**
@@ -33,7 +32,5 @@ private:
 
     asio::io_context io_context_;
     asio::ip::tcp::acceptor acceptor_;
-    tinykv::storage::Storage* storage_; // 引用，不拥有所有权
+    Storage *storage_; // 引用，不拥有所有权
 };
-
-} // namespace tinykv::network

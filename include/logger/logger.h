@@ -10,8 +10,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
-#include <config/config.h>
-
+#include "config/config.h"
 // 日志工具类（单例 + 按级别分类存储）
 class Logger
 {
@@ -29,12 +28,12 @@ public:
 
     // 初始化日志：指定日志目录 + 输出级别（低于该级别的日志不输出）
     // 示例：Init("./log", LogLevel::DEBUG) → 输出所有级别，且分级存储到./log下
-    void Init(const std::string &log_dir, LogLevel level = LogLevel::INFO)
+    void Init(const std::string &log_dir, LogLevel level = LogLevel::INFO, unsigned long rotate_size = 1024 * 1024 * 5)
     {
         std::lock_guard<std::mutex> lock(mtx_);
         log_level_ = level;
         log_dir_ = log_dir;
-
+        log_rotate_size_ = rotate_size * 1024; // 转换为字节
         // 1. 创建日志目录（不存在则创建）
         CreateDir(log_dir_);
 
@@ -150,7 +149,7 @@ private:
     // 辅助：打开指定的日志文件（追加模式，内核缓冲区）
     FILE *OpenLogFile(const std::string &filename)
     {
-        std::string full_path = log_dir_ + "/" + filename;
+        std::string full_path = PathUtils::CombinePath(log_dir_, filename);
         FILE *fp = fopen(full_path.c_str(), "a");
         if (fp == nullptr)
         {
@@ -161,25 +160,56 @@ private:
     }
 
     // 辅助：根据级别获取对应的文件句柄
-    FILE *GetFileHandleByLevel(LogLevel level) const
+    FILE *GetFileHandleByLevel(LogLevel level)
     {
+        FILE **file = nullptr;
+        std::string old_filename;
         switch (level)
         {
         case LogLevel::DEBUG:
-            return debug_fp_;
+            file = &debug_fp_;
+            old_filename = "debug.log";
+            break;
         case LogLevel::INFO:
-            return info_fp_;
+            file = &info_fp_;
+            old_filename = "info.log";
+            break;
         case LogLevel::WARN:
-            return warn_fp_;
+            file = &warn_fp_;
+            old_filename = "warn.log";
+            break;
         case LogLevel::ERROR:
-            return error_fp_;
+            file = &error_fp_;
+            old_filename = "error.log";
+            break;
         case LogLevel::FATAL:
-            return fatal_fp_;
+            file = &fatal_fp_;
+            old_filename = "fatal.log";
+            break;
         default:
             return stderr;
         }
+        // 检查文件大小，是否需要轮转
+        fseek(*file, 0, SEEK_END);
+        long file_size = ftell(*file);
+        if (file_size >= log_rotate_size_)
+        {
+            RotateLogFile(file, old_filename);
+        }
+        return *file;
     }
+    // 辅助：轮转日志文件
+    void RotateLogFile(FILE **old_file, const std::string &old_filename)
+    {
+        fflush(*old_file);
+        fclose(*old_file);
 
+        std::string full_path = PathUtils::CombinePath(log_dir_, old_filename);
+        std::string new_filename = old_filename + ".1";
+        std::string full_new_path = PathUtils::CombinePath(log_dir_, new_filename);
+        std::filesystem::rename(full_path, full_new_path);
+        *old_file = OpenLogFile(old_filename);
+    }
     // 辅助：生成日志头部
     std::string GetLogHeader(LogLevel level) const
     {
@@ -257,11 +287,11 @@ private:
     }
 
     // 成员变量
-    std::string log_dir_;    // 日志目录（存储所有级别日志文件）
-    LogLevel log_level_;     // 全局日志输出级别（过滤低级别日志）
-    bool is_init_;           // 是否初始化
-    mutable std::mutex mtx_; // 线程安全锁
-
+    std::string log_dir_;           // 日志目录（存储所有级别日志文件）
+    LogLevel log_level_;            // 全局日志输出级别（过滤低级别日志）
+    bool is_init_;                  // 是否初始化
+    mutable std::mutex mtx_;        // 线程安全锁
+    unsigned long log_rotate_size_; // 日志轮转大小（字节）
     // 各级别对应的文件句柄（核心：按级别分类存储）
     FILE *debug_fp_;
     FILE *info_fp_;

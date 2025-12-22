@@ -4,91 +4,180 @@
 #include <string>
 #include <iostream>
 #include <cstdlib>
-#include <minwindef.h>
-#include <libloaderapi.h>
-
+#include <optional>
+#include <mutex>
+#include <stdlib.h>
+#include <filesystem>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
 // 路径工具类：获取可执行文件目录，拼接目标文件绝对路径
-class PathUtils {
-public:
-    // 获取可执行文件的绝对路径（Linux/Windows通用）
-    static std::string GetExeAbsolutePath() {
-#ifdef _WIN32
-        // Windows平台：使用GetModuleFileName获取可执行文件路径
-        char exe_path[MAX_PATH] = {0};
-        GetModuleFileNameA(NULL, exe_path, MAX_PATH);
-        return std::string(exe_path);
-#else
-        // Linux平台：读取/proc/self/exe符号链接（指向当前进程的可执行文件）
-        char exe_path[1024] = {0};
-        ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
-        if (len == -1) {
-            std::cerr << "Error: 获取可执行文件路径失败！" << std::endl;
-            return "";
-        }
-        return std::string(exe_path, len);
-#endif
-    }
-
-    // 获取可执行文件所在的目录（去掉可执行文件名）
-    static std::string GetExeDir() {
-        std::string exe_path = GetExeAbsolutePath();
-        if (exe_path.empty()) {
-            return "./"; // 失败时降级为当前目录
-        }
-
-        // 找到最后一个目录分隔符（Linux:/  Windows:\）
-#ifdef _WIN32
-        size_t sep_pos = exe_path.find_last_of('\\');
-#else
-        size_t sep_pos = exe_path.find_last_of('/');
-#endif
-
-        if (sep_pos == std::string::npos) {
-            return "./"; // 无分隔符，返回当前目录
-        }
-
-        return exe_path.substr(0, sep_pos + 1); // 保留最后一个分隔符（比如/opt/kvdb/bin/）
-    }
-
-    // 核心函数：拼接目标文件的绝对路径（基于可执行文件目录）
-    // 参数：relative_path - 相对于可执行文件目录的路径（比如"../log/kv_db.log"）
-    static std::string GetTargetFilePath(const std::string& relative_path) {
-        std::string exe_dir = GetExeDir();
-        // 拼接路径（自动处理重复的分隔符，比如/opt/kvdb/bin/ + ../log → /opt/kvdb/log）
-        return CombinePath(exe_dir, relative_path);
-    }
-
+class PathUtils
+{
 private:
-    // 辅助函数：拼接两个路径，处理分隔符问题
-    static std::string CombinePath(const std::string& dir, const std::string& file) {
-        if (dir.empty()) return file;
-        if (file.empty()) return dir;
+        PathUtils() = delete;
+        static std::optional<std::string> exe_dir_;
+        static std::mutex cache_mutex_;
 
+public:
+        // 获取可执行文件的绝对路径（跨平台通用）
 #ifdef _WIN32
-        char sep = '\\';
+        static std::string GetExeAbsolutePath()
+        {
+                std::lock_guard<std::mutex> lock(cache_mutex_);
+                char buffer[MAX_PATH];
+                GetModuleFileNameA(NULL, buffer, MAX_PATH);
+                std::string exe_path = std::string(buffer);
+                if (!exe_path.empty())
+                {
+                        std::cout << "PathUtils: Executable path is " << exe_path << std::endl;
+                        return exe_path;
+                }
+                else
+                {
+                        std::cerr << "PathUtils: Failed to get executable path on Windows." << std::endl;
+                        return "";
+                }
+        }
+#elif __linux__
+#include <unistd.h>
+#include <limits.h>
+        static std::string GetExeAbsolutePath()
+        {
+                std::lock_guard<std::mutex> lock(cache_mutex_);
+                char buffer[PATH_MAX];
+                ssize_t len = readlink("/proc/self/exe", buffer, sizeof(buffer) - 1);
+                if (len != -1 && len < sizeof(buffer))
+                {
+                        buffer[len] = '\0';
+                        std::string exe_path = std::string(buffer);
+                        if (!exe_path.empty())
+                        {
+                                LOG_DEBUG("PathUtils: Executable path is {}", exe_path);
+                                return exe_path;
+                        }
+                }
+                LOG_WARN("PathUtils: Failed to get executable path on Linux.");
+                return "";
+        }
+#elif __APPLE__
+#include <mach-o/dyld.h>
+        static std::string GetExeAbsolutePath()
+        {
+                std::lock_guard<std::mutex> lock(cache_mutex_);
+                // Use PATH_MAX for consistency and larger buffer
+                char buffer[PATH_MAX];
+                uint32_t size = sizeof(buffer);
+                if (_NSGetExecutablePath(buffer, &size) == 0)
+                {
+                        std::string exe_path = std::string(buffer);
+                        if (!exe_path.empty())
+                        {
+                                LOG_DEBUG("PathUtils: Executable path is {}", exe_path);
+                                return exe_path;
+                        }
+                }
+        }
+        LOG_WARN("PathUtils: Failed to get executable path on macOS.");
+        return "";
+}
 #else
-        char sep = '/';
+#error "Platform not supported"
 #endif
 
-        // 检查目录末尾是否有分隔符，没有则添加
-        std::string full_path = dir;
-        if (full_path.back() != sep) {
-            full_path += sep;
+        // 获取可执行文件所在的目录（去掉可执行文件名）
+        static std::string GetExeDir()
+        {
+                if (exe_dir_.has_value())
+                {
+                        return exe_dir_.value();
+                }
+                std::string exe_path = GetExeAbsolutePath();
+                if (exe_path.empty())
+                {
+                        return "./"; // 失败时降级为当前目录
+                }
+
+                // 找到最后一个目录分隔符（Linux:/  Windows:\）
+#ifdef _WIN32
+                size_t sep_pos = exe_path.find_last_of('\\');
+#else
+                size_t sep_pos = exe_path.find_last_of('/');
+#endif
+
+                if (sep_pos == std::string::npos)
+                {
+                        return "./"; // 无分隔符，返回当前目录
+                }
+
+                exe_dir_ = exe_path.substr(0, sep_pos + 1); // 保留最后一个分隔符（比如/opt/kvdb/bin/）
+                return exe_dir_.value();
         }
 
-        // 拼接文件路径
-        full_path += file;
+        // 核心函数：拼接目标文件的绝对路径（基于可执行文件目录）
+        // 参数：relative_path - 相对于可执行文件目录的路径（比如"../log/kv_db.log"）
+        static std::string GetTargetFilePath(const std::string &relative_path)
+        {
+                std::string exe_dir = GetExeDir();
+                // 拼接路径（自动处理重复的分隔符，比如/opt/kvdb/bin/ + ../log → /opt/kvdb/log）
+                return CombinePath(exe_dir, relative_path);
+        }
 
-        // 简化路径（处理../ ./ 等），比如 /opt/kvdb/bin/../log → /opt/kvdb/log
-        char resolved_path[1024] = {0};
+        // 拼接两个路径，处理分隔符问题
+        static std::string CombinePath(const std::string &dir, const std::string &file)
+        {
+                if (dir.empty())
+                        return file;
+                if (file.empty())
+                        return dir;
+
 #ifdef _WIN32
-        _fullpath(resolved_path, full_path.c_str(), sizeof(resolved_path));
+                char sep = '\\';
 #else
-        realpath(full_path.c_str(), resolved_path);
+                char sep = '/';
 #endif
 
-        return std::string(resolved_path);
-    }
-};
+                // 检查目录末尾是否有分隔符，没有则添加
+                std::string full_path = dir;
+                if (full_path.back() != sep)
+                {
+                        full_path += sep;
+                }
 
+                // 拼接文件路径
+                full_path += file;
+
+                // 简化路径（处理../ ./ 等），比如 /opt/kvdb/bin/../log → /opt/kvdb/log
+                char resolved_path[PATH_MAX] = {0};
+                char *result = nullptr;
+
+#ifdef _WIN32
+                result = _fullpath(resolved_path, full_path.c_str(), sizeof(resolved_path));
+#else
+                result = realpath(full_path.c_str(), resolved_path);
+#endif
+
+                if (result == nullptr)
+                {
+                        std::cerr << "PathUtils: Failed to resolve path " << full_path << ", returning original." << std::endl;
+                        return full_path;
+                }
+
+                return std::string(resolved_path);
+        }
+        static bool RenameFile(const std::string &old_path, const std::string &new_path)
+        {
+                try
+                {
+                        std::filesystem::rename(old_path, new_path);
+                        return true;
+                }
+                catch (const std::filesystem::filesystem_error &e)
+                {
+                        std::cerr << "Failed to rename file from " << old_path << " to " << new_path << std::endl;
+                        return false;
+                }
+        }
+};
 #endif // PATH_UTILS_H

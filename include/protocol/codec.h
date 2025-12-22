@@ -12,7 +12,7 @@
 #include <arpa/inet.h>
 #endif
 
-namespace tinykv::protocol {
+namespace eyakv::protocol {
 
 enum class MessageType : uint8_t {
     kGet = 1,
@@ -107,4 +107,4 @@ struct Message {
     }
 };
 
-} // namespace tinykv::protocol
+} // namespace eyakv::protocol

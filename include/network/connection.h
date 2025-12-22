@@ -6,8 +6,6 @@
 #include "storage/storage.h"
 #include "protocol/codec.h"
 
-namespace tinykv::network {
-
 /**
  * @brief Connection 负责处理单个客户端连接的读写和协议解析。
  * 
@@ -15,19 +13,19 @@ namespace tinykv::network {
  */
 class Connection : public std::enable_shared_from_this<Connection> {
 public:
-    Connection(asio::ip::tcp::socket socket, tinykv::storage::Storage* storage);
+    Connection(asio::ip::tcp::socket socket, Storage* storage);
 
     void Start();
 
 private:
     void DoReadLength();
     void DoReadBody(std::size_t length);
-    void ProcessRequest(const tinykv::protocol::Message& req);
-    void SendResponse(const tinykv::protocol::Message& resp);
+    void ProcessRequest(const eyakv::protocol::Message& req);
+    void SendResponse(const eyakv::protocol::Message& resp);
     void DoWrite();
 
     asio::ip::tcp::socket socket_;
-    tinykv::storage::Storage* storage_;
+    Storage* storage_;
 
     // Buffer for reading length prefix (4 bytes)
     uint32_t network_length_;
@@ -35,5 +33,3 @@ private:
     // Buffer for reading body
     std::vector<char> buffer_;
 };
-
-} // namespace tinykv::network

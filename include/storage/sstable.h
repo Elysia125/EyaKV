@@ -4,7 +4,7 @@
 #include <vector>
 #include <map>
 
-namespace tinykv::storage {
+namespace eyakv::storage {
 
 /**
  * @brief SSTable (Sorted String Table) 是磁盘上的不可变有序文件。
@@ -48,4 +48,4 @@ private:
     std::string filepath_;
 };
 
-} // namespace tinykv::storage
+} // namespace eyakv::storage

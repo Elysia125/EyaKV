@@ -1,6 +1,7 @@
 #ifndef SKIP_LIST_H
 #define SKIP_LIST_H
 
+#include <iostream>
 #include <string>
 #include <vector>
 #include <mutex>
@@ -61,7 +62,7 @@ public:
 
     void insert(const K &key, const V &value)
     {
-        lock_guard<mutex> lock(mutex_);
+        std::lock_guard<std::mutex> lock(mutex_);
         SkipListNode<K, V> *current = head_;
         // 记录各层的前驱节点
         SkipListNode<K, V> *update[MAX_LEVEL] = {nullptr};
@@ -128,7 +129,7 @@ public:
 
     bool remove(const K &key)
     {
-        lock_guard<mutex> lock(mutex_);
+        std::lock_guard<std::mutex> lock(mutex_);
         SkipListNode<K, V> *current = head_;
         SkipListNode<K, V> *update[MAX_LEVEL] = {nullptr};
         for (int i = current_level_ - 1; i >= 0; i--)
@@ -168,7 +169,7 @@ public:
 
     void clear()
     {
-        lock_guard<mutex> lock(mutex_);
+        std::lock_guard<std::mutex> lock(mutex_);
         SkipListNode<K, V> *current = head_;
         while (current != nullptr)
         {

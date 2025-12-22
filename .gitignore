@@ -1,6 +1,8 @@
 # Build artifacts
 /build/
 /bin/
+/out/
+/dist/
 /*.o
 /*.obj
 /*.exe

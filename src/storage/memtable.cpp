@@ -2,9 +2,7 @@
 #include <mutex>
 #include "logger/logger.h"
 
-namespace tinykv::storage
-{
-    void MemTable::put(const std::string &key, const std::string &value)
+void MemTable::put(const std::string &key, const std::string &value)
     {
         // 获取写锁 (独占锁)
         std::unique_lock<std::shared_mutex> lock(mutex_);
@@ -46,5 +44,3 @@ namespace tinykv::storage
         std::unique_lock<std::shared_mutex> lock(mutex_);
         table_.clear();
     }
-
-} // namespace tinykv::storage
