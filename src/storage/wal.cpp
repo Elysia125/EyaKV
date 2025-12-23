@@ -68,6 +68,30 @@ bool Wal::WriteRecord(LogType type, const std::string &key, const std::string &v
         fclose(wal_file_);
         PathUtils::RenameFile(PathUtils::CombinePath(wal_dir_, WAL_FILE_NAME),
                               PathUtils::CombinePath(wal_dir_, "eya_" + std::to_string(std::time(nullptr)) + ".wal"));
+        // 判断wal文件数是否达到上限
+        fs::directory_iterator dir_iter(wal_dir_);
+        fs::path oldest_file;
+        std::time_t oldest_time = std::time(nullptr);
+        size_t wal_file_count = 0;
+        for (const auto &entry : dir_iter)
+        {
+            if (entry.path().extension() == ".wal")
+            {
+                wal_file_count++;
+                std::time_t file_time = fs::last_write_time(entry.path()).time_since_epoch().count();
+                if (file_time < oldest_time)
+                {
+                    oldest_time = file_time;
+                    oldest_file = entry.path();
+                }
+            }
+        }
+        if (wal_file_count >= max_wal_file_count)
+        {
+            LOG_WARN("Wal: Maximum WAL file count ({}) reached. Delete oldest one automatically.", max_wal_file_count);
+            // 删除创建时间最早的
+            fs::remove(oldest_file);
+        }
         OpenWALFile();
     }
     uint8_t type_u8 = static_cast<uint8_t>(type);

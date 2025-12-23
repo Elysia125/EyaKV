@@ -6,6 +6,7 @@
 #include "storage/memtable.h"
 #include "storage/wal.h"
 #include "config/config.h"
+#include <atomic>
 /**
  * @brief Storage 类是存储引擎的统一入口。
  *
@@ -38,7 +39,9 @@ public:
     // 禁止拷贝
     Storage(const Storage &) = delete;
     Storage &operator=(const Storage &) = delete;
-
+    // 允许移动
+    Storage(Storage &&) = default;
+    Storage &operator=(Storage &&) = default;
     /**
      * @brief 写入数据。
      *
@@ -76,6 +79,17 @@ private:
     unsigned int sstable_merge_threshold_;
     std::optional<unsigned int> data_flush_interval_;
     DataFlushStrategy data_flush_strategy_;
+
+    std::atomic<bool> background_flush_thread_running_{false};
     // 初始化时恢复数据
     void Recover();
+
+    void StartBackgroundFlushThread();
+
+    void StopBackgroundFlushThread()
+    {
+        background_flush_thread_running_ = false;
+    }
+
+    void BackgroundFlushTask();
 };

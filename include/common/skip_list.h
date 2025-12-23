@@ -24,28 +24,68 @@ template <typename K, typename V>
 class SkipList
 {
 private:
-    static const int MAX_LEVEL = 16; // 最大层数
-    int current_level_;              // 当前跳表的最大层数
-    SkipListNode<K, V> *head_;       // 头节点（哨兵节点，不存实际数据）
-    std::mutex mutex_;               // 互斥锁（保证并发安全）
-    size_t size_ = 0;                // 当前跳表的元素数量
+    const size_t MAX_LEVEL;      // 最大层数
+    const double PROBABILITY;    // 节点层数的概率
+    const size_t MAX_NODE_COUNT; // 最大节点数
+    int current_level_;          // 当前跳表的最大层数
+    SkipListNode<K, V> *head_;   // 头节点（哨兵节点，不存实际数据）
+    std::mutex mutex_;           // 互斥锁（保证并发安全）
+    size_t size_ = 0;            // 当前跳表的元素数量
+
     // 核心辅助函数：随机生成新节点的层数（概率算法）
-    int RandomLevel()
+    int random_level()
     {
         int level = 1;
         // 50%概率向上一层，直到达到最大层数
-        while (rand() % 2 == 0 && level < MAX_LEVEL)
+
+        while (generate_random_01() < PROBABILITY && level < MAX_LEVEL)
         {
             level++;
         }
         return level;
     }
+    /**
+     * 生成 [0.0, 1.0) 区间的均匀随机数
+     * 特点：线程安全、分布均匀、种子唯一（避免重复）
+     */
+    double generate_random_01()
+    {
+        // 1. 静态随机数引擎（仅初始化一次，避免重复生成相同序列）
+        // mt19937：梅森旋转算法，周期长（2^19937-1）、效率高
+        static std::mt19937 engine(
+            // 种子初始化：优先用硬件随机数生成器， fallback 到高精度时间
+            []() -> unsigned int
+            {
+                std::random_device rd; // 硬件随机数（尽可能获取真随机）
+                if (rd.entropy() > 0)
+                { // 检查是否支持硬件随机数
+                    return rd();
+                }
+                else
+                {
+                    // 无硬件随机数时，用高精度时间作为种子（比 time(0) 精度高）
+                    auto now = std::chrono::high_resolution_clock::now().time_since_epoch();
+                    return std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
+                }
+            }());
+
+        // 2. 均匀分布器：指定 [0.0, 1.0) 区间（左闭右开）
+        static std::uniform_real_distribution<double> dist(0.0, 1.0);
+
+        // 3. 生成随机数
+        return dist(engine);
+    }
 
 public:
-    SkipList() : current_level_(1), size_(0)
+    SkipList(const size_t &skiplist_max_level = 16,
+             const double &skiplist_probability = 0.5,
+             const size_t &skiplist_max_node_count = 1000000) : current_level_(1), size_(0),
+                                                                MAX_LEVEL(skiplist_max_level),
+                                                                PROBABILITY(skiplist_probability),
+                                                                MAX_NODE_COUNT(skiplist_max_node_count)
     {
-        srand(time(nullptr)); // 初始化随机数种子
-        // 头节点键值无意义，层数为最大层数
+        // srand(time(nullptr)); // 初始化随机数种子
+        //  头节点键值无意义，层数为最大层数
         head_ = new SkipListNode<K, V>(K(), V(), MAX_LEVEL);
     }
     // 析构函数：释放所有节点内存
@@ -82,8 +122,12 @@ public:
             current->value = value;
             return;
         }
+        if(size_ >= MAX_NODE_COUNT)
+        {
+            throw std::overflow_error("SkipList has reached its maximum node count");
+        }
         // 生成新节点
-        int level = RandomLevel();
+        int level = random_level();
         if (level > current_level_)
         {
             for (int i = current_level_; i < level; i++)

@@ -17,7 +17,10 @@
 class MemTable
 {
 public:
-    MemTable() = default;
+    MemTable(const size_t &memtable_size,
+             const size_t &skiplist_max_level,
+             const double &skiplist_probability,
+             const size_t &skiplist_max_node_count);
     ~MemTable() = default;
 
     // 禁止拷贝和赋值，避免意外的开销和锁问题
@@ -55,6 +58,7 @@ public:
     void clear();
 
 private:
+    size_t memtable_size_; // MemTable 大小限制（字节数）
     // 核心数据结构，使用跳表
     SkipList<std::string, std::string> table_;
 

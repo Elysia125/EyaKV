@@ -79,6 +79,10 @@ private:
     }
     void LoadConfig()
     {
+        if (!std::filesystem::exists(config_file_))
+        {
+            return;
+        }
         std::ifstream config_file(config_file_);
         if (!config_file.is_open())
         {

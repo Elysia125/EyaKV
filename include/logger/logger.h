@@ -83,7 +83,13 @@ public:
         fprintf(target_fp, "%s ", header.c_str());
         fprintf(target_fp, format, std::forward<Args>(args)...);
         fprintf(target_fp, "\n");
-
+        if (target_fp != stderr)
+        {
+            // 打印到控制台
+            fprintf(stdout, "%s ", header.c_str());
+            fprintf(stdout, format, std::forward<Args>(args)...);
+            fprintf(stdout, "\n");
+        }
         // 4. FATAL级别强制刷盘并退出
         if (level == LogLevel::FATAL)
         {
