@@ -5,7 +5,7 @@ class Storage;
 class EyaKVStarter
 {
 private:
-    static Storage storage;
+    static Storage*storage;
     EyaKVStarter() = default;
     static void print_banner();
 
@@ -13,7 +13,7 @@ private:
 
     static void initialize_logger();
 
-    static Storage &initialize_storage();
+    static Storage *initialize_storage();
 
     static void initialize_server();
 

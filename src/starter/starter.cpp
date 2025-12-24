@@ -7,7 +7,7 @@
 #include "logger/logger.h"
 
 EyaKVConfig &config = EyaKVConfig::GetInstance();
-
+Storage *EyaKVStarter::storage = nullptr;
 void EyaKVStarter::print_banner()
 {
     // 定义颜色（粉色/洋红色）
@@ -31,7 +31,7 @@ void EyaKVStarter::initialize()
 {
     print_banner();
     initialize_logger();
-    storage = std::move(initialize_storage());
+    storage = initialize_storage();
     initialize_server();
     register_signal_handlers();
 }
@@ -70,7 +70,7 @@ void EyaKVStarter::initialize_logger()
     }
 }
 
-Storage &EyaKVStarter::initialize_storage()
+Storage *EyaKVStarter::initialize_storage()
 {
     std::cout << "Initializing storage..." << std::endl;
     std::optional<std::string> data_dir = config.GetConfig(DATA_DIR_KEY);
@@ -103,35 +103,35 @@ Storage &EyaKVStarter::initialize_storage()
     double skiplist_probability = std::stod(config.GetConfig(SKIPLIST_PROBABILITY_KEY).value());
     size_t skiplist_max_node_count = static_cast<size_t>(std::stoul(config.GetConfig(SKIPLIST_MAX_NODE_COUNT_KEY).value()));
     unsigned int sstable_merge_threshold = static_cast<unsigned int>(std::stoul(config.GetConfig(SSTABLE_MERGE_THRESHOLD_KEY).value()));
-    std::optional<std::string> data_flush_interval_str = config.GetConfig(DATA_FLUSH_INTERVAL_KEY);
-    std::optional<unsigned int> data_flush_interval = std::nullopt;
-    if (data_flush_interval_str.has_value())
+    std::optional<std::string> wal_flush_interval_str = config.GetConfig(WAL_FLUSH_INTERVAL_KEY);
+    std::optional<unsigned int> wal_flush_interval = std::nullopt;
+    if (wal_flush_interval_str.has_value())
     {
-        data_flush_interval = static_cast<unsigned int>(std::stoul(data_flush_interval_str.value()));
+        wal_flush_interval = static_cast<unsigned int>(std::stoul(wal_flush_interval_str.value()));
     }
-    std::optional<std::string> data_flush_strategy_str = config.GetConfig(DATA_FLUSH_STRATEGY_KEY);
-    DataFlushStrategy data_flush_strategy = DataFlushStrategy::BACKGROUND_THREAD;
-    if (data_flush_strategy_str.has_value())
+    std::optional<std::string> wal_flush_strategy_str = config.GetConfig(WAL_FLUSH_STRATEGY_KEY);
+    WALFlushStrategy wal_flush_strategy = WALFlushStrategy::BACKGROUND_THREAD;
+    if (wal_flush_strategy_str.has_value())
     {
-        int strategy_int = std::stoi(data_flush_strategy_str.value());
-        data_flush_strategy = static_cast<DataFlushStrategy>(strategy_int);
+        int strategy_int = std::stoi(wal_flush_strategy_str.value());
+        wal_flush_strategy = static_cast<WALFlushStrategy>(strategy_int);
     }
-    static Storage storage(data_dir.value(),
-                           wal_dir.value(),
-                           read_only,
-                           wal_enable,
-                           wal_file_size,
-                           max_wal_file_count,
-                           wal_sync_interval,
-                           memtable_size,
-                           skiplist_max_level,
-                           skiplist_probability,
-                           skiplist_max_node_count,
-                           sstable_merge_threshold,
-                           data_flush_interval,
-                           data_flush_strategy);
+    static Storage *st = new Storage(data_dir.value(),
+                                     wal_dir.value(),
+                                     read_only,
+                                     wal_enable,
+                                     wal_file_size,
+                                     max_wal_file_count,
+                                     wal_sync_interval,
+                                     memtable_size,
+                                     skiplist_max_level,
+                                     skiplist_probability,
+                                     skiplist_max_node_count,
+                                     sstable_merge_threshold,
+                                     wal_flush_interval,
+                                     wal_flush_strategy);
     std::cout << "Storage initialized. Data directory: " << data_dir.value() << std::endl;
-    return storage;
+    return st;
 }
 
 void EyaKVStarter::initialize_server()
@@ -143,7 +143,7 @@ void EyaKVStarter::initialize_server()
         throw std::runtime_error("Port not configured.");
     }
     unsigned short port = static_cast<unsigned short>(std::stoi(port_str.value()));
-    static Server server(&storage, port);
+    static Server server(storage, port);
     std::cout << "Server initialized. Listening on port: " << port << std::endl;
     server.Run();
 }

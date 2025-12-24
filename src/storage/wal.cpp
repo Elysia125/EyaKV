@@ -5,6 +5,7 @@
 #include <cerrno>
 #include "common/path_utils.h"
 #include "logger/logger.h"
+
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <io.h>
@@ -18,9 +19,11 @@
 namespace fs = std::filesystem;
 Wal::Wal(const std::string &wal_dir,
          const unsigned long &wal_file_size,
-         const unsigned long &max_wal_file_count) : wal_dir_(wal_dir),
-                                                    wal_file_size(wal_file_size * 1024),
-                                                    max_wal_file_count(max_wal_file_count)
+         const unsigned long &max_wal_file_count,
+         const bool &sync_on_write) : wal_dir_(wal_dir),
+                                      wal_file_size(wal_file_size * 1024),
+                                      max_wal_file_count(max_wal_file_count),
+                                      sync_on_write_(sync_on_write)
 {
     std::string filepath = PathUtils::CombinePath(wal_dir_, WAL_FILE_NAME);
     if (!std::filesystem::exists(wal_dir_))
@@ -39,7 +42,7 @@ Wal::~Wal()
     }
 }
 
-bool Wal::AppendPut(const std::string &key, const std::string &value)
+bool Wal::AppendPut(const std::string &key, const EyaValue &value)
 {
     LOG_DEBUG("Wal: Appending Put record. Key: {}, Value: {}", key, value);
     return WriteRecord(LogType::kPut, key, value);
@@ -51,7 +54,7 @@ bool Wal::AppendDelete(const std::string &key)
     return WriteRecord(LogType::kDelete, key, "");
 }
 
-bool Wal::WriteRecord(LogType type, const std::string &key, const std::string &value)
+bool Wal::WriteRecord(LogType type, const std::string &key, const EyaValue &value)
 {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (wal_file_ == nullptr)
@@ -96,23 +99,27 @@ bool Wal::WriteRecord(LogType type, const std::string &key, const std::string &v
     }
     uint8_t type_u8 = static_cast<uint8_t>(type);
     uint32_t key_len = static_cast<uint32_t>(key.size());
-    uint32_t val_len = static_cast<uint32_t>(value.size());
-
+    std::string value_str = serialize_eya_value(value);
+    uint32_t value_len = static_cast<uint32_t>(value_str.size());
     fwrite(&type_u8, sizeof(type_u8), 1, wal_file_);
     fwrite(&key_len, sizeof(key_len), 1, wal_file_);
     fwrite(key.data(), key_len, 1, wal_file_);
-    fwrite(&val_len, sizeof(val_len), 1, wal_file_);
-    if (val_len > 0)
+    fwrite(&value_len, sizeof(value_len), 1, wal_file_);
+    fwrite(value_str.data(), value_len, 1, wal_file_);
+    modifyed_ = true;
+    if (sync_on_write_)
     {
-        fwrite(value.data(), val_len, 1, wal_file_);
+        Sync();
     }
-
-    // 刷新到内核缓冲区
-    fflush(wal_file_);
+    else
+    {
+        // 刷新到内核缓冲区
+        fflush(wal_file_);
+    }
     return !ferror(wal_file_);
 }
 
-bool Wal::Recover(MemTable *memtable)
+bool Wal::Recover(MemTable<std::string, EyaValue> *memtable)
 {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     LOG_INFO("Starting WAL recovery from directory: {}", wal_dir_);
@@ -149,13 +156,13 @@ bool Wal::Recover(MemTable *memtable)
 
                 reader.read(reinterpret_cast<char *>(&val_len), sizeof(val_len));
 
-                std::string value;
+                char *val_data = new char[val_len];
                 if (val_len > 0)
                 {
-                    value.resize(val_len);
-                    reader.read(&value[0], val_len);
+                    reader.read(val_data, val_len);
                 }
-
+                size_t offset = 0;
+                EyaValue value = deserialize_eya_value(val_data, offset);
                 if (reader.fail())
                 {
                     std::cerr << "Wal::Recover: Error reading log file, maybe truncated." << std::endl;
@@ -192,10 +199,21 @@ bool Wal::Clear()
     {
         fclose(wal_file_);
     }
-    std::string filepath = PathUtils::CombinePath(wal_dir_, WAL_FILE_NAME);
+    // std::string filepath = PathUtils::CombinePath(wal_dir_, WAL_FILE_NAME);
     // Truncate file
-    std::ofstream file(filepath, std::ios::out | std::ios::trunc | std::ios::binary);
-    file.close();
+    // std::ofstream file(filepath, std::ios::out | std::ios::trunc | std::ios::binary);
+    // file.close();
+    // 删除wal目录下的所有wal文件
+    fs::directory_iterator dir_iter(wal_dir_);
+    for (const auto &entry : dir_iter)
+    {
+        if (entry.path().extension() == ".wal")
+        {
+            std::string filepath = entry.path().string();
+            std::filesystem::remove(filepath);
+            LOG_INFO("Wal: Deleted WAL file at {}", filepath);
+        }
+    }
     // Reopen
     OpenWALFile();
     return wal_file_ != nullptr;
@@ -204,6 +222,10 @@ bool Wal::Clear()
 bool Wal::Sync()
 {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
+    if (!modifyed_)
+    {
+        return true; // 没有修改，无需同步
+    }
     if (wal_file_ != nullptr)
     {
         fflush(wal_file_);
@@ -219,6 +241,7 @@ bool Wal::Sync()
             LOG_ERROR("Wal: Failed to sync WAL file to disk.");
             return false;
         }
+        modifyed_ = false;
         return true;
 
 #else
@@ -236,7 +259,7 @@ bool Wal::Sync()
             LOG_ERROR("Wal: Failed to sync WAL file to disk. Error: {}", strerror(errno));
             return false;
         }
-
+        modifyed_ = false;
         return true;
 #endif
     }

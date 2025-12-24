@@ -18,7 +18,7 @@ enum class LogLevel
     ERROR,     // 错误
     FATAL      // 致命错误
 };
-enum class DataFlushStrategy
+enum class WALFlushStrategy
 {
     BACKGROUND_THREAD = 0, // 后台线程定时刷新
     IMMEDIATE_ON_WRITE,    // 写入时立即刷新
@@ -37,8 +37,9 @@ enum class DataFlushStrategy
 #define DEFAULT_WAL_FILE_MAX_COUNT 10
 #define DEFAULT_WAL_SYNC_INTERVAL 1000    // ms
 #define DEFAULT_SSTABLE_MERGE_THRESHOLD 5 // sstable 合并阈值，文件数
-#define DEFAULT_DATA_FULSH_INTERVAL 1000  // ms 数据刷新间隔
-#define DEFAULT_DATA_FLUSH_STRATEGY 0     // 数据刷新策略 0: 后台线程每隔一段时间刷 1: 写入时立刻刷 2:写入到内核缓冲区，依靠操作系统刷
+#define DEFAULT_WAL_FLUSH_INTERVAL 1000   // ms wal刷新间隔
+#define DEFAULT_WAL_FLUSH_STRATEGY 0      // wal刷新策略 0: 后台线程每隔一段时间刷 1: 写入时立刻刷 2:写入到内核缓冲区，依靠操作系统刷
+#define DEFAULT_DATA_FLUSH_INTERVAL 5000  // ms 数据刷新间隔
 #define DEFAULT_MAX_CONNECTIONS 10000     // 最大连接数
 #define DEFAULT_MEMORY_POOL_SIZE 1024 * 3 // 内存池大小
 #define DEFAULT_WAITING_QUEUE_SIZE 100    //  等待队列大小
@@ -58,14 +59,15 @@ enum class DataFlushStrategy
 #define WAL_FILE_MAX_COUNT_KEY "wal_file_max_count"
 #define WAL_SYNC_INTERVAL_KEY "wal_sync_interval"
 #define SSTABLE_MERGE_THRESHOLD_KEY "sstable_merge_threshold"
-#define DATA_FLUSH_INTERVAL_KEY "data_flush_interval"
-#define DATA_FLUSH_STRATEGY_KEY "data_flush_strategy"
+#define WAL_FLUSH_INTERVAL_KEY "wal_flush_interval"
+#define WAL_FLUSH_STRATEGY_KEY "wal_flush_strategy"
 #define MAX_CONNECTIONS_KEY "max_connections"
 #define MEMORY_POOL_SIZE_KEY "memory_pool_size"
 #define WAITING_QUEUE_SIZE_KEY "waiting_queue_size"
 #define MAX_WAITING_TIME_KEY "max_waiting_time"
 #define LOG_DIR_KEY "log_dir"
 #define DATA_DIR_KEY "data_dir"
+#define DATA_FLUSH_INTERVAL_KEY "data_flush_interval"
 
 class EyaKVConfig
 {
@@ -127,8 +129,9 @@ private:
         config_map_[WAL_FILE_MAX_COUNT_KEY] = std::to_string(DEFAULT_WAL_FILE_MAX_COUNT);
         config_map_[WAL_SYNC_INTERVAL_KEY] = std::to_string(DEFAULT_WAL_SYNC_INTERVAL);
         config_map_[SSTABLE_MERGE_THRESHOLD_KEY] = std::to_string(DEFAULT_SSTABLE_MERGE_THRESHOLD);
-        config_map_[DATA_FLUSH_INTERVAL_KEY] = std::to_string(DEFAULT_DATA_FULSH_INTERVAL);
-        config_map_[DATA_FLUSH_STRATEGY_KEY] = std::to_string(DEFAULT_DATA_FLUSH_STRATEGY);
+        config_map_[DATA_FLUSH_INTERVAL_KEY] = std::to_string(DEFAULT_DATA_FLUSH_INTERVAL);
+        config_map_[WAL_FLUSH_STRATEGY_KEY] = std::to_string(DEFAULT_WAL_FLUSH_STRATEGY);
+        config_map_[WAL_FLUSH_INTERVAL_KEY] = std::to_string(DEFAULT_WAL_FLUSH_INTERVAL);
         config_map_[MAX_CONNECTIONS_KEY] = std::to_string(DEFAULT_MAX_CONNECTIONS);
         config_map_[MEMORY_POOL_SIZE_KEY] = std::to_string(DEFAULT_MEMORY_POOL_SIZE);
         config_map_[WAITING_QUEUE_SIZE_KEY] = std::to_string(DEFAULT_WAITING_QUEUE_SIZE);
