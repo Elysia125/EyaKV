@@ -6,6 +6,7 @@
 #include <optional>
 #include <unordered_map>
 #include <mutex>
+#include <atomic>
 inline int compare_double_strings(const std::string &a, const std::string &b)
 {
     std::string a_clean = a.substr(0, a.find('\0'));
@@ -24,7 +25,10 @@ inline int compare_double_strings(const std::string &a, const std::string &b)
 class ZSet
 {
 public:
-    ZSet() : skiplist_(MAX_LEVEL, PROBABILITY, MAX_NODE_COUNT, compare_double_strings) {}
+    ZSet() : skiplist_(MAX_LEVEL, PROBABILITY, MAX_NODE_COUNT, compare_double_strings, calculateStringSize, calculateStringSize), size_exclude_skiplist(0)
+    {
+        size_exclude_skiplist.fetch_add(sizeof(ZSet), std::memory_order_relaxed);
+    }
     ~ZSet() = default;
 
     ZSet(const ZSet &other) noexcept : skiplist_(other.skiplist_), member_score_map_(other.member_score_map_)
@@ -64,6 +68,13 @@ public:
      * @return 元素数量
      */
     size_t zcard() const;
+    /**
+     * @brief 获取所占空间的大小
+     */
+    size_t memory_usage() const
+    {
+        return size_exclude_skiplist.load(std::memory_order_relaxed) + skiplist_.memory_usage();
+    }
     /**
      * @brief 清空集合。
      */
@@ -123,5 +134,6 @@ private:
     SkipList<std::string, std::string> skiplist_;                   // 按分值排序的跳表
     std::unordered_map<std::string, std::string> member_score_map_; // 成员到分值的映射
     std::mutex mutex_;
+    std::atomic<size_t> size_exclude_skiplist{0};
 };
-#endif // TINYKV_INCLUDE_COMMON_ZSET_H_
+#endif

@@ -8,6 +8,7 @@
 #include <random>
 #include <ctime>
 #include <cstring>
+#include <atomic>
 #define MAX_LEVEL 16
 #define PROBABILITY 0.5
 #define MAX_NODE_COUNT 1000000
@@ -15,9 +16,33 @@
 template <typename K, typename V>
 struct SkipListNode
 {
+    /**
+     * @brief The key of the node
+     */
     K key;
+    /**
+     * @brief The value stored in the node
+     */
     V value;
+    /**
+     * @brief Flag indicating whether the node is marked for deletion (used for lazy deletion)
+     */
+    bool deleted = false;
+    /**
+     * @brief Expiration timestamp (0 indicates the key never expires)
+     */
+    size_t expire_time = 0;
+    /**
+     * @brief Vector of pointers to the next nodes at each level
+     */
     std::vector<SkipListNode<K, V> *> next;
+
+    /**
+     * @brief Constructs a SkipListNode with the specified key, value, and level
+     * @param key The key to store
+     * @param value The value to store
+     * @param level The number of levels this node should be present in
+     */
     SkipListNode(const K &key, const V &value, int level) : key(key), value(value)
     {
         next.resize(level, nullptr);
@@ -28,15 +53,61 @@ template <typename K, typename V>
 class SkipList
 {
 private:
-    const size_t MAX_LEVEL;      // 最大层数
-    const double PROBABILITY;    // 节点层数的概率
-    const size_t MAX_NODE_COUNT; // 最大节点数
-    int current_level_;          // 当前跳表的最大层数
-    SkipListNode<K, V> *head_;   // 头节点（哨兵节点，不存实际数据）
-    std::mutex mutex_;           // 互斥锁（保证并发安全）
-    size_t size_ = 0;            // 当前跳表的元素数量
+    const size_t MAX_LEVEL;   // 最大层数
+    const double PROBABILITY; // 节点层数的概率
+    /**
+     * @brief 跳表的最大层数
+     */
+    const size_t MAX_LEVEL;
+    /**
+     * @brief 节点层数的概率因子
+     */
+    const double PROBABILITY;
+    /**
+     * @brief 跳表的最大节点数（0表示无限制）
+     */
+    const size_t MAX_NODE_COUNT;
+    /**
+     * @brief 当前跳表的最大层数
+     */
+    int current_level_;
+    /**
+     * @brief 头节点（哨兵节点，不存储实际数据）
+     */
+    SkipListNode<K, V> *head_;
+    /**
+     * @brief 互斥锁，保证并发安全
+     */
+    std::mutex mutex_;
+    /**
+     * @brief 当前跳表的元素数量
+     */
+    size_t size_ = 0;
+    /**
+     * @brief Key比较函数指针
+     * @param a 第一个key
+     * @param b 第二个key
+     * @return -1表示a<b，0表示a==b，1表示a>b
+     */
     int (*)(const K &, const K &) compare_func_;
-    // 核心辅助函数：随机生成新节点的层数（概率算法）
+    /**
+     * @brief 当前使用的内存大小估算（原子变量）
+     */
+    std::atomic<size_t> current_size_{0};
+    /**
+     * @brief 计算key的内存大小的函数指针
+     */
+    size_t (*)(const K &) calculate_key_size_func_;
+    /**
+     * @brief 计算value的内存大小的函数指针
+     */
+    size_t (*)(const V &) calculate_value_size_func_;
+
+    /**
+     * @brief 核心辅助函数：随机生成新节点的层数（基于概率算法）
+     * @return 生成的层数（1到MAX_LEVEL之间）
+     * @note 每一层有50%的概率向上增加，直到达到最大层数
+     */
     int random_level()
     {
         int level = 1;
@@ -48,9 +119,11 @@ private:
         }
         return level;
     }
+
     /**
-     * 生成 [0.0, 1.0) 区间的均匀随机数
-     * 特点：线程安全、分布均匀、种子唯一（避免重复）
+     * @brief 生成 [0.0, 1.0) 区间的均匀随机数
+     * @return [0.0, 1.0) 范围内的随机浮点数
+     * @note 特点：线程安全、分布均匀、种子唯一（避免重复序列）
      */
     double generate_random_01()
     {
@@ -80,14 +153,51 @@ private:
         return dist(engine);
     }
 
+    /**
+     * @brief 初始化当前内存大小估算值
+     * @note 计算头节点占用的内存大小
+     */
+    void init_current_size()
+    {
+        current_size_.store(calculate_key_size_func_(K()) + calculate_value_size_func_(V()) + sizeof(SkipListNode<K, V> *) * MAX_LEVEL, std::memory_order_relaxed);
+    }
+
+    /**
+     * @brief 检查节点是否已过期
+     * @param node 要检查的节点指针
+     * @return true表示节点已过期，false表示节点未过期或永不过期
+     * @note 过期时间戳为0表示永不过期
+     */
+    bool is_expired(const SkipListNode<K, V> *node) const
+    {
+        if (node->expire_time != 0 && node->expire_time < std::chrono::system_clock::now())
+        {
+            return true;
+        }
+        return false;
+    }
+
 public:
+    /**
+     * @brief Constructs a SkipList with customizable parameters
+     * @param skiplist_max_level The maximum number of levels in the skip list (default: 16)
+     * @param skiplist_probability The probability factor for determining node level (default: 0.5)
+     * @param skiplist_max_node_count Maximum number of nodes allowed (0 for unlimited, default: 1000000)
+     * @param compare_func Optional custom comparison function for keys
+     * @param calculate_key_size_func Optional custom function to calculate key memory size
+     * @param calculate_value_size_func Optional custom function to calculate value memory size
+     */
     SkipList(const size_t &skiplist_max_level = MAX_LEVEL,
              const double &skiplist_probability = PROBABILITY,
              const size_t &skiplist_max_node_count = MAX_NODE_COUNT,
-             std::optional<int (*)(const K &, const K &)> compare_func = std::nullopt) : current_level_(1), size_(0),
-                                                                                         MAX_LEVEL(skiplist_max_level),
-                                                                                         PROBABILITY(skiplist_probability),
-                                                                                         MAX_NODE_COUNT(skiplist_max_node_count)
+             std::optional<int (*)(const K &, const K &)> compare_func = std::nullopt,
+             std::optional<size_t (*)(const K &)> calculate_key_size_func = std::nullopt,
+             std::optional<size_t (*)(const V &)> calculate_value_size_func = std::nullopt) : current_level_(1),
+                                                                                              size_(0),
+                                                                                              current_size_(0),
+                                                                                              MAX_LEVEL(skiplist_max_level),
+                                                                                              PROBABILITY(skiplist_probability),
+                                                                                              MAX_NODE_COUNT(skiplist_max_node_count)
     {
         if (compare_func.has_value())
         {
@@ -100,12 +210,36 @@ public:
                 return (a < b) ? -1 : ((a > b) ? 1 : 0);
             };
         }
-        // srand(time(nullptr)); // 初始化随机数种子
+        if (calculate_key_size_func.has_value())
+        {
+            calculate_key_size_func_ = calculate_key_size_func.value();
+        }
+        else
+        {
+            calculate_key_size_func_ = [](const K &key)
+            {
+                return sizeof(key);
+            };
+        }
+        if (calculate_value_size_func.has_value())
+        {
+            calculate_value_size_func_ = calculate_value_size_func.value();
+        }
+        else
+        {
+            calculate_value_size_func_ = [](const V &value)
+            {
+                return sizeof(value);
+            };
+        }
         //  头节点键值无意义，层数为最大层数
         head_ = new SkipListNode<K, V>(K(), V(), MAX_LEVEL);
+        init_current_size();
     }
 
-    // 析构函数：释放所有节点内存
+    /**
+     * @brief Destroys the SkipList and releases all node memory
+     */
     ~SkipList()
     {
         SkipListNode<K, V> *current = head_;
@@ -117,14 +251,22 @@ public:
         }
     }
 
+    /**
+     * @brief Copy constructor (deleted due to deep copy complexity)
+     * @param sl The SkipList to copy from
+     * @note This constructor actually moves resources instead of copying
+     */
     SkipList(const SkipList &sl) noexcept
         : current_level_(other.current_level_),
           head_(other.head_),
           size_(other.size_),
+          current_size_(other.current_size_),
           MAX_LEVEL(other.MAX_LEVEL),
           PROBABILITY(other.PROBABILITY),
           MAX_NODE_COUNT(other.MAX_NODE_COUNT),
-          compare_func_(other.compare_func_)
+          compare_func_(other.compare_func_),
+          calculate_key_size_func_(other.calculate_key_size_func_),
+          calculate_value_size_func_(other.calculate_value_size_func_)
     {
         // 将原对象置为空状态
         other.head_ = nullptr;
@@ -150,8 +292,10 @@ public:
         current_level_ = other.current_level_;
         head_ = other.head_;
         size_ = other.size_;
+        current_size_ = other.current_size_;
         compare_func_ = other.compare_func_;
-
+        calculate_key_size_func_ = other.calculate_key_size_func_;
+        calculate_value_size_func_ = other.calculate_value_size_func_;
         // 将原对象置为空状态
         other.head_ = nullptr;
         other.size_ = 0;
@@ -164,10 +308,13 @@ public:
         : current_level_(other.current_level_),
           head_(other.head_),
           size_(other.size_),
+          current_size_(other.current_size_),
           MAX_LEVEL(other.MAX_LEVEL),
           PROBABILITY(other.PROBABILITY),
           MAX_NODE_COUNT(other.MAX_NODE_COUNT),
-          compare_func_(other.compare_func_)
+          compare_func_(other.compare_func_),
+          calculate_key_size_func_(other.calculate_key_size_func_),
+          calculate_value_size_func_(other.calculate_value_size_func_)
     {
         // 将原对象置为空状态
         other.head_ = nullptr;
@@ -193,8 +340,11 @@ public:
         // 移动资源
         current_level_ = other.current_level_;
         head_ = other.head_;
+        current_size_ = other.current_size_;
         size_ = other.size_;
         compare_func_ = other.compare_func_;
+        calculate_key_size_func_ = other.calculate_key_size_func_;
+        calculate_value_size_func_ = other.calculate_value_size_func_;
 
         // 将原对象置为空状态
         other.head_ = nullptr;
@@ -204,9 +354,20 @@ public:
         return *this;
     }
 
-    void insert(const K &key, const V &value)
+    /**
+     * @brief 向跳表中插入或更新一个键值对
+     * @param key 要插入的key
+     * @param value 要插入的value
+     * @param alive_time 存活时间（秒），0表示永不过期（默认：0）
+     * @throw std::overflow_error 当达到最大节点数时抛出异常
+     * @note 如果key已存在，则更新value和过期时间；否则插入新节点
+     */
+    void insert(const K &key, const V &value, const size_t &alive_time = 0)
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        size_t new_key_size = calculate_key_size_func_(key);
+        size_t new_value_size = calculate_value_size_func_(value);
+
         SkipListNode<K, V> *current = head_;
         // 记录各层的前驱节点
         SkipListNode<K, V> *update[MAX_LEVEL] = {nullptr};
@@ -223,8 +384,14 @@ public:
         // 如果key已经存在，则更新value
         if (current != nullptr && compare_func_(current->key, key) == 0)
         {
+            size_t old_value_size = calculate_value_size_func_(current->value);
             current->value = value;
-            // 返回变化的内存大小
+            current->deleted = false;
+            if (alive_time > 0)
+            {
+                current->expire_time = std::chrono::system_clock::now() + std::chrono::seconds(alive_time);
+            }
+            current_size_.fetch_add(new_value_size - old_value_size, std::memory_order_relaxed);
             return;
         }
         if (MAX_NODE_COUNT > 0 && size_ >= MAX_NODE_COUNT)
@@ -242,6 +409,10 @@ public:
             current_level_ = level;
         }
         SkipListNode<K, V> *new_node = new SkipListNode<K, V>(key, value, level);
+        if (alive_time > 0)
+        {
+            new_node->expire_time = std::chrono::system_clock::now() + std::chrono::seconds(alive_time);
+        }
         // 插入新节点
         try
         {
@@ -251,6 +422,7 @@ public:
                 update[i]->next[i] = new_node;
             }
             size_++;
+            current_size_.fetch_add(new_key_size + new_value_size + sizeof(SkipListNode<K, V> *) * level + sizeof(SkipListNode<K, V>), std::memory_order_relaxed);
         }
         catch (const std::exception &e)
         {
@@ -258,6 +430,13 @@ public:
         }
     }
 
+    /**
+     * @brief 根据key获取对应的value
+     * @param key 要查找的key
+     * @return 对应的value
+     * @throw std::out_of_range 当key不存在或已过期/被标记删除时抛出异常
+     * @note 如果key已过期，会自动标记为删除状态
+     */
     V get(const K &key) const
     {
         SkipListNode<K, V> *current = head_;
@@ -269,13 +448,23 @@ public:
             }
         }
         current = current->next[0];
-        if (current != nullptr && compare_func_(current->key, key) == 0)
+        if (is_expired(current))
+        {
+            current->deleted = true;
+        }
+        else if (current != nullptr && compare_func_(current->key, key) == 0 && !current->deleted)
         {
             return current->value;
         }
         throw std::out_of_range("Key not found");
     }
 
+    /**
+     * @brief 从跳表中移除指定key的节点（物理删除）
+     * @param key 要移除的key
+     * @return true表示成功移除，false表示key不存在
+     * @note 此操作会实际删除节点并释放内存
+     */
     bool remove(const K &key)
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -302,6 +491,10 @@ public:
             }
             update[i]->next[i] = current->next[i];
         }
+        size_t key_size = calculate_key_size_func_(current->key);
+        size_t value_size = calculate_value_size_func_(current->value);
+        current_size_.fetch_sub(key_size + value_size + sizeof(SkipListNode<K, V> *) * current->next.size() + sizeof(SkipListNode<K, V>), std::memory_order_relaxed);
+
         delete current;
         size_--;
         while (current_level_ > 1 && head_->next[current_level_ - 1] == nullptr)
@@ -311,11 +504,87 @@ public:
         return true;
     }
 
+    /**
+     * @brief 标记指定key的节点为删除状态（逻辑删除）
+     * @param key 要标记删除的key
+     * @return true表示成功标记删除，false表示key不存在
+     * @note 此操作仅设置deleted标志，不实际删除节点
+     */
+    bool remove_sign(const K &key)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        SkipListNode<K, V> *current = head_;
+        for (int i = current_level_ - 1; i >= 0; i--)
+        {
+            while (current->next[i] != nullptr && compare_func_(current->next[i]->key, key) < 0)
+            {
+                current = current->next[i];
+            }
+        }
+        current = current->next[0];
+        if (current != nullptr && compare_func_(current->key, key) != 0)
+        {
+            return false;
+        }
+        current->deleted = true;
+        size_--;
+        return true;
+    }
+
+    /**
+     * @brief 为指定key设置过期时间
+     * @param key 要设置过期时间的key
+     * @param alive_time 存活时间（秒）
+     * @return true表示设置成功，false表示key不存在或已过期
+     */
+    bool set_expire(const K &key, const size_t &alive_time)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        SkipListNode<K, V> *current = head_;
+        for (int i = current_level_ - 1; i >= 0; i--)
+        {
+            while (current->next[i] != nullptr && compare_func_(current->next[i]->key, key) < 0)
+            {
+                current = current->next[i];
+            }
+        }
+        current = current->next[0];
+        if (is_expired(current))
+        {
+            current->deleted = true;
+            return false;
+        }
+        if (current != nullptr && compare_func_(current->key, key) != 0 && !current->deleted)
+        {
+            return false;
+        }
+        current->expire_time = std::chrono::system_clock::now() + std::chrono::seconds(alive_time);
+        return true;
+    }
+
+    /**
+     * @brief 获取跳表中的元素数量
+     * @return 跳表中当前存储的元素数量
+     * @note 不包括被标记删除但未物理删除的节点
+     */
     size_t size() const
     {
         return size_;
     }
 
+    /**
+     * @brief 获取跳表的内存使用量估算
+     * @return 跳表当前使用的内存大小（字节）
+     */
+    size_t memory_usage() const
+    {
+        return current_size_.load(std::memory_order_relaxed);
+    }
+
+    /**
+     * @brief 清空跳表中的所有节点
+     * @note 释放所有节点的内存并重置跳表状态
+     */
     void clear()
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -329,8 +598,16 @@ public:
         head_ = new SkipListNode<K, V>(K(), V(), MAX_LEVEL);
         current_level_ = 1;
         size_ = 0;
+        init_current_size();
     }
 
+    /**
+     * @brief 按照排名范围获取键值对
+     * @param start_rank 起始排名（从0开始）
+     * @param end_rank 结束排名
+     * @return 指定排名范围内的键值对列表
+     * @note 会跳过已过期或被标记删除的节点
+     */
     std::vector<std::pair<K, V>> range_by_rank(size_t start_rank, size_t end_rank) const
     {
         if (start_rank > end_rank)
@@ -342,6 +619,17 @@ public:
         size_t index = 0;
         while (current != nullptr && index <= end_rank)
         {
+            if (is_expired(current))
+            {
+                current->deleted = true;
+                current = current->next[0];
+                continue;
+            }
+            if (current->deleted)
+            {
+                current = current->next[0];
+                continue;
+            }
             if (index >= start_rank)
             {
                 result.emplace_back(current->key, current->value);
@@ -352,6 +640,13 @@ public:
         return result;
     }
 
+    /**
+     * @brief 按照key范围获取键值对
+     * @param min_key 起始key（包含）
+     * @param max_key 结束key（包含）
+     * @return 指定key范围内的键值对列表
+     * @note 会跳过已过期或被标记删除的节点
+     */
     std::vector<std::pair<K, V>> range_by_key(const K &min_key, const K &max_key) const
     {
         if (min_key > max_key)
@@ -370,12 +665,30 @@ public:
         }
         while (current != nullptr && compare_func_(current->key, max_key) <= 0)
         {
+            if (is_expired(current))
+            {
+                current->deleted = true;
+                current = current->next[0];
+                continue;
+            }
+            if (current->deleted)
+            {
+                current = current->next[0];
+                continue;
+            }
             result.emplace_back(current->key, current->value);
             current = current->next[0];
         }
         return result;
     }
 
+    /**
+     * @brief 物理删除指定key范围内的所有节点
+     * @param min_key 起始key
+     * @param max_key 结束key
+     * @return 被删除的节点数量
+     * @note 此操作会实际删除节点并释放内存
+     */
     size_t remove_range_by_key(const K &min_key, const K &max_key)
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -396,6 +709,7 @@ public:
             update[i] = current;
         }
         current = current->next[0];
+        size_t sub_size = 0;
         // 删除范围内的节点
         while (current != nullptr && compare_func_(current->key, max_key) <= 0)
         {
@@ -409,10 +723,14 @@ public:
                 }
                 update[i]->next[i] = to_delete->next[i];
             }
+            size_t key_size = calculate_key_size_func_(to_delete->key);
+            size_t value_size = calculate_value_size_func_(to_delete->value);
+            sub_size += key_size + value_size + sizeof(SkipListNode<K, V> *) * to_delete->next.size() + sizeof(SkipListNode<K, V>);
             delete to_delete;
             removed_count++;
             size_--;
         }
+        current_size_.fetch_sub(sub_size, std::memory_order_relaxed);
         // 调整当前层数
         while (current_level_ > 1 && head_->next[current_level_ - 1] == nullptr)
         {
@@ -421,6 +739,13 @@ public:
         return removed_count;
     }
 
+    /**
+     * @brief 物理删除指定排名范围内的所有节点
+     * @param start_rank 起始排名
+     * @param end_rank 结束排名
+     * @return 被删除的节点数量
+     * @note 内部通过key范围删除实现
+     */
     size_t remove_range_by_rank(size_t start_rank, size_t end_rank)
     {
         if (start_rank > end_rank)
@@ -448,7 +773,95 @@ public:
         return remove_range_by_key(min_key, max_key);
     }
 
-    size_t rank(const K &key) const
+    /**
+     * @brief 逻辑删除指定key范围内的所有节点
+     * @param min_key 起始key
+     * @param max_key 结束key
+     * @return 被标记删除的节点数量
+     * @note 此操作仅设置deleted标志，不实际删除节点
+     */
+    size_t remove_sign_range_by_key(const K &min_key, const K &max_key)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (min_key > max_key)
+        {
+            return 0;
+        }
+        size_t removed_count = 0;
+        SkipListNode<K, V> *current = head_;
+        // 查找起始位置
+        for (int i = current_level_ - 1; i >= 0; i--)
+        {
+            while (current->next[i] != nullptr && compare_func_(current->next[i]->key, min_key) < 0)
+            {
+                current = current->next[i];
+            }
+        }
+        current = current->next[0];
+        // 删除范围内的节点
+        while (current != nullptr && compare_func_(current->key, max_key) <= 0)
+        {
+            SkipListNode<K, V> *to_delete = current;
+            current = current->next[0];
+            to_delete->deleted = true;
+            removed_count++;
+            size_--;
+        }
+        return removed_count;
+    }
+
+    /**
+     * @brief 逻辑删除指定排名范围内的所有节点
+     * @param start_rank 起始排名
+     * @param end_rank 结束排名
+     * @return 被标记删除的节点数量
+     * @note 内部通过key范围删除实现
+     */
+    size_t remove_sign_range_by_rank(size_t start_rank, size_t end_rank)
+    {
+        if (start_rank > end_rank)
+        {
+            return 0;
+        }
+        // 找到开始的key和结束的key
+        K min_key, max_key;
+        SkipListNode<K, V> *current = head_->next[0];
+        size_t index = 0;
+        while (current != nullptr)
+        {
+            if (is_expired(current))
+            {
+                current->deleted = true;
+                current = current->next[0];
+                continue;
+            }
+            if (current->deleted)
+            {
+                current = current->next[0];
+                continue;
+            }
+            if (index == start_rank)
+            {
+                min_key = current->key;
+            }
+            if (index == end_rank)
+            {
+                max_key = current->key;
+                break;
+            }
+            current = current->next[0];
+            index++;
+        }
+        return remove_sign_range_by_key(min_key, max_key);
+    }
+
+    /**
+     * @brief 获取指定key的排名
+     * @param key 要查询的key
+     * @return key的排名（如果存在），否则返回std::nullopt
+     * @note 排名从0开始计数
+     */
+    std::optional<size_t> rank(const K &key) const
     {
         size_t rank = 0;
         SkipListNode<K, V> *current = head_->next[0];
@@ -457,9 +870,79 @@ public:
             rank++;
             current = current->next[0];
         }
-        return rank;
+        if (current == nullptr)
+        {
+            return std::nullopt;
+        }
+        if (is_expired(current))
+        {
+            current->deleted = true;
+            return std::nullopt;
+        }
+        if (compare_func_(current->key, key) == 0 && !current->deleted)
+        {
+            return rank;
+        }
+        return std::nullopt;
     }
 
+    /**
+     * @brief 遍历跳表中的所有有效节点
+     * @param callback 对每个有效节点执行的回调函数
+     * @note 会跳过已过期或被标记删除的节点
+     */
+    void for_each(std::function<void(const K &key, const V &value)> callback) const
+    {
+        SkipListNode<K, V> *current = head_->next[0];
+        while (current != nullptr)
+        {
+            if (is_expired(current))
+            {
+                current->deleted = true;
+                continue;
+            }
+            if (current->deleted)
+            {
+                continue;
+            }
+            callback(current->key, current->value);
+            current = current->next[0];
+        }
+    }
+
+    /**
+     * @brief 获取跳表中所有有效的键值对
+     * @return 包含所有有效键值对的列表
+     * @note 会跳过已过期或被标记删除的节点
+     */
+    std::vector<std::pair<K, V>> get_all_entries() const
+    {
+        vector<std::pair<K, V>> result;
+        SkipListNode *current = head_->next[0];
+        while (current != nullptr)
+        {
+            if (is_expired(current))
+            {
+                current->deleted = true;
+                continue;
+            }
+            if (current->deleted)
+            {
+                continue;
+            }
+            result.emplace_back(current->key, current->value);
+            current = current->next[0];
+        }
+        return result;
+    }
+
+    /**
+     * @brief 将跳表序列化为字符串
+     * @param serialize_key_func 序列化key的函数指针
+     * @param serialize_value_func 序列化value的函数指针
+     * @return 序列化后的字符串
+     * @note 序列化格式：current_level + size + [node_level + key + value + deleted + expire_time]*
+     */
     std::string serialize(std::string (*serialize_key_func)(const K &key), std::string (*serialize_value_func)(const V &value)) const
     {
         std::string result;
@@ -471,11 +954,21 @@ public:
             result.append(reinterpret_cast<const char *>(current->next.size()), sizeof(current->next.size()));
             result.append(serialize_key_func(current->key));
             result.append(serialize_value_func(current->value));
+            result.append(reinterpret_cast<const char *>(current->deleted), sizeof(current->deleted));
+            result.append(reinterpret_cast<const char *>(current->expire_time), sizeof(current->expire_time));
             current = current->next[0];
         }
         return result;
     }
 
+    /**
+     * @brief 从字符串反序列化跳表
+     * @param data 序列化数据的指针
+     * @param offset 数据的起始偏移量
+     * @param deserialize_key_func 反序列化key的函数指针
+     * @param deserialize_value_func 反序列化value的函数指针
+     * @note 会清空当前跳表并重建所有节点
+     */
     void deserialize(const char *data, const size_t offset,
                      std::string (*deserialize_key_func)(const char *data, size_t &offset),
                      std::string (*deserialize_value_func)(const char *data, size_t &offset))
@@ -495,8 +988,16 @@ public:
             std::memcpy(&next_size, data + offset, sizeof(next_size));
             offset += sizeof(next_size);
             K key = deserialize_key_func(data, offset);
-            V value = deserialize_value_func(value_data);
-            SkipListNode *node = new SkipListNode<K, V>(key, value, next_size);
+            V value = deserialize_value_func(data, offset);
+            bool deleted;
+            std::memcpy(&deleted, data + offset, sizeof(deleted));
+            offset += sizeof(deleted);
+            size_t expire_time;
+            std::memcpy(&expire_time, data + offset, sizeof(expire_time));
+            offset += sizeof(expire_time);
+            SkipListNode<K, V> *node = new SkipListNode<K, V>(key, value, next_size);
+            node->deleted = deleted;
+            node->expire_time = expire_time;
             for (size_t j = 0; j < next_size; j++)
             {
                 level_nodes[j]->next[j] = node;
@@ -504,6 +1005,11 @@ public:
             }
         }
     }
+
+    /**
+     * @brief 打印跳表的当前结构（用于调试）
+     * @note 按层级输出所有节点，显示key、value、是否过期、是否删除、节点层数等信息
+     */
     void print()
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -515,7 +1021,7 @@ public:
             SkipListNode<K, V> *current = head_->next[i];
             while (current != nullptr)
             {
-                std::cout << "(" << current->key << "," << current->value << ") ";
+                std::cout << "(" << current->key << "," << current->value << "," << is_expired(current) << "," << current->deleted << "," << current->next.size() << ") ";
                 current = current->next[i];
             }
             std::cout << std::endl;

@@ -3,6 +3,7 @@
 #include <vector>
 #include <utility>
 #include <unordered_map>
+#include "common.h"
 
 void ZSet::zadd(const std::string &member, const std::string &score)
 {
@@ -16,6 +17,7 @@ void ZSet::zadd(const std::string &member, const std::string &score)
     skiplist_.insert(score + "\0" + member, member); // 使用分值+成员作为复合键，确保唯一性
     // 2. 更新成员-分值映射
     member_score_map_[member] = score;
+    size_exclude_skiplist.fetch_add(calculateStringSize(member) + calculateStringSize(score) + HASH_COST, std::memory_order_relaxed);
 }
 
 std::optional<std::string> ZSet::zscore(const std::string &member) const
@@ -43,6 +45,7 @@ bool ZSet::zrem(const std::string &member)
     {
         // 2. 从成员-分值映射删除
         member_score_map_.erase(it);
+        size_exclude_skiplist.fetch_sub(calculateStringSize(member) + calculateStringSize(score) + HASH_COST, std::memory_order_relaxed);
     }
     return removed;
 }
@@ -98,20 +101,26 @@ size_t ZSet::zrem_range_by_score(const std::string &min_score, const std::string
     std::string min = min_score + "\0";
     std::string max = max_score + "\0";
     std::vector<std::pair<std::string, std::string>> result = skiplist_.range_by_key(min, max);
+    size_t removed_size = 0;
     for (auto &item : result)
     {
         member_score_map_.erase(item.second);
+        removed_size += calculateStringSize(item.second) + calculateStringSize(item.first) + HASH_COST;
     }
+    size_exclude_skiplist.fetch_sub(removed_size, std::memory_order_relaxed);
     return skiplist_.remove_range_by_key(min, max);
 }
 
 size_t ZSet::zrem_range_by_rank(size_t start_rank, size_t end_rank)
 {
     std::vector<std::pair<std::string, std::string>> result = skiplist_.range_by_rank(start_rank, end_rank);
+    size_t removed_size = 0;
     for (auto &item : result)
     {
         member_score_map_.erase(item.second);
+        removed_size += calculateStringSize(item.second) + calculateStringSize(item.first) + HASH_COST;
     }
+    size_exclude_skiplist.fetch_sub(removed_size, std::memory_order_relaxed);
     return skiplist_.remove_range_by_rank(start_rank, end_rank);
 }
 

@@ -15,10 +15,10 @@
  * 它是存储引擎的第一层，所有写入操作首先写入 MemTable。
  * 为了支持并发访问，内部使用了读写锁 (std::shared_mutex)。
  * 使用跳表保持 Key 有序，方便后续 Flush 到 SSTable。
- * 
+ *
  * 内存大小跟踪：
  * - 每次插入/更新/删除都会更新当前使用的内存大小估算
- * - 当内存使用超过阈值时，应该触发 Flush 到 SSTable
+ * - 当内存使用超过阈值时，触发 Flush 到 SSTable
  */
 template <typename K, typename V>
 class MemTable
@@ -27,7 +27,10 @@ public:
     MemTable(const size_t &memtable_size,
              const size_t &skiplist_max_level,
              const double &skiplist_probability,
-             const size_t &skiplist_max_node_count);
+             const size_t &skiplist_max_node_count,
+             std::optional<int (*)(const K &, const K &)> compare_func = std::nullopt,
+             std::optional<size_t (*)(const K &)> calculate_key_size_func = std::nullopt,
+             std::optional<size_t (*)(const V &)> calculate_value_size_func = std::nullopt);
     ~MemTable() = default;
 
     // 禁止拷贝和赋值，避免意外的开销和锁问题
@@ -66,18 +69,18 @@ public:
     /**
      * @brief 获取当前 MemTable 使用的内存大小估算（字节）。
      */
-    size_t memoryUsage() const;
+    size_t memory_usage() const;
 
     /**
      * @brief 获取 MemTable 的大小限制（字节）。
      */
-    size_t memoryLimit() const;
+    size_t memory_limit() const;
 
     /**
      * @brief 判断 MemTable 是否需要 Flush 到磁盘。
      * @return 如果当前内存使用超过阈值，返回 true。
      */
-    bool shouldFlush() const;
+    bool should_flush() const;
 
     /**
      * @brief 清空 MemTable (主要用于测试或重置)。
@@ -89,28 +92,21 @@ public:
      * 返回的数据按 Key 升序排列。
      * @return 包含所有 KV 对的 vector
      */
-    std::vector<std::pair<K, V>> getAllEntries() const;
+    std::vector<std::pair<K, V>> get_all_entries() const;
 
     /**
      * @brief 遍历所有 Key-Value 对，按 Key 升序调用回调函数。
      * @param callback 回调函数，参数为 (key, value)
      */
-    void forEach(const std::function<void(const K &, const V &)> &callback) const;
+    void for_each(const std::function<void(const K &, const V &)> &callback) const;
 
 private:
-    size_t memtable_size_;              // MemTable 大小限制（字节数）
-    std::atomic<size_t> current_size_{0}; // 当前使用的内存大小估算
+    size_t memtable_size_; // MemTable 大小限制（字节数）
 
     // 核心数据结构，使用跳表
     SkipList<K, V> table_;
 
     // 读写锁，保护 table_ 的并发访问
     mutable std::shared_mutex mutex_;
-
-    /**
-     * @brief 估算一个 Key-Value 对占用的内存大小。
-     * 这是一个粗略的估算，包括 key 和 value 的大小以及跳表节点的开销。
-     */
-    static size_t estimateEntrySize(const K &key, const V &value);
 };
 #endif
