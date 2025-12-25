@@ -102,3 +102,10 @@ void MemTable<K, V>::for_each(const std::function<void(const K &, const V &)> &c
     std::shared_lock<std::shared_mutex> lock(mutex_);
     table_.for_each(callback);
 }
+
+template <typename K, typename V>
+V MemTable<K, V>::handle_value(const K &key, std::function<V &(V &)> value_handle)
+{
+    std::unique_lock<std::shared_mutex> lock(mutex_);
+    return table_.handle_value(key, value_handle);
+}

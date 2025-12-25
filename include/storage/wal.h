@@ -35,7 +35,7 @@ public:
      * @param value 值
      * @return 成功返回 true，失败返回 false
      */
-    bool AppendPut(const std::string &key, const EyaValue &value);
+    bool AppendPut(const std::string &key, const EValue &value);
 
     /**
      * @brief 记录 Delete 操作。
@@ -51,7 +51,7 @@ public:
      * @param memtable 指向需要恢复的 MemTable 对象的指针
      * @return 成功返回 true，失败返回 false
      */
-    bool Recover(MemTable<std::string, EyaValue> *memtable);
+    bool Recover(MemTable<std::string, EValue> *memtable);
 
     /**
      * @brief 清空日志文件（例如在 Flush 到 SSTable 后）。
@@ -84,5 +84,5 @@ private:
     };
 
     // 内部辅助函数：写入一条日志记录
-    bool WriteRecord(LogType type, const std::string &key, const EyaValue &value);
+    bool WriteRecord(LogType type, const std::string &key, const std::optional<EValue>& value);
 };

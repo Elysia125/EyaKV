@@ -67,10 +67,10 @@ Connection::Connection(asio::ip::tcp::socket socket, Storage *storage)
         {
         case eyakv::protocol::MessageType::kGet:
         {
-            auto val = storage_->Get(req.key);
+            auto val = storage_->get(req.key);
             if (val.has_value())
             {
-                resp.value = val.value();
+                //resp.value = val.value();
                 resp.status = true;
             }
             else
@@ -82,13 +82,13 @@ Connection::Connection(asio::ip::tcp::socket socket, Storage *storage)
         }
         case eyakv::protocol::MessageType::kPut:
         {
-            bool success = storage_->Put(req.key, req.value);
+            bool success = storage_->put(req.key, req.value);
             resp.status = success;
             break;
         }
         case eyakv::protocol::MessageType::kDelete:
         {
-            bool success = storage_->Delete(req.key);
+            bool success = storage_->remove(req.key);
             resp.status = success;
             break;
         }

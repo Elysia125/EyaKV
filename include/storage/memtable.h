@@ -93,13 +93,22 @@ public:
      * @return 包含所有 KV 对的 vector
      */
     std::vector<std::pair<K, V>> get_all_entries() const;
-
+    
     /**
      * @brief 遍历所有 Key-Value 对，按 Key 升序调用回调函数。
      * @param callback 回调函数，参数为 (key, value)
      */
     void for_each(const std::function<void(const K &, const V &)> &callback) const;
-
+    
+        /**
+     * @brief 对某个key对应的value进行操作
+     * @param key 要操作的key
+     * @param value_handle 操作函数，接受一个V&参数，返回一个V
+     * @return 操作之前的value
+     * @throw std::out_of_range 当key不存在或已过期/被标记删除时抛出异常
+     * @note 如果key已过期，会自动标记为删除状态
+     */
+    V handle_value(const K &key, std::function<V &(V &)> value_handle);
 private:
     size_t memtable_size_; // MemTable 大小限制（字节数）
 

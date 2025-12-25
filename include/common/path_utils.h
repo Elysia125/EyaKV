@@ -54,7 +54,7 @@ public:
                         std::string exe_path = std::string(buffer);
                         if (!exe_path.empty())
                         {
-                                LOG_DEBUG("PathUtils: Executable path is {}", exe_path);
+                                std::cout << "PathUtils: Executable path is " << exe_path << std::endl;
                                 return exe_path;
                         }
                 }
@@ -74,7 +74,7 @@ public:
                         std::string exe_path = std::string(buffer);
                         if (!exe_path.empty())
                         {
-                                LOG_DEBUG("PathUtils: Executable path is {}", exe_path);
+                                std::cout << "PathUtils: Executable path is " << exe_path << std::endl;
                                 return exe_path;
                         }
                 }

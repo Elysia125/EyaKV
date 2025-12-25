@@ -42,19 +42,19 @@ Wal::~Wal()
     }
 }
 
-bool Wal::AppendPut(const std::string &key, const EyaValue &value)
+bool Wal::AppendPut(const std::string &key, const EValue &value)
 {
-    LOG_DEBUG("Wal: Appending Put record. Key: {}, Value: {}", key, value);
+    LOG_DEBUG("Wal: Appending Put record. Key: %s, Value: %s", key, value);
     return WriteRecord(LogType::kPut, key, value);
 }
 
 bool Wal::AppendDelete(const std::string &key)
 {
-    LOG_DEBUG("Wal: Appending Delete record. Key: {}", key);
-    return WriteRecord(LogType::kDelete, key, "");
+    LOG_DEBUG("Wal: Appending Delete record. Key: %s", key);
+    return WriteRecord(LogType::kDelete, key, std::nullopt);
 }
 
-bool Wal::WriteRecord(LogType type, const std::string &key, const EyaValue &value)
+bool Wal::WriteRecord(LogType type, const std::string &key, const std::optional<EValue> &value)
 {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (wal_file_ == nullptr)
@@ -66,7 +66,7 @@ bool Wal::WriteRecord(LogType type, const std::string &key, const EyaValue &valu
     long file_size = ftell(wal_file_);
     if (file_size >= wal_file_size)
     {
-        LOG_INFO("Wal: WAL file size reached max({} bytes). Switch wal file now.", wal_file_size);
+        LOG_INFO("Wal: WAL file size reached max(%s bytes). Switch wal file now.", wal_file_size);
         Sync();
         fclose(wal_file_);
         PathUtils::RenameFile(PathUtils::CombinePath(wal_dir_, WAL_FILE_NAME),
@@ -91,7 +91,7 @@ bool Wal::WriteRecord(LogType type, const std::string &key, const EyaValue &valu
         }
         if (wal_file_count >= max_wal_file_count)
         {
-            LOG_WARN("Wal: Maximum WAL file count ({}) reached. Delete oldest one automatically.", max_wal_file_count);
+            LOG_WARN("Wal: Maximum WAL file count (%s) reached. Delete oldest one automatically.", max_wal_file_count);
             // 删除创建时间最早的
             fs::remove(oldest_file);
         }
@@ -99,7 +99,7 @@ bool Wal::WriteRecord(LogType type, const std::string &key, const EyaValue &valu
     }
     uint8_t type_u8 = static_cast<uint8_t>(type);
     uint32_t key_len = static_cast<uint32_t>(key.size());
-    std::string value_str = serialize_eya_value(value);
+    std::string value_str = value.has_value() ? serialize(value.value()) : "";
     uint32_t value_len = static_cast<uint32_t>(value_str.size());
     fwrite(&type_u8, sizeof(type_u8), 1, wal_file_);
     fwrite(&key_len, sizeof(key_len), 1, wal_file_);
@@ -119,10 +119,10 @@ bool Wal::WriteRecord(LogType type, const std::string &key, const EyaValue &valu
     return !ferror(wal_file_);
 }
 
-bool Wal::Recover(MemTable<std::string, EyaValue> *memtable)
+bool Wal::Recover(MemTable<std::string, EValue> *memtable)
 {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
-    LOG_INFO("Starting WAL recovery from directory: {}", wal_dir_);
+    LOG_INFO("Starting WAL recovery from directory: %s", wal_dir_);
     fclose(wal_file_);
     // 打开wal目录下的所有wal文件进行恢复
     fs::directory_iterator dir_iter(wal_dir_);
@@ -131,11 +131,11 @@ bool Wal::Recover(MemTable<std::string, EyaValue> *memtable)
         if (entry.path().extension() == ".wal")
         {
             std::string filepath = entry.path().string();
-            LOG_INFO("Recovering from WAL file: {}", filepath);
+            LOG_INFO("Recovering from WAL file: %s", filepath);
             std::ifstream reader(filepath, std::ios::binary);
             if (!reader.is_open())
             {
-                LOG_ERROR("Wal::Recover: Failed to open WAL file at {}", filepath);
+                LOG_ERROR("Wal::Recover: Failed to open WAL file at %s", filepath);
                 continue;
             }
 
@@ -162,7 +162,7 @@ bool Wal::Recover(MemTable<std::string, EyaValue> *memtable)
                     reader.read(val_data, val_len);
                 }
                 size_t offset = 0;
-                EyaValue value = deserialize_eya_value(val_data, offset);
+                EValue value = deserialize(val_data, offset);
                 if (reader.fail())
                 {
                     std::cerr << "Wal::Recover: Error reading log file, maybe truncated." << std::endl;
@@ -183,7 +183,7 @@ bool Wal::Recover(MemTable<std::string, EyaValue> *memtable)
             reader.close();
             // 删除已恢复的日志文件
             std::filesystem::remove(filepath);
-            LOG_INFO("Completed recovery from WAL file: {}", filepath);
+            LOG_INFO("Completed recovery from WAL file: %s", filepath);
         }
     }
     // Reopen for appending
@@ -211,7 +211,7 @@ bool Wal::Clear()
         {
             std::string filepath = entry.path().string();
             std::filesystem::remove(filepath);
-            LOG_INFO("Wal: Deleted WAL file at {}", filepath);
+            LOG_INFO("Wal: Deleted WAL file at %s", filepath);
         }
     }
     // Reopen
@@ -256,7 +256,7 @@ bool Wal::Sync()
         // 步骤2：调用fsync刷内核缓冲区到磁盘（真正落盘）
         if (fdatasync(fd) == -1)
         { // fdatasync(fd) 更高效（仅刷数据）
-            LOG_ERROR("Wal: Failed to sync WAL file to disk. Error: {}", strerror(errno));
+            LOG_ERROR("Wal: Failed to sync WAL file to disk. Error: %s", strerror(errno));
             return false;
         }
         modifyed_ = false;
@@ -277,7 +277,7 @@ void Wal::OpenWALFile()
     wal_file_ = fopen(filepath.c_str(), "ab+");
     if (wal_file_ == nullptr)
     {
-        LOG_ERROR("Wal: Failed to open WAL file at {},error:{}", filepath, strerror(errno));
+        LOG_ERROR("Wal: Failed to open WAL file at %s,error:%s", filepath, strerror(errno));
         throw std::runtime_error("cannot open or create WAL file at " + filepath);
     }
 }

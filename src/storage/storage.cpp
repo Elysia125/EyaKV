@@ -51,7 +51,7 @@ Storage::Storage(const std::string &data_dir,
     memtable_ = create_new_memtable();
 
     // 初始化 SSTable 管理器
-    sstable_manager_ = std::make_unique<SSTableManager>(sstable_dir_);
+    sstable_manager_ = std::make_unique<SSTableManager>(sstable_dir_,sstable_merge_threshold_);
 
     // 初始化 WAL
     if (enable_wal_)
@@ -71,7 +71,7 @@ Storage::Storage(const std::string &data_dir,
         start_background_flush_thread();
     }
 
-    LOG_INFO("Storage engine initialized. Data dir:{} ", data_dir_);
+    LOG_INFO("Storage engine initialized. Data dir:%s ", data_dir_);
 }
 
 Storage::~Storage()
@@ -106,16 +106,16 @@ void Storage::close()
     LOG_INFO("Storage engine closed.");
 }
 
-std::unique_ptr<MemTable<std::string, EyaValue>> Storage::create_new_memtable()
+std::unique_ptr<MemTable<std::string, EValue>> Storage::create_new_memtable()
 {
-    return std::make_unique<MemTable<std::string, EyaValue>>(
+    return std::make_unique<MemTable<std::string, EValue>>(
         memtable_size_,
         skiplist_max_level_,
         skiplist_probability_,
         skiplist_max_node_count_,
         std::nullopt,
         calculateStringSize,
-        estimateEyaValueSize);
+        estimateEValueSize);
 }
 
 void Storage::recover()
@@ -129,13 +129,13 @@ void Storage::recover()
         }
         else
         {
-            LOG_INFO("Storage: WAL recovery completed. MemTable size: {}",
+            LOG_INFO("Storage: WAL recovery completed. MemTable size: %s",
                      std::to_string(memtable_->size()));
         }
     }
 }
 
-bool Storage::put(const std::string &key, const EyaValue &value)
+bool Storage::put(const std::string &key, const EyaValue &value, const size_t alive_time)
 {
     if (read_only_)
     {
@@ -146,11 +146,21 @@ bool Storage::put(const std::string &key, const EyaValue &value)
     // 1. 写 WAL
     if (enable_wal_ && wal_ && !wal_->AppendPut(key, value))
     {
-        LOG_ERROR("Failed to write to WAL for key:{} ", key);
+        LOG_ERROR("Failed to write to WAL for key:%s ", key);
         return false;
     }
 
     // 2. 写 MemTable
+    EValue evalue(value);
+    if (alive_time > 0)
+    {
+        evalue.expire_time = std::chrono::system_clock::now().time_since_epoch().count() + alive_time;
+    }
+    return write_memtable(key, evalue);
+}
+
+bool Storage::write_memtable(const std::string &key, EValue &value)
+{
     try
     {
         memtable_->put(key, value);
@@ -164,12 +174,12 @@ bool Storage::put(const std::string &key, const EyaValue &value)
     }
     catch (const std::overflow_error &e)
     {
-        LOG_INFO("Start memtable rotating,because of:{}", e.what());
+        LOG_INFO("Start memtable rotating,because of:%s", e.what());
         rotate_memtable();
     }
     catch (const std::exception &e)
     {
-        LOG_ERROR("Exception caught while putting key: {}, error: {}", key, e.what());
+        LOG_ERROR("Exception caught while putting key: %s, error: %s", key, e.what());
         return false;
     }
 
@@ -179,33 +189,49 @@ bool Storage::put(const std::string &key, const EyaValue &value)
 std::optional<EyaValue> Storage::get(const std::string &key) const
 {
     // 1. 查 MemTable（最新数据）
-    auto result = memtable_->get(key);
-    if (result.has_value())
+    std::optional<EValue> result;
+    try
     {
-        return result;
+        result = memtable_->handle_value(key, [](EValue &value) -> EValue &
+                                         { 
+                                            if(value.is_deleted()||value.is_expired()){
+                                                throw std::out_of_range("key not found");
+                                            }
+                                            return value; });
+    }
+    catch (const std::out_of_range &e)
+    {
+        LOG_INFO("key not found in memtable:%s", key);
     }
 
     // 2. 查 Immutable MemTables
     result = get_from_immutable_memtables(key);
     if (result.has_value())
     {
-        return result;
+        if (result->is_expired() || result->is_deleted())
+        {
+            return std::nullopt;
+        }
+        return result->value;
     }
 
     // 3. 查 SSTable
     if (sstable_manager_)
     {
-        EyaValue value;
-        if (sstable_manager_->Get(key, &value))
+        EValue value;
+        if (sstable_manager_->get(key, &value))
         {
-            return value;
+            if(value.is_expired()||value.is_deleted()){
+                return std::nullopt;
+            }
+            return value.value;
         }
     }
 
     return std::nullopt;
 }
 
-std::optional<EyaValue> Storage::get_from_immutable_memtables(const std::string &key) const
+std::optional<EValue> Storage::get_from_immutable_memtables(const std::string &key) const
 {
     std::shared_lock<std::shared_mutex> lock(immutable_mutex_);
 
@@ -233,14 +259,26 @@ bool Storage::remove(const std::string &key)
     // 1. 写 WAL
     if (enable_wal_ && wal_ && !wal_->AppendDelete(key))
     {
-        LOG_ERROR("Failed to write delete to WAL for key: {}", key);
+        LOG_ERROR("Failed to write delete to WAL for key: %s", key);
         return false;
     }
 
     // 2. 从 MemTable 中移除
-    memtable_->remove(key);
-
-    return true;
+    try
+    {
+        memtable_->handle_value(key, [](EValue &value) -> EValue &
+                                {
+        value.deleted = true;
+        return value; });
+    }
+    catch (const std::out_of_range &e)
+    {
+        LOG_INFO("key not found in memtable:%s when remove", key);
+    }
+    // 3、未找到key,直接插入一条deleted数据
+    EValue evalue;
+    evalue.deleted = true;
+    return write_memtable(key, evalue);
 }
 
 bool Storage::contains(const std::string &key) const
@@ -252,7 +290,7 @@ std::vector<std::pair<std::string, EyaValue>> Storage::range(
     const std::string &start_key,
     const std::string &end_key) const
 {
-    std::map<std::string, EyaValue> merged_results;
+    std::map<std::string, EValue> merged_results;
 
     // 1. 从 SSTable 获取范围数据（最旧的数据）
     // TODO: 实现 SSTable 的范围查询并合并
@@ -288,7 +326,11 @@ std::vector<std::pair<std::string, EyaValue>> Storage::range(
     result.reserve(merged_results.size());
     for (auto &[k, v] : merged_results)
     {
-        result.emplace_back(k, std::move(v));
+        if (v.is_deleted() || v.is_expired())
+        {
+            continue;
+        }
+        result.emplace_back(k, std::move(v.value));
     }
 
     return result;
@@ -343,7 +385,7 @@ void Storage::flush_memtable_to_sstable()
         return;
     }
 
-    std::vector<std::unique_ptr<MemTable<std::string, EyaValue>>> to_flush;
+    std::vector<std::unique_ptr<MemTable<std::string, EValue>>> to_flush;
 
     // 获取所有待 Flush 的 Immutable MemTables
     {
@@ -364,10 +406,10 @@ void Storage::flush_memtable_to_sstable()
 
         if (sstable_manager_)
         {
-            auto meta = sstable_manager_->CreateFromEntries(entries);
+            auto meta = sstable_manager_->create_from_entries(entries);
             if (meta.has_value())
             {
-                LOG_INFO("Flushed MemTable to SSTable: {} with {} entries", meta->filepath, std::to_string(meta->entry_count));
+                LOG_INFO("Flushed MemTable to SSTable: %s with %s entries", meta->filepath, std::to_string(meta->entry_count));
             }
             else
             {
@@ -467,8 +509,8 @@ Storage::Stats Storage::get_stats() const
     // SSTable 统计
     if (sstable_manager_)
     {
-        stats.sstable_count = sstable_manager_->GetSSTableCount();
-        stats.total_sstable_size = sstable_manager_->GetTotalSize();
+        stats.sstable_count = sstable_manager_->get_sstable_count();
+        stats.total_sstable_size = sstable_manager_->get_total_size();
     }
     else
     {

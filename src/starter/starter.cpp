@@ -185,7 +185,7 @@ void EyaKVStarter::start()
     }
     catch (const std::exception &e)
     {
-        LOG_ERROR("Fatal error: {}", e.what());
+        LOG_ERROR("Fatal error: %s", e.what());
         exit(EXIT_FAILURE);
     }
 }

@@ -70,7 +70,7 @@ public:
      * 2. 写入 MemTable (内存索引)
      * 3. 如果 MemTable 满了，触发 Flush
      */
-    bool put(const std::string &key, const EyaValue &value);
+    bool put(const std::string &key, const EyaValue &value, const size_t alive_time = 0);
 
     /**
      * @brief 读取数据。
@@ -140,10 +140,10 @@ private:
     std::string sstable_dir_;
 
     // 活跃的 MemTable（接受新写入）
-    std::unique_ptr<MemTable<std::string, EyaValue>> memtable_;
+    std::unique_ptr<MemTable<std::string, EValue>> memtable_;
 
     // Immutable MemTables（等待 Flush 到 SSTable）
-    std::vector<std::unique_ptr<MemTable<std::string, EyaValue>>> immutable_memtables_;
+    std::vector<std::unique_ptr<MemTable<std::string, EValue>>> immutable_memtables_;
     mutable std::shared_mutex immutable_mutex_; // 保护 immutable_memtables_
 
     // SSTable 管理器
@@ -185,9 +185,11 @@ private:
     void rotate_memtable();
 
     // 在 Immutable MemTables 中查找
-    std::optional<EyaValue> get_from_immutable_memtables(const std::string &key) const;
+    std::optional<EValue> get_from_immutable_memtables(const std::string &key) const;
 
     // 创建新的 MemTable
-    std::unique_ptr<MemTable<std::string, EyaValue>> create_new_memtable();
+    std::unique_ptr<MemTable<std::string, EValue>> create_new_memtable();
+
+    bool write_memtable(const std::string &key, EValue &value);
 };
 #endif // STORAGE_H
