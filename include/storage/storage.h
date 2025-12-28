@@ -45,14 +45,16 @@ public:
                      const bool &enable_wal = true,
                      const unsigned long &wal_file_size = 64 * 1024 * 1024,
                      const unsigned long &max_wal_file_count = 16,
-                     const unsigned int &wal_sync_interval = 1000,
+                     const std::optional<unsigned int> &wal_flush_interval = 1000,
+                     const WALFlushStrategy &wal_flush_strategy = WALFlushStrategy::BACKGROUND_THREAD,
                      const size_t &memtable_size = 1024 * 1024 * 1024,
                      const size_t &skiplist_max_level = 16,
                      const double &skiplist_probability = 0.5,
                      const size_t &skiplist_max_node_count = 10000000,
+                     const SSTableMergeStrategy &sstable_merge_strategy = SSTableMergeStrategy::SIZE_TIERED_COMPACTION,
                      const unsigned int &sstable_merge_threshold = 5,
-                     const std::optional<unsigned int> &wal_flush_interval = 1000,
-                     const WALFlushStrategy &wal_flush_strategy = WALFlushStrategy::BACKGROUND_THREAD);
+                     const unsigned int &sstable_zero_level_size = 10,
+                     const double &sstable_level_size_ratio = 10.0);
     ~Storage();
 
     // 禁止拷贝
@@ -159,7 +161,6 @@ private:
     size_t skiplist_max_level_;
     double skiplist_probability_;
     size_t skiplist_max_node_count_;
-    unsigned int sstable_merge_threshold_;
     WALFlushStrategy wal_flush_strategy_;
     std::optional<unsigned int> wal_flush_interval_;
 

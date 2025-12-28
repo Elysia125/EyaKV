@@ -10,23 +10,24 @@ Storage::Storage(const std::string &data_dir,
                  const bool &enable_wal,
                  const unsigned long &wal_file_size,
                  const unsigned long &max_wal_file_count,
-                 const unsigned int &wal_sync_interval,
+                 const std::optional<unsigned int> &wal_flush_interval,
+                 const WALFlushStrategy &wal_flush_strategy,
                  const size_t &memtable_size,
                  const size_t &skiplist_max_level,
                  const double &skiplist_probability,
                  const size_t &skiplist_max_node_count,
+                 const SSTableMergeStrategy &sstable_merge_strategy,
                  const unsigned int &sstable_merge_threshold,
-                 const std::optional<unsigned int> &wal_flush_interval,
-                 const WALFlushStrategy &wal_flush_strategy) : data_dir_(data_dir),
-                                                               enable_wal_(enable_wal),
-                                                               read_only_(read_only),
-                                                               memtable_size_(memtable_size),
-                                                               skiplist_max_level_(skiplist_max_level),
-                                                               skiplist_probability_(skiplist_probability),
-                                                               skiplist_max_node_count_(skiplist_max_node_count),
-                                                               sstable_merge_threshold_(sstable_merge_threshold),
-                                                               wal_flush_interval_(wal_flush_interval),
-                                                               wal_flush_strategy_(wal_flush_strategy)
+                 const unsigned int &sstable_zero_level_size,
+                 const double &sstable_level_size_ratio) : data_dir_(data_dir),
+                                                           enable_wal_(enable_wal),
+                                                           read_only_(read_only),
+                                                           memtable_size_(memtable_size),
+                                                           skiplist_max_level_(skiplist_max_level),
+                                                           skiplist_probability_(skiplist_probability),
+                                                           skiplist_max_node_count_(skiplist_max_node_count),
+                                                           wal_flush_interval_(wal_flush_interval),
+                                                           wal_flush_strategy_(wal_flush_strategy)
 {
     // 确保数据目录存在
     if (!std::filesystem::exists(data_dir_))
@@ -51,7 +52,11 @@ Storage::Storage(const std::string &data_dir,
     memtable_ = create_new_memtable();
 
     // 初始化 SSTable 管理器
-    sstable_manager_ = std::make_unique<SSTableManager>(sstable_dir_,sstable_merge_threshold_);
+    sstable_manager_ = std::make_unique<SSTableManager>(sstable_dir_,
+                                                        sstable_merge_strategy,
+                                                        sstable_merge_threshold,
+                                                        sstable_zero_level_size,
+                                                        sstable_level_size_ratio);
 
     // 初始化 WAL
     if (enable_wal_)
@@ -176,6 +181,7 @@ bool Storage::write_memtable(const std::string &key, EValue &value)
     {
         LOG_INFO("Start memtable rotating,because of:%s", e.what());
         rotate_memtable();
+        memtable_->put(key, value);
     }
     catch (const std::exception &e)
     {
@@ -198,6 +204,10 @@ std::optional<EyaValue> Storage::get(const std::string &key) const
                                                 throw std::out_of_range("key not found");
                                             }
                                             return value; });
+        if (result.has_value())
+        {
+            return result->value;
+        }
     }
     catch (const std::out_of_range &e)
     {
@@ -221,7 +231,8 @@ std::optional<EyaValue> Storage::get(const std::string &key) const
         EValue value;
         if (sstable_manager_->get(key, &value))
         {
-            if(value.is_expired()||value.is_deleted()){
+            if (value.is_expired() || value.is_deleted())
+            {
                 return std::nullopt;
             }
             return value.value;
@@ -406,7 +417,7 @@ void Storage::flush_memtable_to_sstable()
 
         if (sstable_manager_)
         {
-            auto meta = sstable_manager_->create_from_entries(entries);
+            auto meta = sstable_manager_->create_new_sstable(entries);
             if (meta.has_value())
             {
                 LOG_INFO("Flushed MemTable to SSTable: %s with %s entries", meta->filepath, std::to_string(meta->entry_count));

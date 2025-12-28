@@ -248,9 +248,12 @@ bool SSTable::load()
         file_ = nullptr;
         return false;
     }
-
+    // 读取level
+    uint32_t level;
+    fseek(file_, file_size - sizeof(level), SEEK_SET);
+    fread(&level, 1, sizeof(level), file_);
     // 读取 Footer
-    fseek(file_, file_size - SSTableFooter::SIZE, SEEK_SET);
+    fseek(file_, file_size - sizeof(level) - SSTableFooter::SIZE, SEEK_SET);
     std::vector<char> footer_data(SSTableFooter::SIZE);
     fread(footer_data.data(), 1, SSTableFooter::SIZE, file_);
     footer_ = SSTableFooter::deserialize(footer_data.data());
@@ -303,7 +306,7 @@ bool SSTable::load()
     meta_.max_key = max_key;
     meta_.file_size = file_size;
     meta_.entry_count = footer_.entry_count;
-    meta_.level = 0; // 默认为 Level 0
+    meta_.level = level;
 
     // 从文件名提取序列号
     std::filesystem::path path(filepath_);
@@ -506,8 +509,8 @@ void SSTable::for_each(const std::function<bool(const std::string &, const EValu
 }
 
 // SSTableBuilder 实现
-SSTableBuilder::SSTableBuilder(const std::string &filepath, size_t block_size)
-    : filepath_(filepath), block_size_(block_size), entry_count_(0), current_offset_(0), entries_in_block_(0), finished_(false), aborted_(false), file_(nullptr)
+SSTableBuilder::SSTableBuilder(const std::string &filepath, const uint32_t level, size_t block_size)
+    : filepath_(filepath), level_(level), block_size_(block_size), entry_count_(0), current_offset_(0), entries_in_block_(0), finished_(false), aborted_(false), file_(nullptr)
 {
     file_ = fopen(filepath_.c_str(), "wb");
     if (file_ == nullptr)
@@ -668,6 +671,10 @@ void SSTableBuilder::write_footer()
     // 写入 Footer
     std::string footer_data = footer.serialize();
     fwrite(footer_data.data(), 1, footer_data.size(), file_);
+    current_offset_ += footer_data.size();
+    // 写入level
+    fwrite(&level_, 1, sizeof(level_), file_);
+    current_offset_ += sizeof(level_);
 }
 
 bool SSTableBuilder::finish()
@@ -691,19 +698,6 @@ bool SSTableBuilder::finish()
     LOG_INFO("SSTable created: %s with %zu entries", filepath_.c_str(), entry_count_);
 
     return true;
-}
-
-SSTableMeta SSTableBuilder::get_meta() const
-{
-    SSTableMeta meta;
-    meta.filepath = filepath_;
-    meta.min_key = min_key_;
-    meta.max_key = max_key_;
-    meta.file_size = current_offset_;
-    meta.entry_count = entry_count_;
-    meta.level = 0;
-    meta.sequence_number = 0;
-    return meta;
 }
 
 void SSTableBuilder::abort()
@@ -732,15 +726,23 @@ void SSTableBuilder::abort()
 }
 
 // SSTableManager 实现
-SSTableManager::SSTableManager(const std::string &data_dir, const uint32_t &sstable_merge_threshold)
-    : data_dir_(data_dir), sstable_merge_threshold_(sstable_merge_threshold), next_sequence_number_(1)
+SSTableManager::SSTableManager(const std::string &data_dir,
+                               const SSTableMergeStrategy &merge_strategy,
+                               const uint32_t &sstable_merge_threshold,
+                               const uint64_t &sstable_zero_level_size,
+                               const double &sstable_level_size_ratio)
+    : data_dir_(data_dir), merge_strategy_(merge_strategy), sstable_merge_threshold_(sstable_merge_threshold),
+      sstable_zero_level_size_(sstable_zero_level_size * 1024 * 1024), sstable_level_size_ratio_(sstable_level_size_ratio),
+      next_sequence_number_(1), sstable_count_(0), max_level_(0)
 {
     // 确保目录存在
     if (!std::filesystem::exists(data_dir_))
     {
         std::filesystem::create_directories(data_dir_);
     }
-
+    level_sstables_.resize(max_level_ + 1, std::vector<std::unique_ptr<SSTable>>());
+    level_sstable_size_.resize(max_level_ + 1, 0);
+    level_mutex_.resize(max_level_ + 1, std::recursive_mutex());
     // 加载现有的 SSTable 文件
     load_all();
 }
@@ -755,7 +757,7 @@ std::string SSTableManager::generate_filename()
 
 bool SSTableManager::load_all()
 {
-    sstables_.clear();
+    level_sstables_.clear();
     next_sequence_number_ = 1;
 
     if (!std::filesystem::exists(data_dir_))
@@ -777,8 +779,17 @@ bool SSTableManager::load_all()
                 {
                     next_sequence_number_ = seq + 1;
                 }
-
-                sstables_.push_back(std::move(sstable));
+                uint32_t level = sstable->get_meta().level;
+                if (level > max_level_)
+                {
+                    max_level_ = level;
+                    level_sstables_.resize(max_level_ + 1, std::vector<std::unique_ptr<SSTable>>());
+                    level_sstable_size_.resize(max_level_ + 1, 0);
+                    level_mutex_.resize(max_level_ + 1, std::recursive_mutex());
+                }
+                level_sstables_[level].push_back(std::move(sstable));
+                level_sstable_size_[level] += sstable->get_meta().file_size;
+                sstable_count_++;
             }
             catch (const std::exception &e)
             {
@@ -791,58 +802,312 @@ bool SSTableManager::load_all()
     // 按序列号排序（最新的在前）
     sort_sstables_by_sequence();
 
-    LOG_INFO("Loaded %zu SSTable files from %s", sstables_.size(), data_dir_.c_str());
-
+    LOG_INFO("Loaded %zu SSTable files from %s", sstable_count_, data_dir_.c_str());
+    normalize_sstables();
     return true;
 }
-bool SSTableManager::merge_sstables()
+
+void SSTableManager::normalize_sstables()
 {
-    if (sstables_.size() < sstable_merge_threshold_)
+    // 读取数据目录下面的.smeta文件
+    std::string smeta_file = PathUtils::CombinePath(data_dir_, ".smeta");
+    if (!std::filesystem::exists(smeta_file))
+    {
+        LOG_INFO("SSTableManager: .smeta file not found, merge all sstables to max level");
+        for (int i = 0; i < max_level_; i++)
+        {
+            merge_sstables_by_strategy_0(i);
+        }
+        FILE *file = fopen(smeta_file.c_str(), "wb");
+        if (file == nullptr)
+        {
+            LOG_ERROR("Failed to open .smeta file: %s to write merge strategy", smeta_file.c_str());
+            return;
+        }
+        std::string strategy_str = std::to_string(static_cast<int>(merge_strategy_));
+        fwrite(strategy_str.data(), 1, strategy_str.size(), file);
+        fclose(file);
+    }
+    else
+    {
+        FILE *file = fopen(smeta_file.c_str(), "rb");
+        if (file == nullptr)
+        {
+            LOG_ERROR("Failed to open .smeta file: %s, merge all sstables to max level", smeta_file.c_str());
+            for (int i = 0; i < max_level_; i++)
+            {
+                merge_sstables_by_strategy_0(i);
+            }
+        }
+        // 读取文件内容
+        std::string content;
+        fseek(file, 0, SEEK_END);
+        content.resize(ftell(file));
+        rewind(file);
+        fread(content.data(), 1, content.size(), file);
+        fclose(file);
+        SSTableMergeStrategy last_strategy;
+        try
+        {
+            last_strategy = static_cast<SSTableMergeStrategy>(std::stoi(content));
+        }
+        catch (const std::exception &e)
+        {
+            LOG_ERROR("Failed to parse .smeta file: %s, merge all sstables to max level", smeta_file.c_str());
+            for (int i = 0; i < max_level_; i++)
+            {
+                merge_sstables_by_strategy_0(i);
+            }
+        }
+        if (last_strategy != merge_strategy_)
+        {
+            LOG_INFO("SSTableManager: merge strategy changed, merge all sstables to max level");
+            for (int i = 0; i < max_level_; i++)
+            {
+                merge_sstables_by_strategy_0(i);
+            }
+            file = fopen(smeta_file.c_str(), "wb");
+            if (file == nullptr)
+            {
+                LOG_ERROR("Failed to open .smeta file: %s to write merge strategy", smeta_file.c_str());
+                return;
+            }
+            std::string strategy_str = std::to_string(static_cast<int>(merge_strategy_));
+            fwrite(strategy_str.data(), 1, strategy_str.size(), file);
+            fclose(file);
+        }
+    }
+}
+
+bool SSTableManager::merge_sstables(const uint32_t level)
+{
+    if (level > max_level_)
     {
         return false;
     }
-    std::map<std::string, EValue> map;
-    std::vector<std::string> file_paths;
-    for (auto it = sstables_.rbegin(); it != sstables_.rend(); it++)
+    if (merge_strategy_ == SSTableMergeStrategy::SIZE_TIERED_COMPACTION)
     {
-        (*it)->for_each([&map](const std::string &key, const EValue &value)
-                        {
+        if (level_sstables_[level].size() < sstable_merge_threshold_)
+        {
+            return true;
+        }
+        return merge_sstables_by_strategy_0(level);
+    }
+    else if (merge_strategy_ == SSTableMergeStrategy::LEVEL_COMPACTION)
+    {
+        if (level_sstable_size_[level] < sstable_zero_level_size_ * pow(sstable_level_size_ratio_, level))
+        {
+            return true;
+        }
+        return merge_sstables_by_strategy_1(level);
+    }
+    else
+    {
+        throw std::runtime_error("Unknown merge strategy");
+    }
+}
+
+bool SSTableManager::merge_sstables_by_strategy_0(const uint32_t level)
+{
+    {
+        std::lock_guard<std::recursive_mutex> lock(level_mutex_[level]);
+        std::vector<std::unique_ptr<SSTable>> &sstables = level_sstables_[level];
+        if (sstables.size() < 1)
+        {
+            return true;
+        }
+        std::map<std::string, EValue> map;
+        std::vector<std::string> file_paths;
+        for (auto it = sstables.rbegin(); it != sstables.rend(); it++)
+        {
+            (*it)->for_each([&map](const std::string &key, const EValue &value)
+                            {
             map[key] = value;
             return true; });
-        file_paths.push_back((*it)->get_meta().filepath);
-    }
-    std::vector<std::pair<std::string, EValue>> entries;
-    for (const auto &[key, value] : map)
-    {
-        if (value.is_deleted() || value.is_expired())
-        {
-            continue;
+            file_paths.push_back((*it)->get_meta().filepath);
         }
-        entries.emplace_back(key, value);
+        std::vector<std::pair<std::string, EValue>> entries;
+        for (const auto &[key, value] : map)
+        {
+            if (value.is_deleted() || value.is_expired())
+            {
+                continue;
+            }
+            entries.emplace_back(key, value);
+        }
+        if (entries.empty())
+        {
+            // 如果没有有效的数据，则删除所有sstable文件
+            for (const auto &file_path : file_paths)
+            {
+                std::filesystem::remove(file_path);
+            }
+            level_sstables_[level].clear();
+            level_sstable_size_[level] = 0;
+            return true;
+        }
+        auto meta = create_from_entries(entries, level + 1);
+        if (meta == std::nullopt)
+        {
+            LOG_ERROR("Failed to merge SSTable files of level %d", level);
+            return false;
+        }
+        // 删除旧的sstable文件
+        for (const auto &file_path : file_paths)
+        {
+            std::filesystem::remove(file_path);
+        }
+        level_sstables_[level].clear();
+        level_sstable_size_[level] = 0;
     }
-    auto meta = create_from_entries(entries);
-    if (!meta)
-    {
-        return false;
-    }
-    // 删除旧的sstable文件
-    for (const auto &file_path : file_paths)
-    {
-        std::filesystem::remove(file_path);
-    }
+    merge_sstables(level + 1);
     return true;
 }
+
+bool SSTableManager::merge_sstables_by_strategy_1(const uint32_t level)
+{
+    if (level == max_level_ || level_sstables_[level + 1].empty())
+    {
+        // 最后一层，直接合并
+        if (level_sstables_[level].size() > 1)
+        {
+            return merge_sstables_by_strategy_0(level);
+        }
+        else
+        {
+            // 如果只有一个sstable文件，则不合并
+            return true;
+        }
+    }
+    else
+    {
+        bool merged = false;
+        {
+            std::lock_guard<std::recursive_mutex> lock(level_mutex_[level]);
+            std::lock_guard<std::recursive_mutex> lock2(level_mutex_[level + 1]);
+            // 选择level层的sstable文件中最旧的一个文件
+            auto &sstables = level_sstables_[level];
+            if (sstables.empty())
+            {
+                return true;
+            }
+            // 获取level+1层的所有sstables
+            auto &next_sstables = level_sstables_[level + 1];
+            int rindex = 0;
+            for (auto it = sstables.rbegin(); it != sstables.rend(); it++)
+            {
+                rindex++;
+                auto &sstable = *it;
+                std::vector<uint32_t> merged_sstables_index;
+                std::vector<std::string> file_paths;
+                file_paths.push_back(sstable->get_filepath());
+                for (int i = 0; i < next_sstables.size(); i++)
+                {
+                    auto &next_sstable = next_sstables[i];
+                    // 如果有重叠则加入合并
+                    if (!(sstable->get_meta().max_key < next_sstable->get_meta().min_key ||
+                          sstable->get_meta().min_key > next_sstable->get_meta().max_key))
+                    {
+                        merged_sstables_index.push_back(i);
+                        file_paths.push_back(next_sstable->get_filepath());
+                    }
+                }
+                if (merged_sstables_index.empty())
+                {
+                    continue;
+                }
+                std::map<std::string, EValue> map;
+                for (auto mit = merged_sstables_index.rbegin(); mit != merged_sstables_index.rend(); mit++)
+                {
+                    auto &sst = next_sstables[*mit];
+                    sst->for_each([&map](const std::string &key, const EValue &value)
+                                  {
+            map[key] = value;
+            return true; });
+                }
+                sstable->for_each([&map](const std::string &key, const EValue &value)
+                                  {
+            map[key] = value;
+            return true; });
+                std::vector<std::pair<std::string, EValue>> entries;
+                for (const auto &[key, value] : map)
+                {
+                    if (value.is_deleted() || value.is_expired())
+                    {
+                        continue;
+                    }
+                    entries.emplace_back(key, value);
+                }
+                if (entries.empty())
+                {
+                    // 如果合并的sstable文件中没有有效的数据
+                    // 删除旧的sstable文件
+                    for (const auto &file_path : file_paths)
+                    {
+                        std::filesystem::remove(file_path);
+                    }
+                    for (auto mit = merged_sstables_index.rbegin(); mit != merged_sstables_index.rend(); mit++)
+                    {
+                        level_sstable_size_[level + 1] -= next_sstables[*mit]->get_meta().file_size;
+                        next_sstables.erase(next_sstables.begin() + *mit);
+                    }
+                    sstables.erase(sstables.end() - rindex);
+                    level_sstable_size_[level] -= sstable->get_meta().file_size;
+                    merged = true;
+                    break;
+                }
+                auto meta = create_from_entries(entries, level + 1);
+                if (meta == std::nullopt)
+                {
+                    LOG_ERROR("Failed to merge SSTable files of level %d", level);
+                    return false;
+                }
+                // 删除旧的sstable文件
+                for (const auto &file_path : file_paths)
+                {
+                    std::filesystem::remove(file_path);
+                }
+                for (auto mit = merged_sstables_index.rbegin(); mit != merged_sstables_index.rend(); mit++)
+                {
+                    level_sstable_size_[level + 1] -= next_sstables[*mit]->get_meta().file_size;
+                    next_sstables.erase(next_sstables.begin() + *mit);
+                }
+                sstables.erase(sstables.end() - rindex);
+                level_sstable_size_[level] -= sstable->get_meta().file_size;
+                merged = true;
+                break;
+            }
+        }
+        if (merged)
+        {
+            // 合并完成后，继续合并下一层的sstable文件
+            merge_sstables(level); // 确保该层大小符合要求
+            merge_sstables(level + 1);
+            return true;
+        }
+        else
+        {
+            // 没有合并，说明level层的sstable文件全部文件都与level+1层的sstable文件不重叠
+            // 直接合并该层的所有sstable文件
+            return merge_sstables_by_strategy_0(level);
+        }
+    }
+}
+
 void SSTableManager::sort_sstables_by_sequence()
 {
-    std::sort(sstables_.begin(), sstables_.end(),
-              [](const auto &a, const auto &b)
-              {
-                  return a->get_meta().sequence_number > b->get_meta().sequence_number;
-              });
+    for (auto &sstables : level_sstables_)
+    {
+        std::sort(sstables.begin(), sstables.end(),
+                  [](const auto &a, const auto &b)
+                  {
+                      return a->get_meta().sequence_number > b->get_meta().sequence_number;
+                  });
+    }
 }
 
 std::optional<SSTableMeta> SSTableManager::create_from_entries(
-    const std::vector<std::pair<std::string, EValue>> &entries)
+    const std::vector<std::pair<std::string, EValue>> &entries, const uint32_t level)
 {
 
     if (entries.empty())
@@ -851,7 +1116,7 @@ std::optional<SSTableMeta> SSTableManager::create_from_entries(
     }
 
     std::string filepath = generate_filename();
-    SSTableBuilder builder(filepath);
+    SSTableBuilder builder(filepath, level);
 
     for (const auto &[key, value] : entries)
     {
@@ -869,24 +1134,41 @@ std::optional<SSTableMeta> SSTableManager::create_from_entries(
     SSTableMeta meta = sstable->get_meta();
 
     // 添加到管理列表
-    sstables_.insert(sstables_.begin(), std::move(sstable));
-
+    if (level > max_level_)
+    {
+        max_level_ = level;
+        level_sstables_.resize(max_level_ + 1, std::vector<std::unique_ptr<SSTable>>());
+        level_sstable_size_.resize(max_level_ + 1, 0);
+        level_mutex_.resize(max_level_ + 1, std::recursive_mutex());
+    }
+    {
+        std::lock_guard<std::recursive_mutex> lock(level_mutex_[level]);
+        level_sstables_[level].insert(level_sstables_[level].begin(), std::move(sstable));
+        level_sstable_size_[level] += meta.file_size;
+    }
     return meta;
 }
 
 bool SSTableManager::get(const std::string &key, EValue *value) const
 {
     // 按顺序查询（最新的在前）
-    for (const auto &sstable : sstables_)
+    for (const auto &sstables : level_sstables_)
     {
-        auto result = sstable->get(key);
-        if (result.has_value())
+        for (const auto &sstable : sstables)
         {
-            if (value)
+            auto result = sstable->get(key);
+            if (result.has_value())
             {
-                *value = result.value();
+                if (result.value().is_deleted() || result.value().is_expired())
+                {
+                    return false;
+                }
+                if (value)
+                {
+                    *value = result.value();
+                }
+                return true;
             }
-            return true;
         }
     }
     return false;
@@ -895,9 +1177,19 @@ bool SSTableManager::get(const std::string &key, EValue *value) const
 size_t SSTableManager::get_total_size() const
 {
     size_t total = 0;
-    for (const auto &sstable : sstables_)
+    for (const auto level_size : level_sstable_size_)
     {
-        total += sstable->get_meta().file_size;
+        total += level_size;
     }
     return total;
+}
+
+std::optional<SSTableMeta> SSTableManager::create_new_sstable(const std::vector<std::pair<std::string, EValue>> &entries)
+{
+    std::optional<SSTableMeta> meta = create_from_entries(entries, 0);
+    if (meta.has_value())
+    {
+        merge_sstables(0);
+    }
+    return meta;
 }

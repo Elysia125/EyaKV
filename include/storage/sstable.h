@@ -10,7 +10,7 @@
 #include <cstdint>
 #include <functional>
 #include "common/common.h"
-
+#include "config/config.h"
 /**
  * @brief SSTable 文件格式:
  *
@@ -238,6 +238,7 @@ public:
      * @param block_size 数据块大小（默认4KB）
      */
     explicit SSTableBuilder(const std::string &filepath,
+                            const uint32_t level = 0,
                             size_t block_size = SSTABLE_BLOCK_SIZE);
     ~SSTableBuilder();
 
@@ -269,18 +270,13 @@ public:
     size_t get_file_size() const { return current_offset_; }
 
     /**
-     * @brief 获取构建后的SSTable元数据
-     * （调用Finish后有效）
-     */
-    SSTableMeta get_meta() const;
-
-    /**
      * @brief 取消构建，删除临时文件
      */
     void abort();
 
 private:
     std::string filepath_;
+    const uint32_t level_;
     FILE *file_;
     size_t block_size_;
     size_t entry_count_;
@@ -320,7 +316,11 @@ private:
 class SSTableManager
 {
 public:
-    explicit SSTableManager(const std::string &data_dir,const uint32_t &sstable_merge_threshold);
+    explicit SSTableManager(const std::string &data_dir,
+                            const SSTableMergeStrategy &merge_strategy,
+                            const uint32_t &sstable_merge_threshold,
+                            const uint64_t &sstable_zero_level_size,
+                            const double &sstable_level_size_ratio);
     ~SSTableManager() = default;
 
     /**
@@ -328,9 +328,7 @@ public:
      * @param entries MemTable中的所有条目（按key排序）
      * @return 新创建的SSTable的元数据
      */
-    std::optional<SSTableMeta> create_from_entries(
-        const std::vector<std::pair<std::string, EValue>> &entries);
-
+    std::optional<SSTableMeta> create_new_sstable(const std::vector<std::pair<std::string, EValue>> &entries);
     /**
      * @brief 在所有SSTable中查找key
      * @param key 要查找的key
@@ -340,15 +338,9 @@ public:
     bool get(const std::string &key, EValue *value) const;
 
     /**
-     * @brief 加载数据目录下的所有SSTable
-     * @return 加载成功返回true
-     */
-    bool load_all();
-
-    /**
      * @brief 获取所有SSTable的数量
      */
-    size_t get_sstable_count() const { return sstables_.size(); }
+    size_t get_sstable_count() const { return sstable_count_; }
 
     /**
      * @brief 获取所有SSTable的总大小
@@ -357,7 +349,14 @@ public:
 
 private:
     std::string data_dir_;
-    std::vector<std::unique_ptr<SSTable>> sstables_;
+    uint32_t sstable_count_;
+    std::vector<std::vector<std::unique_ptr<SSTable>>> level_sstables_;
+    std::vector<uint64_t> level_sstable_size_;
+    std::vector<std::recursive_mutex> level_mutex_;
+    uint32_t max_level_;
+    SSTableMergeStrategy merge_strategy_;
+    uint64_t sstable_zero_level_size_; // bit
+    double sstable_level_size_ratio_;
     uint64_t next_sequence_number_;
     uint32_t sstable_merge_threshold_;
     // 生成新的SSTable文件名
@@ -366,7 +365,22 @@ private:
     // 按照查询顺序排序SSTable（最新的在前）
     void sort_sstables_by_sequence();
 
-    bool merge_sstables();
+    bool merge_sstables(const uint32_t level);
+
+    bool merge_sstables_by_strategy_0(const uint32_t level);
+
+    bool merge_sstables_by_strategy_1(const uint32_t level);
+
+    std::optional<SSTableMeta> create_from_entries(
+        const std::vector<std::pair<std::string, EValue>> &entries, const uint32_t level = 0);
+
+    /**
+     * @brief 加载数据目录下的所有SSTable
+     * @return 加载成功返回true
+     */
+    bool load_all();
+
+    void normalize_sstables();
 };
 
 #endif // SSTABLE_H_

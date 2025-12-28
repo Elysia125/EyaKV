@@ -97,7 +97,6 @@ Storage *EyaKVStarter::initialize_storage()
     }
     u_long wal_file_size = strtoul(config.GetConfig(WAL_FILE_SIZE_KEY).value().c_str(), nullptr, 10);
     u_long max_wal_file_count = strtoul(config.GetConfig(WAL_FILE_MAX_COUNT_KEY).value().c_str(), nullptr, 10);
-    u_int wal_sync_interval = static_cast<u_int>(std::stoul(config.GetConfig(WAL_SYNC_INTERVAL_KEY).value()));
     size_t memtable_size = static_cast<size_t>(std::stoul(config.GetConfig(MEMTABLE_SIZE_KEY).value()));
     size_t skiplist_max_level = static_cast<size_t>(std::stoul(config.GetConfig(SKIPLIST_MAX_LEVEL_KEY).value()));
     double skiplist_probability = std::stod(config.GetConfig(SKIPLIST_PROBABILITY_KEY).value());
@@ -116,20 +115,25 @@ Storage *EyaKVStarter::initialize_storage()
         int strategy_int = std::stoi(wal_flush_strategy_str.value());
         wal_flush_strategy = static_cast<WALFlushStrategy>(strategy_int);
     }
+    SSTableMergeStrategy sstable_merge_strategy = static_cast<SSTableMergeStrategy>(std::stoi(config.GetConfig(SSTABLE_MERGE_STRATEGY_KEY).value()));
+    uint32_t sstable_zero_level_size = static_cast<uint32_t>(std::stoul(config.GetConfig(SSTABLE_ZERO_LEVEL_SIZE_KEY).value()));
+    uint32_t sstable_level_size_ratio = static_cast<uint32_t>(std::stoul(config.GetConfig(SSTABLE_LEVEL_SIZE_RATIO_KEY).value()));
     static Storage *st = new Storage(data_dir.value(),
                                      wal_dir.value(),
                                      read_only,
                                      wal_enable,
                                      wal_file_size,
                                      max_wal_file_count,
-                                     wal_sync_interval,
+                                     wal_flush_interval,
+                                     wal_flush_strategy,
                                      memtable_size,
                                      skiplist_max_level,
                                      skiplist_probability,
                                      skiplist_max_node_count,
+                                     sstable_merge_strategy,
                                      sstable_merge_threshold,
-                                     wal_flush_interval,
-                                     wal_flush_strategy);
+                                     sstable_zero_level_size,
+                                     sstable_level_size_ratio);
     std::cout << "Storage initialized. Data directory: " << data_dir.value() << std::endl;
     return st;
 }

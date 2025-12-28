@@ -182,7 +182,7 @@ bool Wal::Recover(MemTable<std::string, EValue> *memtable)
 
             reader.close();
             // 删除已恢复的日志文件
-            std::filesystem::remove(filepath);
+            //std::filesystem::remove(filepath);
             LOG_INFO("Completed recovery from WAL file: %s", filepath);
         }
     }
@@ -199,10 +199,6 @@ bool Wal::Clear()
     {
         fclose(wal_file_);
     }
-    // std::string filepath = PathUtils::CombinePath(wal_dir_, WAL_FILE_NAME);
-    // Truncate file
-    // std::ofstream file(filepath, std::ios::out | std::ios::trunc | std::ios::binary);
-    // file.close();
     // 删除wal目录下的所有wal文件
     fs::directory_iterator dir_iter(wal_dir_);
     for (const auto &entry : dir_iter)
