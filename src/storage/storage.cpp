@@ -61,12 +61,12 @@ Storage::Storage(const std::string &data_dir,
     // 初始化 WAL
     if (enable_wal_)
     {
-        wal_ = std::make_unique<Wal>(wal_dir,
-                                     wal_file_size,
-                                     max_wal_file_count,
-                                     wal_flush_strategy_ == WALFlushStrategy::IMMEDIATE_ON_WRITE);
+        wal_ = std::make_unique<Wal>(wal_dir, wal_flush_strategy_ == WALFlushStrategy::IMMEDIATE_ON_WRITE);
     }
-
+    else
+    {
+        current_wal_filename_ = std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
+    }
     // 恢复数据
     recover();
 
@@ -127,15 +127,57 @@ void Storage::recover()
 {
     if (wal_ && memtable_)
     {
-        bool success = wal_->Recover(memtable_.get());
+        std::unique_lock<std::shared_mutex> lock(immutable_mutex_);
+        bool success = wal_->Recover([this](std::string filename, std::string key, std::optional<EValue> value)
+                                     {
+                                        if(immutable_memtables_.find(filename) == immutable_memtables_.end()){
+                                            immutable_memtables_[filename] = create_new_memtable();
+                                        }
+                                        auto& memtable = immutable_memtables_[filename];
+                                        if (value.has_value())
+                                        {
+                                            memtable->put(key, value.value());
+                                        }
+                                        else
+                                        {
+                                            memtable->remove(key);
+                                        } });
         if (!success)
         {
             LOG_ERROR("Storage: WAL recovery failed.");
         }
         else
         {
-            LOG_INFO("Storage: WAL recovery completed. MemTable size: %s",
-                     std::to_string(memtable_->size()));
+            LOG_INFO("Storage: WAL recovery completed.");
+            if (immutable_memtables_.empty())
+            {
+                return;
+            }
+            // 判断最后一个（最新的）memtable是否需要flush
+            auto last_memtable = immutable_memtables_.rbegin();
+            if (!last_memtable->second->should_flush() && !read_only_)
+            {
+                memtable_ = std::move(last_memtable->second);
+                if (wal_ && enable_wal_)
+                {
+                    wal_->OpenWALFile(last_memtable->first);
+                    current_wal_filename_ = last_memtable->first;
+                }
+                immutable_memtables_.erase(last_memtable->first);
+            }
+            else if (!read_only_ && enable_wal_ && wal_)
+            {
+                current_wal_filename_ = wal_->OpenWALFile();
+            }
+            if (immutable_memtables_.empty())
+            {
+                return;
+            }
+            // 通知后台线程进行 Flush
+            {
+                std::lock_guard<std::mutex> lock(flush_mutex_);
+                flush_cv_.notify_one();
+            }
         }
     }
 }
@@ -247,9 +289,9 @@ std::optional<EValue> Storage::get_from_immutable_memtables(const std::string &k
     std::shared_lock<std::shared_mutex> lock(immutable_mutex_);
 
     // 从最新到最旧查询 Immutable MemTables
-    for (auto it = immutable_memtables_.rbegin(); it != immutable_memtables_.rend(); ++it)
+    for (auto it = immutable_memtables_.begin(); it != immutable_memtables_.end(); ++it)
     {
-        auto result = (*it)->get(key);
+        auto result = it->second->get(key);
         if (result.has_value())
         {
             return result;
@@ -304,14 +346,16 @@ std::vector<std::pair<std::string, EyaValue>> Storage::range(
     std::map<std::string, EValue> merged_results;
 
     // 1. 从 SSTable 获取范围数据（最旧的数据）
-    // TODO: 实现 SSTable 的范围查询并合并
-
+    if (sstable_manager_)
+    {
+        merged_results = sstable_manager_->range_query(start_key, end_key);
+    }
     // 2. 从 Immutable MemTables 获取并覆盖
     {
         std::shared_lock<std::shared_mutex> lock(immutable_mutex_);
-        for (const auto &imm : immutable_memtables_)
+        for (auto it = immutable_memtables_.rbegin(); it != immutable_memtables_.rend(); ++it)
         {
-            auto entries = imm->get_all_entries();
+            auto entries = it->second->get_all_entries();
             for (const auto &[k, v] : entries)
             {
                 if (k >= start_key && k <= end_key)
@@ -352,9 +396,16 @@ void Storage::rotate_memtable()
     // 将当前 MemTable 转换为 Immutable
     {
         std::unique_lock<std::shared_mutex> lock(immutable_mutex_);
-        immutable_memtables_.push_back(std::move(memtable_));
+        immutable_memtables_[current_wal_filename_] = std::move(memtable_);
     }
-
+    if (enable_wal_ && wal_)
+    {
+        current_wal_filename_ = wal_->OpenWALFile();
+    }
+    else
+    {
+        current_wal_filename_ = std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
+    }
     // 创建新的 MemTable
     memtable_ = create_new_memtable();
 
@@ -362,11 +413,6 @@ void Storage::rotate_memtable()
     {
         std::lock_guard<std::mutex> lock(flush_mutex_);
         flush_cv_.notify_one();
-    }
-    // 清空 WAL（新的 MemTable 从空开始）
-    if (enable_wal_ && wal_)
-    {
-        wal_->Clear();
     }
 }
 
@@ -390,24 +436,11 @@ void Storage::force_flush()
 
 void Storage::flush_memtable_to_sstable()
 {
-    if (read_only_)
-    {
-        LOG_ERROR("Storage is in read-only mode. Flush operation is not allowed.");
-        return;
-    }
-
-    std::vector<std::unique_ptr<MemTable<std::string, EValue>>> to_flush;
-
-    // 获取所有待 Flush 的 Immutable MemTables
-    {
-        std::unique_lock<std::shared_mutex> lock(immutable_mutex_);
-        to_flush = std::move(immutable_memtables_);
-        immutable_memtables_.clear();
-    }
-
     // Flush 每个 MemTable 到 SSTable
-    for (auto &imm : to_flush)
+    for (auto it = immutable_memtables_.begin(); it != immutable_memtables_.end();)
     {
+        std::string filename = it->first;
+        auto &imm = it->second;
         if (imm->size() == 0)
         {
             continue;
@@ -421,12 +454,18 @@ void Storage::flush_memtable_to_sstable()
             if (meta.has_value())
             {
                 LOG_INFO("Flushed MemTable to SSTable: %s with %s entries", meta->filepath, std::to_string(meta->entry_count));
+                if (enable_wal_ && wal_)
+                {
+                    wal_->Clear(filename);
+                }
+                it = immutable_memtables_.erase(it);
             }
             else
             {
                 LOG_ERROR("Failed to flush MemTable to SSTable");
             }
         }
+        it++;
     }
 }
 

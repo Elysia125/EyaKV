@@ -14,30 +14,22 @@
 #endif
 #include <cstdio>
 
-#define WAL_FILE_NAME "eya.wal"
-
 namespace fs = std::filesystem;
 Wal::Wal(const std::string &wal_dir,
-         const unsigned long &wal_file_size,
-         const unsigned long &max_wal_file_count,
          const bool &sync_on_write) : wal_dir_(wal_dir),
-                                      wal_file_size(wal_file_size * 1024),
-                                      max_wal_file_count(max_wal_file_count),
                                       sync_on_write_(sync_on_write)
 {
-    std::string filepath = PathUtils::CombinePath(wal_dir_, WAL_FILE_NAME);
     if (!std::filesystem::exists(wal_dir_))
     {
         std::filesystem::create_directories(wal_dir_);
     }
-    OpenWALFile();
 }
 Wal::~Wal()
 {
     if (wal_file_ != nullptr)
     {
         LOG_DEBUG("Wal: Closing WAL file.");
-        fflush(wal_file_);
+        Sync();
         fclose(wal_file_);
     }
 }
@@ -62,41 +54,6 @@ bool Wal::WriteRecord(LogType type, const std::string &key, const std::optional<
 
     // Simple format:
     // [Type (1B)] [KeyLen (4B)] [Key] [ValueLen (4B)] [Value]
-    fseek(wal_file_, 0, SEEK_END);
-    long file_size = ftell(wal_file_);
-    if (file_size >= wal_file_size)
-    {
-        LOG_INFO("Wal: WAL file size reached max(%s bytes). Switch wal file now.", wal_file_size);
-        Sync();
-        fclose(wal_file_);
-        PathUtils::RenameFile(PathUtils::CombinePath(wal_dir_, WAL_FILE_NAME),
-                              PathUtils::CombinePath(wal_dir_, "eya_" + std::to_string(std::time(nullptr)) + ".wal"));
-        // 判断wal文件数是否达到上限
-        fs::directory_iterator dir_iter(wal_dir_);
-        fs::path oldest_file;
-        std::time_t oldest_time = std::time(nullptr);
-        size_t wal_file_count = 0;
-        for (const auto &entry : dir_iter)
-        {
-            if (entry.path().extension() == ".wal")
-            {
-                wal_file_count++;
-                std::time_t file_time = fs::last_write_time(entry.path()).time_since_epoch().count();
-                if (file_time < oldest_time)
-                {
-                    oldest_time = file_time;
-                    oldest_file = entry.path();
-                }
-            }
-        }
-        if (wal_file_count >= max_wal_file_count)
-        {
-            LOG_WARN("Wal: Maximum WAL file count (%s) reached. Delete oldest one automatically.", max_wal_file_count);
-            // 删除创建时间最早的
-            fs::remove(oldest_file);
-        }
-        OpenWALFile();
-    }
     uint8_t type_u8 = static_cast<uint8_t>(type);
     uint32_t key_len = static_cast<uint32_t>(key.size());
     std::string value_str = value.has_value() ? serialize(value.value()) : "";
@@ -119,11 +76,14 @@ bool Wal::WriteRecord(LogType type, const std::string &key, const std::optional<
     return !ferror(wal_file_);
 }
 
-bool Wal::Recover(MemTable<std::string, EValue> *memtable)
+bool Wal::Recover(std::function<void(std::string, std::string, std::optional<EValue>)> callback)
 {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     LOG_INFO("Starting WAL recovery from directory: %s", wal_dir_);
-    fclose(wal_file_);
+    if (wal_file_ != nullptr)
+    {
+        fclose(wal_file_);
+    }
     // 打开wal目录下的所有wal文件进行恢复
     fs::directory_iterator dir_iter(wal_dir_);
     for (const auto &entry : dir_iter)
@@ -165,54 +125,43 @@ bool Wal::Recover(MemTable<std::string, EValue> *memtable)
                 EValue value = deserialize(val_data, offset);
                 if (reader.fail())
                 {
-                    std::cerr << "Wal::Recover: Error reading log file, maybe truncated." << std::endl;
+                    std::cerr << "Wal::Recover: Error reading log file " << filepath << ", maybe truncated." << std::endl;
                     break;
                 }
 
                 LogType type = static_cast<LogType>(type_u8);
                 if (type == LogType::kPut)
                 {
-                    memtable->put(key, value);
+                    callback(std::filesystem::path(filepath).filename().string(), key, value);
                 }
                 else if (type == LogType::kDelete)
                 {
-                    memtable->remove(key);
+                    callback(std::filesystem::path(filepath).filename().string(), key, std::nullopt);
                 }
             }
 
             reader.close();
             // 删除已恢复的日志文件
-            //std::filesystem::remove(filepath);
+            // std::filesystem::remove(filepath);
             LOG_INFO("Completed recovery from WAL file: %s", filepath);
         }
     }
     // Reopen for appending
-    OpenWALFile();
+    // OpenWALFile();
     LOG_INFO("WAL recovery completed.");
-    return wal_file_ != nullptr;
+    return true;
 }
 
-bool Wal::Clear()
+bool Wal::Clear(const std::string &filename)
 {
-    std::lock_guard<std::recursive_mutex> lock(mutex_);
-    if (wal_file_ != nullptr)
+    std::string filepath = PathUtils::CombinePath(wal_dir_, filename);
+    if (wal_file_name_ == filename && wal_file_ != nullptr)
     {
+        Sync();
         fclose(wal_file_);
+        // OpenWALFile();
     }
-    // 删除wal目录下的所有wal文件
-    fs::directory_iterator dir_iter(wal_dir_);
-    for (const auto &entry : dir_iter)
-    {
-        if (entry.path().extension() == ".wal")
-        {
-            std::string filepath = entry.path().string();
-            std::filesystem::remove(filepath);
-            LOG_INFO("Wal: Deleted WAL file at %s", filepath);
-        }
-    }
-    // Reopen
-    OpenWALFile();
-    return wal_file_ != nullptr;
+    return std::filesystem::remove(filepath);
 }
 
 bool Wal::Sync()
@@ -262,18 +211,30 @@ bool Wal::Sync()
     return false;
 }
 
-void Wal::OpenWALFile()
+std::string Wal::OpenWALFile(std::optional<std::string> filename = std::nullopt)
 {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (wal_file_ != nullptr)
     {
+        Sync();
         fclose(wal_file_);
     }
-    std::string filepath = PathUtils::CombinePath(wal_dir_, WAL_FILE_NAME);
+    if (!filename.has_value())
+    {
+        filename = generate_unique_filename();
+    }
+    std::string filepath = PathUtils::CombinePath(wal_dir_, filename.value());
     wal_file_ = fopen(filepath.c_str(), "ab+");
     if (wal_file_ == nullptr)
     {
         LOG_ERROR("Wal: Failed to open WAL file at %s,error:%s", filepath, strerror(errno));
         throw std::runtime_error("cannot open or create WAL file at " + filepath);
     }
+    wal_file_name_ = filename.value();
+    return filename.value();
+}
+
+std::string Wal::generate_unique_filename()
+{
+    return "eya_" + std::to_string(std::chrono::system_clock::now().time_since_epoch().count()) + ".wal";
 }

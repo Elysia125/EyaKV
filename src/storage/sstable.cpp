@@ -451,7 +451,7 @@ std::optional<EValue> SSTable::get(const std::string &key) const
     return result;
 }
 
-std::vector<std::pair<std::string, EValue>> SSTable::range(
+std::vector<std::pair<std::string, EValue>> &SSTable::range(
     const std::string &start_key,
     const std::string &end_key) const
 {
@@ -482,6 +482,48 @@ std::vector<std::pair<std::string, EValue>> SSTable::range(
             if (k >= start_key && k <= end_key)
             {
                 result.emplace_back(k, v);
+            }
+            else if (k > end_key)
+            {
+                break;
+            }
+        }
+    }
+
+    return result;
+}
+
+std::map<std::string, EValue> &SSTable::range_map(
+    const std::string &start_key,
+    const std::string &end_key) const
+{
+
+    std::map<std::string, EValue> result;
+
+    // 检查范围是否与 SSTable 有交集
+    if (start_key > meta_.max_key || end_key < meta_.min_key)
+    {
+        return result;
+    }
+
+    // 找到起始数据块
+    size_t start_block = find_block_index(start_key);
+
+    // 遍历可能的数据块
+    for (size_t i = start_block; i < index_.size(); ++i)
+    {
+        // 如果数据块的起始 key 已经超过 end_key，停止
+        if (i > start_block && index_[i].first_key > end_key)
+        {
+            break;
+        }
+
+        auto block = read_data_block(i);
+        for (const auto &[k, v] : block)
+        {
+            if (k >= start_key && k <= end_key)
+            {
+                result[k] = v;
             }
             else if (k > end_key)
             {
@@ -692,6 +734,7 @@ bool SSTableBuilder::finish()
 
     fflush(file_);
     fclose(file_);
+    // TODO 刷到磁盘中
     file_ = nullptr;
     finished_ = true;
 
@@ -1159,10 +1202,6 @@ bool SSTableManager::get(const std::string &key, EValue *value) const
             auto result = sstable->get(key);
             if (result.has_value())
             {
-                if (result.value().is_deleted() || result.value().is_expired())
-                {
-                    return false;
-                }
                 if (value)
                 {
                     *value = result.value();
@@ -1192,4 +1231,20 @@ std::optional<SSTableMeta> SSTableManager::create_new_sstable(const std::vector<
         merge_sstables(0);
     }
     return meta;
+}
+
+std::map<std::string, EValue> &SSTableManager::range_query(
+    const std::string &start_key,
+    const std::string &end_key) const
+{
+    std::map<std::string, EValue> map;
+    for (auto it = level_sstables_.rbegin(); it != level_sstables_.rend(); it++)
+    {
+        for (auto sit = it->rbegin(); sit != it->rend(); sit++)
+        {
+            std::map<std::string, EValue> entries = (*sit)->range_map(start_key, end_key);
+            map.insert(entries.begin(), entries.end());
+        }
+    }
+    return map;
 }

@@ -188,7 +188,7 @@ public:
      * @param end_key 结束key（包含）
      * @return 范围内的KV对列表
      */
-    std::vector<std::pair<std::string, EValue>> range(
+    std::vector<std::pair<std::string, EValue>>& range(
         const std::string &start_key,
         const std::string &end_key) const;
 
@@ -197,6 +197,10 @@ public:
      * @param callback 回调函数，返回false时停止遍历
      */
     void for_each(const std::function<bool(const std::string &, const EValue &)> &callback) const;
+
+    std::map<std::string, EValue>& range_map(
+        const std::string &start_key,
+        const std::string &end_key) const;
 
 private:
     std::string filepath_;
@@ -346,6 +350,13 @@ public:
      * @brief 获取所有SSTable的总大小
      */
     size_t get_total_size() const;
+
+    /**
+     * @brief 范围查询
+     */
+    std::map<std::string, EValue> &range_query(
+        const std::string &start_key,
+        const std::string &end_key) const;
 
 private:
     std::string data_dir_;

@@ -55,7 +55,10 @@ bool MemTable<K, V>::remove(const K &key)
 {
     // 获取写锁 (独占锁)
     std::unique_lock<std::shared_mutex> lock(mutex_);
-    return table_.remove_sign(key);
+    return table_.handle_value(key, [](V &value) -> V &
+                               {
+        value.is_deleted = true;
+        return value; });
 }
 template <typename K, typename V>
 size_t MemTable<K, V>::size() const

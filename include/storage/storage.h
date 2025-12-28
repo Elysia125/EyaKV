@@ -140,12 +140,12 @@ public:
 private:
     std::string data_dir_;
     std::string sstable_dir_;
-
+    std::string current_wal_filename_;
     // 活跃的 MemTable（接受新写入）
     std::unique_ptr<MemTable<std::string, EValue>> memtable_;
 
     // Immutable MemTables（等待 Flush 到 SSTable）
-    std::vector<std::unique_ptr<MemTable<std::string, EValue>>> immutable_memtables_;
+    std::map<std::string, std::unique_ptr<MemTable<std::string, EValue>>> immutable_memtables_;
     mutable std::shared_mutex immutable_mutex_; // 保护 immutable_memtables_
 
     // SSTable 管理器
