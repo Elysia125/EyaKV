@@ -1,6 +1,7 @@
 #ifndef COMMON_H
 #define COMMON_H
 
+#include <string>
 #include "zset.h"
 #include "serializer.h"
 #include <variant>
@@ -111,13 +112,6 @@ inline EValue deserialize(const char *data, size_t &offset)
     return result;
 }
 
-/**
- * @brief 计算 std::string 的实际大小
- */
-inline size_t calculateStringSize(const std::string &str)
-{
-    return str.size() + sizeof(std::string);
-}
 /**
  * @brief 估算 EyaValue 占用的内存大小
  */

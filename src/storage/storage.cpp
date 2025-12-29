@@ -4,12 +4,15 @@
 #include <thread>
 #include "logger/logger.h"
 
+const auto remove_evalue = [](EValue &value) -> EValue &
+{
+        value.deleted = true;
+        return value; };
+
 Storage::Storage(const std::string &data_dir,
                  const std::string &wal_dir,
                  const bool &read_only,
                  const bool &enable_wal,
-                 const unsigned long &wal_file_size,
-                 const unsigned long &max_wal_file_count,
                  const std::optional<unsigned int> &wal_flush_interval,
                  const WALFlushStrategy &wal_flush_strategy,
                  const size_t &memtable_size,
@@ -70,12 +73,7 @@ Storage::Storage(const std::string &data_dir,
     // 恢复数据
     recover();
 
-    // 启动后台数据刷新线程（如果配置了）
-    if (wal_flush_strategy_ == WALFlushStrategy::BACKGROUND_THREAD && enable_wal_ && !read_only_)
-    {
-        start_background_flush_thread();
-    }
-
+    start_background_flush_thread();
     LOG_INFO("Storage engine initialized. Data dir:%s ", data_dir_);
 }
 
@@ -105,7 +103,7 @@ void Storage::close()
     // 关闭 WAL
     if (wal_)
     {
-        wal_->Sync();
+        wal_->sync();
     }
 
     LOG_INFO("Storage engine closed.");
@@ -128,20 +126,24 @@ void Storage::recover()
     if (wal_ && memtable_)
     {
         std::unique_lock<std::shared_mutex> lock(immutable_mutex_);
-        bool success = wal_->Recover([this](std::string filename, std::string key, std::optional<EValue> value)
+        bool success = wal_->recover([this](std::string filename, std::string key, std::optional<EValue> value)
                                      {
-                                        if(immutable_memtables_.find(filename) == immutable_memtables_.end()){
-                                            immutable_memtables_[filename] = create_new_memtable();
-                                        }
-                                        auto& memtable = immutable_memtables_[filename];
-                                        if (value.has_value())
-                                        {
-                                            memtable->put(key, value.value());
-                                        }
-                                        else
-                                        {
-                                            memtable->remove(key);
-                                        } });
+            if (immutable_memtables_.find(filename) == immutable_memtables_.end())
+            {
+                immutable_memtables_[filename] = create_new_memtable();
+            }
+            auto &memtable = immutable_memtables_[filename];
+            if (value.has_value())
+            {
+                memtable->put(key, value.value());
+            }
+            else
+            {
+                memtable->handle_value(key, [](EValue &evalue) -> EValue &
+                                       {
+                                                evalue.deleted = true;
+                                                return evalue; });
+            } });
         if (!success)
         {
             LOG_ERROR("Storage: WAL recovery failed.");
@@ -160,14 +162,14 @@ void Storage::recover()
                 memtable_ = std::move(last_memtable->second);
                 if (wal_ && enable_wal_)
                 {
-                    wal_->OpenWALFile(last_memtable->first);
+                    wal_->open_wal_file(last_memtable->first);
                     current_wal_filename_ = last_memtable->first;
                 }
                 immutable_memtables_.erase(last_memtable->first);
             }
             else if (!read_only_ && enable_wal_ && wal_)
             {
-                current_wal_filename_ = wal_->OpenWALFile();
+                current_wal_filename_ = wal_->open_wal_file();
             }
             if (immutable_memtables_.empty())
             {
@@ -191,7 +193,7 @@ bool Storage::put(const std::string &key, const EyaValue &value, const size_t al
     }
 
     // 1. 写 WAL
-    if (enable_wal_ && wal_ && !wal_->AppendPut(key, value))
+    if (enable_wal_ && wal_ && !wal_->append_put(key, value))
     {
         LOG_ERROR("Failed to write to WAL for key:%s ", key);
         return false;
@@ -310,7 +312,7 @@ bool Storage::remove(const std::string &key)
     }
 
     // 1. 写 WAL
-    if (enable_wal_ && wal_ && !wal_->AppendDelete(key))
+    if (enable_wal_ && wal_ && !wal_->append_delete(key))
     {
         LOG_ERROR("Failed to write delete to WAL for key: %s", key);
         return false;
@@ -323,12 +325,13 @@ bool Storage::remove(const std::string &key)
                                 {
         value.deleted = true;
         return value; });
+        return true; // 成功标记删除，直接返回
     }
     catch (const std::out_of_range &e)
     {
-        LOG_INFO("key not found in memtable:%s when remove", key);
+        LOG_INFO("key not found in memtable:%s when remove, inserting tombstone", key);
     }
-    // 3、未找到key,直接插入一条deleted数据
+    // 3、未找到key,直接插入一条deleted数据 (tombstone)
     EValue evalue;
     evalue.deleted = true;
     return write_memtable(key, evalue);
@@ -400,7 +403,7 @@ void Storage::rotate_memtable()
     }
     if (enable_wal_ && wal_)
     {
-        current_wal_filename_ = wal_->OpenWALFile();
+        current_wal_filename_ = wal_->open_wal_file();
     }
     else
     {
@@ -443,6 +446,7 @@ void Storage::flush_memtable_to_sstable()
         auto &imm = it->second;
         if (imm->size() == 0)
         {
+            ++it; // 空 MemTable，跳过并继续下一个
             continue;
         }
 
@@ -456,16 +460,20 @@ void Storage::flush_memtable_to_sstable()
                 LOG_INFO("Flushed MemTable to SSTable: %s with %s entries", meta->filepath, std::to_string(meta->entry_count));
                 if (enable_wal_ && wal_)
                 {
-                    wal_->Clear(filename);
+                    wal_->clear(filename);
                 }
-                it = immutable_memtables_.erase(it);
+                it = immutable_memtables_.erase(it); // erase 返回下一个有效迭代器
             }
             else
             {
                 LOG_ERROR("Failed to flush MemTable to SSTable");
+                ++it; // flush 失败，跳过继续下一个
             }
         }
-        it++;
+        else
+        {
+            ++it; // 没有 sstable_manager_，跳过继续下一个
+        }
     }
 }
 
@@ -503,18 +511,27 @@ void Storage::stop_background_flush_thread()
 
 void Storage::background_flush_task()
 {
+    bool need_time_out = wal_flush_strategy_ == WALFlushStrategy::BACKGROUND_THREAD && enable_wal_ && !read_only_;
     while (background_flush_thread_running_)
     {
         // 等待通知或超时
         {
             std::unique_lock<std::mutex> lock(flush_mutex_);
-            flush_cv_.wait_for(lock,
-                               std::chrono::milliseconds(wal_flush_interval_.value_or(1000)),
-                               [this]
-                               {
-                                   return !background_flush_thread_running_ ||
-                                          !immutable_memtables_.empty();
-                               });
+            if (need_time_out)
+            {
+                flush_cv_.wait_for(lock,
+                                   std::chrono::milliseconds(wal_flush_interval_.value_or(1000)),
+                                   [this]
+                                   {
+                                       return !background_flush_thread_running_ ||
+                                              !immutable_memtables_.empty();
+                                   });
+            }
+            else
+            {
+                flush_cv_.wait(lock, [this]
+                               { return !background_flush_thread_running_ || !immutable_memtables_.empty(); });
+            }
         }
 
         if (!background_flush_thread_running_)
@@ -537,7 +554,7 @@ void Storage::background_flush_task()
         // 同步 WAL
         if (wal_)
         {
-            wal_->Sync();
+            wal_->sync();
         }
     }
 }

@@ -7,7 +7,12 @@
 #include <iomanip>
 #include <chrono>
 #include <cstdio>
-
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <io.h>
+#else
+#include <unistd.h> // 包含fsync/fdatasync（Linux/macOS）
+#endif
 // SSTableFooter 实现
 
 std::string SSTableFooter::serialize() const
@@ -451,7 +456,7 @@ std::optional<EValue> SSTable::get(const std::string &key) const
     return result;
 }
 
-std::vector<std::pair<std::string, EValue>> &SSTable::range(
+std::vector<std::pair<std::string, EValue>> SSTable::range(
     const std::string &start_key,
     const std::string &end_key) const
 {
@@ -493,7 +498,7 @@ std::vector<std::pair<std::string, EValue>> &SSTable::range(
     return result;
 }
 
-std::map<std::string, EValue> &SSTable::range_map(
+std::map<std::string, EValue> SSTable::range_map(
     const std::string &start_key,
     const std::string &end_key) const
 {
@@ -731,9 +736,35 @@ bool SSTableBuilder::finish()
 
     // 写入 Footer（包含索引块和布隆过滤器）
     write_footer();
-
     fflush(file_);
-    fclose(file_);
+#ifdef _WIN32
+    int fd = _fileno(file_);
+    if (fd == -1)
+    {
+        LOG_ERROR("SSTableBuilder: Failed to get file descriptor for syncing.");
+        return false;
+    }
+    if (_commit(fd) != 0)
+    {
+        LOG_ERROR("SSTableBuilder: Failed to sync SSTable file to disk.");
+        return false;
+    }
+#else
+    // 步骤1：获取底层文件描述符
+    int fd = fileno(file_); // 从FILE*获取fd
+    if (fd == -1)
+    {
+        LOG_ERROR("SSTableBuilder: Failed to get file descriptor for syncing.");
+        return false;
+    }
+
+    // 步骤2：调用fsync刷内核缓冲区到磁盘（真正落盘）
+    if (fdatasync(fd) == -1)
+    { // fdatasync(fd) 更高效（仅刷数据）
+        LOG_ERROR("SSTableBuilder: Failed to sync SSTable file to disk. Error: %s", strerror(errno));
+        return false;
+    }
+#endif
     // TODO 刷到磁盘中
     file_ = nullptr;
     finished_ = true;
@@ -783,9 +814,13 @@ SSTableManager::SSTableManager(const std::string &data_dir,
     {
         std::filesystem::create_directories(data_dir_);
     }
-    level_sstables_.resize(max_level_ + 1, std::vector<std::unique_ptr<SSTable>>());
+    level_sstables_.resize(max_level_ + 1);
     level_sstable_size_.resize(max_level_ + 1, 0);
-    level_mutex_.resize(max_level_ + 1, std::recursive_mutex());
+    level_mutex_.resize(max_level_ + 1);
+    for (size_t i = 0; i <= max_level_; ++i)
+    {
+        level_mutex_[i] = std::make_unique<std::recursive_mutex>();
+    }
     // 加载现有的 SSTable 文件
     load_all();
 }
@@ -825,13 +860,20 @@ bool SSTableManager::load_all()
                 uint32_t level = sstable->get_meta().level;
                 if (level > max_level_)
                 {
+                    size_t old_max = max_level_;
                     max_level_ = level;
-                    level_sstables_.resize(max_level_ + 1, std::vector<std::unique_ptr<SSTable>>());
+                    level_sstables_.resize(max_level_ + 1);
                     level_sstable_size_.resize(max_level_ + 1, 0);
-                    level_mutex_.resize(max_level_ + 1, std::recursive_mutex());
+                    level_mutex_.resize(max_level_ + 1);
+                    for (size_t i = old_max + 1; i <= max_level_; ++i)
+                    {
+                        level_mutex_[i] = std::make_unique<std::recursive_mutex>();
+                    }
                 }
+                // 在 std::move 之前保存 file_size，避免使用已移动对象
+                uint64_t file_size = sstable->get_meta().file_size;
                 level_sstables_[level].push_back(std::move(sstable));
-                level_sstable_size_[level] += sstable->get_meta().file_size;
+                level_sstable_size_[level] += file_size;
                 sstable_count_++;
             }
             catch (const std::exception &e)
@@ -953,7 +995,7 @@ bool SSTableManager::merge_sstables(const uint32_t level)
 bool SSTableManager::merge_sstables_by_strategy_0(const uint32_t level)
 {
     {
-        std::lock_guard<std::recursive_mutex> lock(level_mutex_[level]);
+        std::lock_guard<std::recursive_mutex> lock(*level_mutex_[level]);
         std::vector<std::unique_ptr<SSTable>> &sstables = level_sstables_[level];
         if (sstables.size() < 1)
         {
@@ -1026,8 +1068,8 @@ bool SSTableManager::merge_sstables_by_strategy_1(const uint32_t level)
     {
         bool merged = false;
         {
-            std::lock_guard<std::recursive_mutex> lock(level_mutex_[level]);
-            std::lock_guard<std::recursive_mutex> lock2(level_mutex_[level + 1]);
+            std::lock_guard<std::recursive_mutex> lock(*level_mutex_[level]);
+            std::lock_guard<std::recursive_mutex> lock2(*level_mutex_[level + 1]);
             // 选择level层的sstable文件中最旧的一个文件
             auto &sstables = level_sstables_[level];
             if (sstables.empty())
@@ -1179,13 +1221,18 @@ std::optional<SSTableMeta> SSTableManager::create_from_entries(
     // 添加到管理列表
     if (level > max_level_)
     {
+        size_t old_max = max_level_;
         max_level_ = level;
-        level_sstables_.resize(max_level_ + 1, std::vector<std::unique_ptr<SSTable>>());
+        level_sstables_.resize(max_level_ + 1);
         level_sstable_size_.resize(max_level_ + 1, 0);
-        level_mutex_.resize(max_level_ + 1, std::recursive_mutex());
+        level_mutex_.resize(max_level_ + 1);
+        for (size_t i = old_max + 1; i <= max_level_; ++i)
+        {
+            level_mutex_[i] = std::make_unique<std::recursive_mutex>();
+        }
     }
     {
-        std::lock_guard<std::recursive_mutex> lock(level_mutex_[level]);
+        std::lock_guard<std::recursive_mutex> lock(*level_mutex_[level]);
         level_sstables_[level].insert(level_sstables_[level].begin(), std::move(sstable));
         level_sstable_size_[level] += meta.file_size;
     }
@@ -1233,7 +1280,7 @@ std::optional<SSTableMeta> SSTableManager::create_new_sstable(const std::vector<
     return meta;
 }
 
-std::map<std::string, EValue> &SSTableManager::range_query(
+std::map<std::string, EValue> SSTableManager::range_query(
     const std::string &start_key,
     const std::string &end_key) const
 {

@@ -1,4 +1,5 @@
-#pragma once
+#ifndef WAL_H_
+#define WAL_H_
 
 #include <string>
 #include <fstream>
@@ -34,14 +35,14 @@ public:
      * @param value 值
      * @return 成功返回 true，失败返回 false
      */
-    bool AppendPut(const std::string &key, const EValue &value);
+    bool append_put(const std::string &key, const EValue &value);
 
     /**
      * @brief 记录 Delete 操作。
      * @param key 键
      * @return 成功返回 true，失败返回 false
      */
-    bool AppendDelete(const std::string &key);
+    bool append_delete(const std::string &key);
 
     /**
      * @brief 从日志文件中恢复数据到 MemTable。
@@ -49,22 +50,22 @@ public:
      * 通常在系统启动时调用。会读取所有日志条目并重放到 MemTable 中。
      * @return 成功返回 true，失败返回 false
      */
-    bool Recover(std::function<void(std::string, std::string, std::optional<EValue>)> callback);
+    bool recover(std::function<void(std::string, std::string, std::optional<EValue>)> callback);
 
     /**
      * @brief 清空日志文件（例如在 Flush 到 SSTable 后）。
      */
-    bool Clear(const std::string &filename);
+    bool clear(const std::string &filename);
 
     /**
      * @brief 同步日志文件到磁盘，确保数据持久化。
      */
-    bool Sync();
+    bool sync();
 
     /**
      * @brief 打开wal文件
      */
-    std::string OpenWALFile(std::optional<std::string> filename = std::nullopt);
+    std::string open_wal_file(std::optional<std::string> filename = std::nullopt);
 
 private:
     const std::string wal_dir_;
@@ -80,7 +81,20 @@ private:
         kDelete = 2
     };
 
-    // 内部辅助函数：写入一条日志记录
-    bool WriteRecord(LogType type, const std::string &key, const std::optional<EValue> &value);
+    /**
+     * @brief 内部辅助函数：将一条操作记录序列化并写入文件。
+     * @param type 操作类型（Put/Delete）
+     * @param key 操作的键
+     * @param value 操作的值（Put 操作必须提供）
+     * @return 写入成功返回 true
+     */
+    bool write_record(LogType type, const std::string &key, const std::optional<EValue> &value);
+
+    /**
+     * @brief 生成唯一的 WAL 文件名。
+     * 基于时间戳生成，避免文件冲突。
+     */
     std::string generate_unique_filename();
 };
+
+#endif

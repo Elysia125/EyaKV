@@ -1,4 +1,4 @@
-#ifndef STORAGE_H
+#ifndef STORAGE_H_
 #define STORAGE_H_
 
 #include <string>
@@ -43,8 +43,6 @@ public:
                      const std::string &wal_dir,
                      const bool &read_only = false,
                      const bool &enable_wal = true,
-                     const unsigned long &wal_file_size = 64 * 1024 * 1024,
-                     const unsigned long &max_wal_file_count = 16,
                      const std::optional<unsigned int> &wal_flush_interval = 1000,
                      const WALFlushStrategy &wal_flush_strategy = WALFlushStrategy::BACKGROUND_THREAD,
                      const size_t &memtable_size = 1024 * 1024 * 1024,
@@ -171,26 +169,54 @@ private:
     std::condition_variable flush_cv_;
     std::mutex flush_mutex_;
 
-    // 初始化时恢复数据
+    /**
+     * @brief 系统启动时的数据恢复流程。
+     * 包括重新加载 SSTable 和重放 WAL。
+     */
     void recover();
 
-    // 后台 Flush 线程
+    /**
+     * @brief 启动后台 Flush 线程。
+     * 用于异步将 Immutable MemTable 刷盘。
+     */
     void start_background_flush_thread();
+
+    /**
+     * @brief 停止后台 Flush 线程。
+     * 在析构或 Close 时调用。
+     */
     void stop_background_flush_thread();
+
+    /**
+     * @brief 后台 Flush 线程的主循环。
+     */
     void background_flush_task();
 
-    // 将 MemTable Flush 到 SSTable
+    /**
+     * @brief 执行具体的 Flush 操作：Immutable MemTable -> SSTable。
+     */
     void flush_memtable_to_sstable();
 
-    // 将当前 MemTable 转换为 Immutable
+    /**
+     * @brief 将当前的 Mutable MemTable 转换为 Immutable MemTable。
+     * 并创建一个新的空 MemTable 接收写入。
+     */
     void rotate_memtable();
 
-    // 在 Immutable MemTables 中查找
+    /**
+     * @brief 在所有 Immutable MemTable 中查找 key。
+     * 同样遵循从新到旧的顺序。
+     */
     std::optional<EValue> get_from_immutable_memtables(const std::string &key) const;
 
-    // 创建新的 MemTable
+    /**
+     * @brief 工厂方法：创建一个配置好的新 MemTable 实例。
+     */
     std::unique_ptr<MemTable<std::string, EValue>> create_new_memtable();
 
+    /**
+     * @brief 内部写入实现，处理 WAL 和 MemTable 的写入。
+     */
     bool write_memtable(const std::string &key, EValue &value);
 };
 #endif // STORAGE_H

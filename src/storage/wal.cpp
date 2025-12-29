@@ -29,24 +29,24 @@ Wal::~Wal()
     if (wal_file_ != nullptr)
     {
         LOG_DEBUG("Wal: Closing WAL file.");
-        Sync();
+        sync();
         fclose(wal_file_);
     }
 }
 
-bool Wal::AppendPut(const std::string &key, const EValue &value)
+bool Wal::append_put(const std::string &key, const EValue &value)
 {
     LOG_DEBUG("Wal: Appending Put record. Key: %s, Value: %s", key, value);
-    return WriteRecord(LogType::kPut, key, value);
+    return write_record(LogType::kPut, key, value);
 }
 
-bool Wal::AppendDelete(const std::string &key)
+bool Wal::append_delete(const std::string &key)
 {
     LOG_DEBUG("Wal: Appending Delete record. Key: %s", key);
-    return WriteRecord(LogType::kDelete, key, std::nullopt);
+    return write_record(LogType::kDelete, key, std::nullopt);
 }
 
-bool Wal::WriteRecord(LogType type, const std::string &key, const std::optional<EValue> &value)
+bool Wal::write_record(LogType type, const std::string &key, const std::optional<EValue> &value)
 {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (wal_file_ == nullptr)
@@ -66,7 +66,7 @@ bool Wal::WriteRecord(LogType type, const std::string &key, const std::optional<
     modifyed_ = true;
     if (sync_on_write_)
     {
-        Sync();
+        sync();
     }
     else
     {
@@ -76,7 +76,7 @@ bool Wal::WriteRecord(LogType type, const std::string &key, const std::optional<
     return !ferror(wal_file_);
 }
 
-bool Wal::Recover(std::function<void(std::string, std::string, std::optional<EValue>)> callback)
+bool Wal::recover(std::function<void(std::string, std::string, std::optional<EValue>)> callback)
 {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     LOG_INFO("Starting WAL recovery from directory: %s", wal_dir_);
@@ -116,13 +116,14 @@ bool Wal::Recover(std::function<void(std::string, std::string, std::optional<EVa
 
                 reader.read(reinterpret_cast<char *>(&val_len), sizeof(val_len));
 
-                char *val_data = new char[val_len];
+                // 使用 std::vector 自动管理内存，避免内存泄漏
+                std::vector<char> val_data(val_len);
                 if (val_len > 0)
                 {
-                    reader.read(val_data, val_len);
+                    reader.read(val_data.data(), val_len);
                 }
                 size_t offset = 0;
-                EValue value = deserialize(val_data, offset);
+                EValue value = deserialize(val_data.data(), offset);
                 if (reader.fail())
                 {
                     std::cerr << "Wal::Recover: Error reading log file " << filepath << ", maybe truncated." << std::endl;
@@ -147,24 +148,24 @@ bool Wal::Recover(std::function<void(std::string, std::string, std::optional<EVa
         }
     }
     // Reopen for appending
-    // OpenWALFile();
+    // open_wal_file();
     LOG_INFO("WAL recovery completed.");
     return true;
 }
 
-bool Wal::Clear(const std::string &filename)
+bool Wal::clear(const std::string &filename)
 {
     std::string filepath = PathUtils::CombinePath(wal_dir_, filename);
     if (wal_file_name_ == filename && wal_file_ != nullptr)
     {
-        Sync();
+        sync();
         fclose(wal_file_);
-        // OpenWALFile();
+        // open_wal_file();
     }
     return std::filesystem::remove(filepath);
 }
 
-bool Wal::Sync()
+bool Wal::sync()
 {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (!modifyed_)
@@ -211,12 +212,12 @@ bool Wal::Sync()
     return false;
 }
 
-std::string Wal::OpenWALFile(std::optional<std::string> filename = std::nullopt)
+std::string Wal::open_wal_file(std::optional<std::string> filename)
 {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (wal_file_ != nullptr)
     {
-        Sync();
+        sync();
         fclose(wal_file_);
     }
     if (!filename.has_value())

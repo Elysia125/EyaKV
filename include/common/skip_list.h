@@ -9,9 +9,11 @@
 #include <ctime>
 #include <cstring>
 #include <atomic>
-#define MAX_LEVEL 16
-#define PROBABILITY 0.5
-#define MAX_NODE_COUNT 1000000
+#include <optional>
+#include <functional>
+#define DEFAULT_MAX_LEVEL 16
+#define DEFAULT_PROBABILITY 0.5
+#define DEFAULT_MAX_NODE_COUNT 1000000
 
 template <typename K, typename V>
 struct SkipListNode
@@ -45,8 +47,6 @@ template <typename K, typename V>
 class SkipList
 {
 private:
-    const size_t MAX_LEVEL;   // 最大层数
-    const double PROBABILITY; // 节点层数的概率
     /**
      * @brief 跳表的最大层数
      */
@@ -81,7 +81,7 @@ private:
      * @param b 第二个key
      * @return -1表示a<b，0表示a==b，1表示a>b
      */
-    int (*)(const K &, const K &) compare_func_;
+    int (*compare_func_)(const K &, const K &);
     /**
      * @brief 当前使用的内存大小估算（原子变量）
      */
@@ -89,11 +89,11 @@ private:
     /**
      * @brief 计算key的内存大小的函数指针
      */
-    size_t (*)(const K &) calculate_key_size_func_;
+    size_t (*calculate_key_size_func_)(const K &);
     /**
      * @brief 计算value的内存大小的函数指针
      */
-    size_t (*)(const V &) calculate_value_size_func_;
+    size_t (*calculate_value_size_func_)(const V &);
 
     /**
      * @brief 核心辅助函数：随机生成新节点的层数（基于概率算法）
@@ -164,9 +164,9 @@ public:
      * @param calculate_key_size_func Optional custom function to calculate key memory size
      * @param calculate_value_size_func Optional custom function to calculate value memory size
      */
-    SkipList(const size_t &skiplist_max_level = MAX_LEVEL,
-             const double &skiplist_probability = PROBABILITY,
-             const size_t &skiplist_max_node_count = MAX_NODE_COUNT,
+    SkipList(const size_t &skiplist_max_level = DEFAULT_MAX_LEVEL,
+             const double &skiplist_probability = DEFAULT_PROBABILITY,
+             const size_t &skiplist_max_node_count = DEFAULT_MAX_NODE_COUNT,
              std::optional<int (*)(const K &, const K &)> compare_func = std::nullopt,
              std::optional<size_t (*)(const K &)> calculate_key_size_func = std::nullopt,
              std::optional<size_t (*)(const V &)> calculate_value_size_func = std::nullopt) : current_level_(1),
@@ -233,11 +233,10 @@ public:
      * @param sl The SkipList to copy from
      * @note This constructor actually moves resources instead of copying
      */
-    SkipList(const SkipList &sl) noexcept
+    SkipList(const SkipList &other) noexcept
         : current_level_(other.current_level_),
           head_(other.head_),
           size_(other.size_),
-          current_size_(other.current_size_),
           MAX_LEVEL(other.MAX_LEVEL),
           PROBABILITY(other.PROBABILITY),
           MAX_NODE_COUNT(other.MAX_NODE_COUNT),
@@ -245,10 +244,11 @@ public:
           calculate_key_size_func_(other.calculate_key_size_func_),
           calculate_value_size_func_(other.calculate_value_size_func_)
     {
+        current_size_.store(other.current_size_.load(std::memory_order_relaxed), std::memory_order_relaxed);
     }
-    SkipList &operator=(const SkipList &sl) noexcept
+    SkipList &operator=(const SkipList &other) noexcept
     {
-        if (&sl == this)
+        if (&other == this)
         {
             return *this;
         }
@@ -265,7 +265,7 @@ public:
         current_level_ = other.current_level_;
         head_ = other.head_;
         size_ = other.size_;
-        current_size_ = other.current_size_;
+        current_size_.store(other.current_size_.load(std::memory_order_relaxed), std::memory_order_relaxed);
         compare_func_ = other.compare_func_;
         calculate_key_size_func_ = other.calculate_key_size_func_;
         calculate_value_size_func_ = other.calculate_value_size_func_;
@@ -719,8 +719,8 @@ public:
      */
     std::vector<std::pair<K, V>> get_all_entries() const
     {
-        vector<std::pair<K, V>> result;
-        SkipListNode *current = head_->next[0];
+        std::vector<std::pair<K, V>> result;
+        SkipListNode<K, V>*current = head_->next[0];
         while (current != nullptr)
         {
             result.emplace_back(current->key, current->value);
@@ -760,14 +760,14 @@ public:
      * @param deserialize_value_func 反序列化value的函数指针
      * @note 会清空当前跳表并重建所有节点
      */
-    void deserialize(const char *data, const size_t offset,
+    void deserialize(const char *data, size_t&offset,
                      std::string (*deserialize_key_func)(const char *data, size_t &offset),
                      std::string (*deserialize_value_func)(const char *data, size_t &offset))
     {
-        std::memcpy(&current_level_, data + offset, sizeof(current_level));
-        if (current_level_ > skiplist_max_level)
+        std::memcpy(&current_level_, data + offset, sizeof(current_level_));
+        if (current_level_ > MAX_LEVEL)
         {
-            current_level_ = skiplist_max_level;
+            current_level_ = MAX_LEVEL;
         }
         SkipListNode<K, V> *level_nodes[current_level_] = {head_};
         offset += sizeof(current_level_);

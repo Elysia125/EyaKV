@@ -15,7 +15,13 @@ inline int compare_double_strings(const std::string &a, const std::string &b)
     double db = std::stod(b_clean);
     return (da < db) ? -1 : ((da > db) ? 1 : 0);
 }
-
+/**
+ * @brief 计算 std::string 的实际大小
+ */
+inline size_t calculateStringSize(const std::string &str)
+{
+    return str.size() + sizeof(std::string);
+}
 /**
  * @brief ZSet 类实现了一个基于跳表的有序集合数据结构。
  *
@@ -25,7 +31,7 @@ inline int compare_double_strings(const std::string &a, const std::string &b)
 class ZSet
 {
 public:
-    ZSet() : skiplist_(MAX_LEVEL, PROBABILITY, MAX_NODE_COUNT, compare_double_strings, calculateStringSize, calculateStringSize), size_exclude_skiplist(0)
+    ZSet() : skiplist_(DEFAULT_MAX_LEVEL, DEFAULT_PROBABILITY, DEFAULT_MAX_NODE_COUNT, compare_double_strings, calculateStringSize, calculateStringSize), size_exclude_skiplist(0)
     {
         size_exclude_skiplist.fetch_add(sizeof(ZSet), std::memory_order_relaxed);
     }

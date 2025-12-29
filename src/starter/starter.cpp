@@ -95,8 +95,6 @@ Storage *EyaKVStarter::initialize_storage()
     {
         wal_enable = (wal_enable_str.value() == "1" || wal_enable_str.value() == "true");
     }
-    u_long wal_file_size = strtoul(config.GetConfig(WAL_FILE_SIZE_KEY).value().c_str(), nullptr, 10);
-    u_long max_wal_file_count = strtoul(config.GetConfig(WAL_FILE_MAX_COUNT_KEY).value().c_str(), nullptr, 10);
     size_t memtable_size = static_cast<size_t>(std::stoul(config.GetConfig(MEMTABLE_SIZE_KEY).value()));
     size_t skiplist_max_level = static_cast<size_t>(std::stoul(config.GetConfig(SKIPLIST_MAX_LEVEL_KEY).value()));
     double skiplist_probability = std::stod(config.GetConfig(SKIPLIST_PROBABILITY_KEY).value());
@@ -122,8 +120,6 @@ Storage *EyaKVStarter::initialize_storage()
                                      wal_dir.value(),
                                      read_only,
                                      wal_enable,
-                                     wal_file_size,
-                                     max_wal_file_count,
                                      wal_flush_interval,
                                      wal_flush_strategy,
                                      memtable_size,

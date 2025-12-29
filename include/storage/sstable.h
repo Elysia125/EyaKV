@@ -188,7 +188,7 @@ public:
      * @param end_key 结束key（包含）
      * @return 范围内的KV对列表
      */
-    std::vector<std::pair<std::string, EValue>>& range(
+    std::vector<std::pair<std::string, EValue>> range(
         const std::string &start_key,
         const std::string &end_key) const;
 
@@ -198,7 +198,7 @@ public:
      */
     void for_each(const std::function<bool(const std::string &, const EValue &)> &callback) const;
 
-    std::map<std::string, EValue>& range_map(
+    std::map<std::string, EValue> range_map(
         const std::string &start_key,
         const std::string &end_key) const;
 
@@ -210,18 +210,36 @@ private:
     BloomFilter bloom_filter_;
     SSTableMeta meta_;
 
-    // 读取指定数据块
+    /**
+     * @brief 从指定的数据块中读取所有 KV 对。
+     * @param block_index 数据块在 index_ 中的索引
+     * @return 该数据块包含的所有 KV 对
+     */
     std::vector<std::pair<std::string, EValue>> read_data_block(size_t block_index) const;
 
-    // 在数据块内二分查找
+    /**
+     * @brief 在内存中的数据块内进行二分查找。
+     * @param block 已加载到内存的数据块 KV 对列表
+     * @param key 要查找的 key
+     * @return 如果找到返回对应的 value，否则返回 std::nullopt
+     */
     std::optional<EValue> search_in_block(
         const std::vector<std::pair<std::string, EValue>> &block,
         const std::string &key) const;
 
-    // 通过索引找到可能包含key的数据块
+    /**
+     * @brief 通过索引查找可能包含 key 的数据块索引。
+     * 使用二分查找在 IndexBlock 中定位。
+     * @param key 要查找的 key
+     * @return 可能包含该 key 的数据块索引
+     */
     size_t find_block_index(const std::string &key) const;
 
-    // 加载SSTable的索引和元数据
+    /**
+     * @brief 加载 SSTable 的索引、BloomFilter 和元数据。
+     * 在构造时调用，只读取元数据部分，不加载实际数据块。
+     * @return 加载成功返回 true
+     */
     bool load();
 };
 
@@ -304,13 +322,22 @@ private:
     bool finished_;
     bool aborted_;
 
-    // 刷新当前数据块到文件
+    /**
+     * @brief 将当前数据块刷新到文件。
+     * 会同时更新 IndexBlock 信息。
+     */
     void flush_block();
 
-    // 写入Footer
+    /**
+     * @brief 写入 Footer 信息到文件末尾。
+     * 包括 IndexBlock 偏移、BloomFilter 偏移等。
+     */
     void write_footer();
 
-    // 序列化单个KV对
+    /**
+     * @brief 序列化单个 KV 对。
+     * 格式：[key_len][key][value_len][value]
+     */
     static std::string serialize_entry(const std::string &key, const EValue &value);
 };
 
@@ -354,7 +381,7 @@ public:
     /**
      * @brief 范围查询
      */
-    std::map<std::string, EValue> &range_query(
+    std::map<std::string, EValue> range_query(
         const std::string &start_key,
         const std::string &end_key) const;
 
@@ -363,34 +390,66 @@ private:
     uint32_t sstable_count_;
     std::vector<std::vector<std::unique_ptr<SSTable>>> level_sstables_;
     std::vector<uint64_t> level_sstable_size_;
-    std::vector<std::recursive_mutex> level_mutex_;
+    std::vector<std::unique_ptr<std::recursive_mutex>> level_mutex_;
     uint32_t max_level_;
     SSTableMergeStrategy merge_strategy_;
     uint64_t sstable_zero_level_size_; // bit
     double sstable_level_size_ratio_;
     uint64_t next_sequence_number_;
     uint32_t sstable_merge_threshold_;
-    // 生成新的SSTable文件名
+    /**
+     * @brief 生成唯一的 SSTable 文件名。
+     * 格式：[sequence_number].sst
+     */
     std::string generate_filename();
 
-    // 按照查询顺序排序SSTable（最新的在前）
+    /**
+     * @brief 按照序列号对 SSTable 进行排序。
+     * 序列号大的（新的）排在前面，优化查询路径。
+     */
     void sort_sstables_by_sequence();
 
+    /**
+     * @brief 触发指定层级的合并操作（通用入口）。
+     * 根据当前的合并策略分发到具体的实现函数。
+     * @param level 要进行合并的层级
+     * @return 合并成功返回 true
+     */
     bool merge_sstables(const uint32_t level);
 
+    /**
+     * @brief 使用策略0 (Size-Tiered) 合并指定层级。
+     * 当某层 SSTable 数量超过阈值时触发。
+     */
     bool merge_sstables_by_strategy_0(const uint32_t level);
 
+    /**
+     * @brief 使用策略1 (Leveled) 合并指定层级。
+     * 当某层总大小超过限制时触发。
+     */
     bool merge_sstables_by_strategy_1(const uint32_t level);
 
+    /**
+     * @brief 从内存中的 entries 创建新的 SSTable。
+     * 同时也负责更新内存中的 SSTable 列表。
+     * @param entries 有序的 KV 对列表
+     * @param level 新 SSTable 所属的层级
+     * @return 新建 SSTable 的元数据
+     */
     std::optional<SSTableMeta> create_from_entries(
         const std::vector<std::pair<std::string, EValue>> &entries, const uint32_t level = 0);
 
     /**
-     * @brief 加载数据目录下的所有SSTable
-     * @return 加载成功返回true
+     * @brief 加载数据目录下的所有 SSTable 文件。
+     * 启动时调用，恢复内存索引结构。
+     * @return 加载成功返回 true
      */
     bool load_all();
 
+    /**
+     * @brief 规范化 SSTable 状态。
+     * 检查并处理不符合当前合并策略的残留文件或状态。
+     */
     void normalize_sstables();
 };
 
