@@ -3,6 +3,7 @@
 
 #include <string>
 #include <vector>
+#include <deque>
 #include <unordered_map>
 #include <unordered_set>
 #include <fstream>
@@ -44,6 +45,13 @@ namespace EyaKV
             return result;
         }
 
+        static std::string serialize(const double &val)
+        {
+            std::string result;
+            result.append(reinterpret_cast<const char *>(&val), sizeof(val));
+            return result;
+        }
+
         /**
          * @brief 序列化 vector<string> 到字节流
          */
@@ -59,6 +67,36 @@ namespace EyaKV
             return result;
         }
 
+        /**
+         * @brief 序列化 vector<pair<string, string>> 到字节流
+         */
+        static std::string serialize(const std::vector<std::pair<std::string, std::string>> &vec)
+        {
+            std::string result;
+            uint32_t size = static_cast<uint32_t>(vec.size());
+            result.append(reinterpret_cast<const char *>(&size), sizeof(size));
+            for (const auto &[key, value] : vec)
+            {
+                result.append(serialize(key));
+                result.append(serialize(value));
+            }
+            return result;
+        }
+
+        /**
+         * @brief 序列化 deque<string> 到字节流
+         */
+        static std::string serialize(const std::deque<std::string> &deque)
+        {
+            std::string result;
+            uint32_t size = static_cast<uint32_t>(deque.size());
+            result.append(reinterpret_cast<const char *>(&size), sizeof(size));
+            for (const auto &str : deque)
+            {
+                result.append(serialize(str));
+            }
+            return result;
+        }
         /**
          * @brief 序列化 unordered_set<string> 到字节流
          */
@@ -123,6 +161,17 @@ namespace EyaKV
         }
 
         /**
+         * @brief 从字节流反序列化 double
+         */
+        static double deserializeDouble(const char *data, size_t &offset)
+        {
+            double val;
+            std::memcpy(&val, data + offset, sizeof(val));
+            offset += sizeof(val);
+            return val;
+        }
+
+        /**
          * @brief 从字节流反序列化 vector<string>
          */
         static void deserializeVector(const char *data, size_t &offset, std::vector<std::string> &vec)
@@ -136,6 +185,40 @@ namespace EyaKV
             for (uint32_t i = 0; i < size; ++i)
             {
                 vec.push_back(deserializeString(data, offset));
+            }
+        }
+
+        /**
+         * @brief 从字节流反序列化 vector<pair<string, string>>
+         */
+        static void deserializeVector(const char *data, size_t &offset, std::vector<std::pair<std::string, std::string>> &vec)
+        {
+            uint32_t size;
+            std::memcpy(&size, data + offset, sizeof(size));
+            offset += sizeof(size);
+
+            vec.clear();
+            vec.reserve(size);
+            for (uint32_t i = 0; i < size; ++i)
+            {
+                std::string key = deserializeString(data, offset);
+                std::string value = deserializeString(data, offset);
+                vec.emplace_back(std::move(key), std::move(value));
+            }
+        }
+
+        /**
+         * @brief 从字节流反序列化deque<string>
+         */
+        static void deserializeDeque(const char *data, size_t &offset, std::deque<std::string> &deque)
+        {
+            uint32_t size;
+            std::memcpy(&size, data + offset, sizeof(size));
+            offset += sizeof(size);
+            deque.clear();
+            for (uint32_t i = 0; i < size; ++i)
+            {
+                deque.push_back(deserializeString(data, offset));
             }
         }
 

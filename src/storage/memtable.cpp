@@ -34,6 +34,17 @@ void MemTable<K, V>::put(const K &key, const V &value)
     table_.insert(key, value);
 }
 
+/**
+ * @brief 从MemTable中获取指定键对应的值
+ *
+ * @tparam K 键类型
+ * @tparam V 值类型
+ * @param key 要查找的键
+ * @return std::optional<V> 如果找到则返回对应的值，否则返回std::nullopt
+ * @throws 无显式抛出异常，内部异常会被捕获并返回std::nullopt
+ *
+ * @note 此操作是线程安全的，使用共享锁保护
+ */
 template <typename K, typename V>
 std::optional<V> MemTable<K, V>::get(const K &key) const
 {

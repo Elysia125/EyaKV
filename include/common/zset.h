@@ -135,6 +135,10 @@ public:
     void deserialize(const char *data, size_t &offset,
                      void (*deserialize_skiplist_func)(const char *, size_t &, SkipList<std::string, std::string> &),
                      void (*deserialize_map_func)(const char *, size_t &, std::unordered_map<std::string, std::string> &));
+    /**
+     * @brief 遍历
+     */
+    void for_each(std::function<void(const std::string &, const std::string &)> callback) const;
 
 private:
     SkipList<std::string, std::string> skiplist_;                   // 按分值排序的跳表

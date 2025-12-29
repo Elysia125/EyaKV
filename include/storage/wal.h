@@ -30,19 +30,12 @@ public:
     Wal &operator=(const Wal &) = delete;
 
     /**
-     * @brief 记录 Put 操作。
+     * @brief 记录通用操作日志。
+     * @param type 操作类型
      * @param key 键
-     * @param value 值
-     * @return 成功返回 true，失败返回 false
+     * @param payload 序列化后的参数/载荷
      */
-    bool append_put(const std::string &key, const EValue &value);
-
-    /**
-     * @brief 记录 Delete 操作。
-     * @param key 键
-     * @return 成功返回 true，失败返回 false
-     */
-    bool append_delete(const std::string &key);
+    bool append_log(uint8_t type, const std::string &key, const std::string &payload);
 
     /**
      * @brief 从日志文件中恢复数据到 MemTable。
@@ -50,7 +43,7 @@ public:
      * 通常在系统启动时调用。会读取所有日志条目并重放到 MemTable 中。
      * @return 成功返回 true，失败返回 false
      */
-    bool recover(std::function<void(std::string, std::string, std::optional<EValue>)> callback);
+    bool recover(std::function<void(std::string filename, uint8_t type, std::string key, std::string payload)> callback);
 
     /**
      * @brief 清空日志文件（例如在 Flush 到 SSTable 后）。
@@ -74,21 +67,15 @@ private:
     std::recursive_mutex mutex_; // 保护文件写入的互斥锁
     const bool sync_on_write_ = false;
     bool modifyed_ = false; // 记录是否有修改未刷盘
-    // 日志记录类型
-    enum class LogType : uint8_t
-    {
-        kPut = 1,
-        kDelete = 2
-    };
 
     /**
      * @brief 内部辅助函数：将一条操作记录序列化并写入文件。
-     * @param type 操作类型（Put/Delete）
+     * @param type 操作类型（Put/Delete/Others）
      * @param key 操作的键
-     * @param value 操作的值（Put 操作必须提供）
+     * @param payload 操作的载荷
      * @return 写入成功返回 true
      */
-    bool write_record(LogType type, const std::string &key, const std::optional<EValue> &value);
+    bool write_record(uint8_t type, const std::string &key, const std::string &payload);
 
     /**
      * @brief 生成唯一的 WAL 文件名。

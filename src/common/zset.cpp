@@ -142,3 +142,8 @@ void ZSet::deserialize(const char *data, size_t &offset,
     deserialize_skiplist_func(data, offset, skiplist_);
     deserialize_map_func(data, offset, member_score_map_);
 }
+
+void ZSet::for_each(std::function<void(const std::string &, const std::string &)> callback) const
+{
+    skiplist_.for_each(callback);
+}

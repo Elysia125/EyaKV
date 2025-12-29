@@ -34,35 +34,31 @@ Wal::~Wal()
     }
 }
 
-bool Wal::append_put(const std::string &key, const EValue &value)
+bool Wal::append_log(uint8_t type, const std::string &key, const std::string &payload)
 {
-    LOG_DEBUG("Wal: Appending Put record. Key: %s, Value: %s", key, value);
-    return write_record(LogType::kPut, key, value);
+    LOG_DEBUG("Wal: Appending log to WAL file.");
+    return write_record(type, key, payload);
 }
 
-bool Wal::append_delete(const std::string &key)
-{
-    LOG_DEBUG("Wal: Appending Delete record. Key: %s", key);
-    return write_record(LogType::kDelete, key, std::nullopt);
-}
-
-bool Wal::write_record(LogType type, const std::string &key, const std::optional<EValue> &value)
+bool Wal::write_record(uint8_t type, const std::string &key, const std::string &payload)
 {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (wal_file_ == nullptr)
         return false;
 
     // Simple format:
-    // [Type (1B)] [KeyLen (4B)] [Key] [ValueLen (4B)] [Value]
-    uint8_t type_u8 = static_cast<uint8_t>(type);
+    // [Type (1B)] [KeyLen (4B)] [Key] [PayloadLen (4B)] [Payload]
     uint32_t key_len = static_cast<uint32_t>(key.size());
-    std::string value_str = value.has_value() ? serialize(value.value()) : "";
-    uint32_t value_len = static_cast<uint32_t>(value_str.size());
-    fwrite(&type_u8, sizeof(type_u8), 1, wal_file_);
+    uint32_t payload_len = static_cast<uint32_t>(payload.size());
+
+    fwrite(&type, sizeof(type), 1, wal_file_);
     fwrite(&key_len, sizeof(key_len), 1, wal_file_);
     fwrite(key.data(), key_len, 1, wal_file_);
-    fwrite(&value_len, sizeof(value_len), 1, wal_file_);
-    fwrite(value_str.data(), value_len, 1, wal_file_);
+    fwrite(&payload_len, sizeof(payload_len), 1, wal_file_);
+    if (payload_len > 0)
+    {
+        fwrite(payload.data(), payload_len, 1, wal_file_);
+    }
     modifyed_ = true;
     if (sync_on_write_)
     {
@@ -76,7 +72,7 @@ bool Wal::write_record(LogType type, const std::string &key, const std::optional
     return !ferror(wal_file_);
 }
 
-bool Wal::recover(std::function<void(std::string, std::string, std::optional<EValue>)> callback)
+bool Wal::recover(std::function<void(std::string, uint8_t, std::string, std::string)> callback)
 {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     LOG_INFO("Starting WAL recovery from directory: %s", wal_dir_);
@@ -122,23 +118,16 @@ bool Wal::recover(std::function<void(std::string, std::string, std::optional<EVa
                 {
                     reader.read(val_data.data(), val_len);
                 }
-                size_t offset = 0;
-                EValue value = deserialize(val_data.data(), offset);
+                
                 if (reader.fail())
                 {
                     std::cerr << "Wal::Recover: Error reading log file " << filepath << ", maybe truncated." << std::endl;
                     break;
                 }
 
-                LogType type = static_cast<LogType>(type_u8);
-                if (type == LogType::kPut)
-                {
-                    callback(std::filesystem::path(filepath).filename().string(), key, value);
-                }
-                else if (type == LogType::kDelete)
-                {
-                    callback(std::filesystem::path(filepath).filename().string(), key, std::nullopt);
-                }
+                // Call generic callback
+                std::string payload(val_data.begin(), val_data.end());
+                callback(std::filesystem::path(filepath).filename().string(), type_u8, key, payload);
             }
 
             reader.close();

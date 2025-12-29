@@ -1,8 +1,8 @@
-#include "storage/storage.h"
 #include <filesystem>
 #include <iostream>
 #include <thread>
 #include "logger/logger.h"
+#include "storage/processors/structure_processors.h"
 
 const auto remove_evalue = [](EValue &value) -> EValue &
 {
@@ -71,10 +71,11 @@ Storage::Storage(const std::string &data_dir,
         current_wal_filename_ = std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
     }
     // 恢复数据
+    init_command_handlers();
     recover();
 
     start_background_flush_thread();
-    LOG_INFO("Storage engine initialized. Data dir:%s ", data_dir_);
+    LOG_INFO("Storage engine initialized. Data dir:%s ", data_dir_.c_str());
 }
 
 Storage::~Storage()
@@ -123,26 +124,29 @@ std::unique_ptr<MemTable<std::string, EValue>> Storage::create_new_memtable()
 
 void Storage::recover()
 {
-    if (wal_ && memtable_)
+    if (wal_)
     {
         std::unique_lock<std::shared_mutex> lock(immutable_mutex_);
-        bool success = wal_->recover([this](std::string filename, std::string key, std::optional<EValue> value)
+        bool success = wal_->recover([this](std::string filename, uint8_t type, std::string key, std::string payload)
                                      {
             if (immutable_memtables_.find(filename) == immutable_memtables_.end())
             {
                 immutable_memtables_[filename] = create_new_memtable();
             }
             auto &memtable = immutable_memtables_[filename];
-            if (value.has_value())
+            if(type == LogType::kRemove){
+                memtable->handle_value(key, remove_evalue);
+            }else if(type == LogType::kExpire){
+                uint64_t expire_time = std::stoull(payload);
+                set_key_expire(key, expire_time);
+            }
+            else if (processors_.find(type) != processors_.end())
             {
-                memtable->put(key, value.value());
+                processors_[type]->recover(memtable.get(), type, key, payload);
             }
             else
             {
-                memtable->handle_value(key, [](EValue &evalue) -> EValue &
-                                       {
-                                                evalue.deleted = true;
-                                                return evalue; });
+                LOG_ERROR("Unknown log type: %d", type);
             } });
         if (!success)
         {
@@ -182,30 +186,6 @@ void Storage::recover()
             }
         }
     }
-}
-
-bool Storage::put(const std::string &key, const EyaValue &value, const size_t alive_time)
-{
-    if (read_only_)
-    {
-        LOG_ERROR("Storage is in read-only mode. Put operation is not allowed.");
-        return false;
-    }
-
-    // 1. 写 WAL
-    if (enable_wal_ && wal_ && !wal_->append_put(key, value))
-    {
-        LOG_ERROR("Failed to write to WAL for key:%s ", key);
-        return false;
-    }
-
-    // 2. 写 MemTable
-    EValue evalue(value);
-    if (alive_time > 0)
-    {
-        evalue.expire_time = std::chrono::system_clock::now().time_since_epoch().count() + alive_time;
-    }
-    return write_memtable(key, evalue);
 }
 
 bool Storage::write_memtable(const std::string &key, EValue &value)
@@ -301,40 +281,6 @@ std::optional<EValue> Storage::get_from_immutable_memtables(const std::string &k
     }
 
     return std::nullopt;
-}
-
-bool Storage::remove(const std::string &key)
-{
-    if (read_only_)
-    {
-        LOG_ERROR("Storage is in read-only mode. remove operation is not allowed.");
-        return false;
-    }
-
-    // 1. 写 WAL
-    if (enable_wal_ && wal_ && !wal_->append_delete(key))
-    {
-        LOG_ERROR("Failed to write delete to WAL for key: %s", key);
-        return false;
-    }
-
-    // 2. 从 MemTable 中移除
-    try
-    {
-        memtable_->handle_value(key, [](EValue &value) -> EValue &
-                                {
-        value.deleted = true;
-        return value; });
-        return true; // 成功标记删除，直接返回
-    }
-    catch (const std::out_of_range &e)
-    {
-        LOG_INFO("key not found in memtable:%s when remove, inserting tombstone", key);
-    }
-    // 3、未找到key,直接插入一条deleted数据 (tombstone)
-    EValue evalue;
-    evalue.deleted = true;
-    return write_memtable(key, evalue);
 }
 
 bool Storage::contains(const std::string &key) const
@@ -584,6 +530,68 @@ Storage::Stats Storage::get_stats() const
         stats.sstable_count = 0;
         stats.total_sstable_size = 0;
     }
+}
 
-    return stats;
+void Storage::register_processor(std::shared_ptr<ValueProcessor> processor)
+{
+    for (auto type : processor->get_supported_types())
+    {
+        processors_[type] = processor;
+    }
+}
+
+void Storage::init_command_handlers()
+{
+    register_processor(std::make_shared<StringProcessor>());
+    register_processor(std::make_shared<SetProcessor>());
+    register_processor(std::make_shared<ZSetProcessor>());
+    register_processor(std::make_shared<DequeProcessor>());
+    register_processor(std::make_shared<MapProcessor>());
+}
+
+void Storage::set_expire(const std::string &key, uint64_t alive_time)
+{
+    if (read_only_)
+    {
+        LOG_ERROR("Storage is in read-only mode. Set expire operation is not allowed.");
+        throw std::runtime_error("Storage is in read-only mode. Set expire operation is not allowed.");
+    }
+    uint64_t expire_time = alive_time == 0 ? 0 : std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count() + alive_time;
+    if (enable_wal_ && wal_)
+    {
+        std::string payload = std::to_string(expire_time);
+        wal_->append_log(LogType::kExpire, key, payload);
+    }
+    set_key_expire(key, expire_time);
+}
+
+void Storage::set_key_expire(const std::string &key, uint64_t expire_time)
+{
+    try
+    {
+        memtable_->handle_value(key, [&](EValue &v) -> EValue &
+                                {
+        v.expire_time = expire_time;
+        return v; });
+    }
+    catch (const std::out_of_range &)
+    {
+        auto v = get(key);
+        if (!v.has_value())
+        {
+            LOG_ERROR("key not found when set expire.");
+            throw std::runtime_error("key not found");
+        }
+        EValue value(v.value());
+        value.expire_time = expire_time;
+        try
+        {
+            memtable_->put(key, value);
+        }
+        catch (const std::overflow_error &)
+        {
+            rotate_memtable();
+            memtable_->put(key, value);
+        }
+    }
 }

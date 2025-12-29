@@ -436,7 +436,10 @@ public:
         if (current != nullptr && compare_func_(current->key, key) == 0)
         {
             V old_value = current->value;
+            size_t old_value_size = calculate_value_size_func_(old_value);
             current->value = value_handle(current->value);
+            size_t new_value_size = calculate_value_size_func_(current->value);
+            current_size_.fetch_add(new_value_size - old_value_size, std::memory_order_relaxed);
             return old_value;
         }
         throw std::out_of_range("Key not found");
@@ -720,7 +723,7 @@ public:
     std::vector<std::pair<K, V>> get_all_entries() const
     {
         std::vector<std::pair<K, V>> result;
-        SkipListNode<K, V>*current = head_->next[0];
+        SkipListNode<K, V> *current = head_->next[0];
         while (current != nullptr)
         {
             result.emplace_back(current->key, current->value);
@@ -760,7 +763,7 @@ public:
      * @param deserialize_value_func 反序列化value的函数指针
      * @note 会清空当前跳表并重建所有节点
      */
-    void deserialize(const char *data, size_t&offset,
+    void deserialize(const char *data, size_t &offset,
                      std::string (*deserialize_key_func)(const char *data, size_t &offset),
                      std::string (*deserialize_value_func)(const char *data, size_t &offset))
     {

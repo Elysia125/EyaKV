@@ -13,7 +13,16 @@
 #include <atomic>
 #include <thread>
 #include <condition_variable>
+#include <condition_variable>
 #include "common/common.h"
+#include "storage/processors/processor.h"
+
+// Forward declaration
+class ValueProcessor;
+class StringProcessor;
+class VectorProcessor;
+class SetProcessor;
+class ZSetProcessor;
 
 /**
  * @brief Storage 类是存储引擎的统一入口。
@@ -63,16 +72,6 @@ public:
     Storage &operator=(Storage &&) = default;
 
     /**
-     * @brief 写入数据。
-     *
-     * 流程：
-     * 1. 写入 WAL (持久化)
-     * 2. 写入 MemTable (内存索引)
-     * 3. 如果 MemTable 满了，触发 Flush
-     */
-    bool put(const std::string &key, const EyaValue &value, const size_t alive_time = 0);
-
-    /**
      * @brief 读取数据。
      *
      * 流程（按优先级）：
@@ -82,34 +81,12 @@ public:
      */
     std::optional<EyaValue> get(const std::string &key) const;
 
+    template <typename... Args>
+    Result excute(uint8_t type, Args &&...args);
     /**
-     * @brief 删除数据。
-     *
-     * 在 LSM-tree 中，删除操作实际上是写入一个 Tombstone 标记。
-     * 真正的删除发生在 Compaction 过程中。
-     *
-     * 流程：
-     * 1. 写入 WAL (Tombstone)
-     * 2. 在 MemTable 中标记删除
+     * @brief 注册自定义命令处理器
      */
-    bool remove(const std::string &key);
-
-    /**
-     * @brief 检查 key 是否存在。
-     * @param key 要检查的 key
-     * @return 如果存在返回 true
-     */
-    bool contains(const std::string &key) const;
-
-    /**
-     * @brief 范围查询 - 获取指定范围内的所有 KV 对。
-     * @param start_key 起始 key（包含）
-     * @param end_key 结束 key（包含）
-     * @return 范围内的 KV 对列表（按 key 排序）
-     */
-    std::vector<std::pair<std::string, EyaValue>> range(
-        const std::string &start_key,
-        const std::string &end_key) const;
+    void register_processor(std::shared_ptr<ValueProcessor> processor);
 
     /**
      * @brief 强制将当前 MemTable Flush 到 SSTable。
@@ -151,7 +128,8 @@ private:
 
     // WAL
     std::unique_ptr<Wal> wal_;
-
+    // Processors
+    std::unordered_map<uint8_t, std::shared_ptr<ValueProcessor>> processors_;
     // 配置
     bool enable_wal_;
     bool read_only_;
@@ -218,5 +196,195 @@ private:
      * @brief 内部写入实现，处理 WAL 和 MemTable 的写入。
      */
     bool write_memtable(const std::string &key, EValue &value);
+
+    std::shared_ptr<ValueProcessor> get_processor(uint8_t type) const
+    {
+        auto it = processors_.find(type);
+        if (it != processors_.end())
+        {
+            return it->second;
+        }
+        return nullptr;
+    }
+
+    // 初始化内置命令处理器
+    void init_command_handlers();
+
+    /**
+     * @brief 删除数据。
+     *
+     * 在 LSM-tree 中，删除操作实际上是写入一个 Tombstone 标记。
+     * 真正的删除发生在 Compaction 过程中。
+     *
+     * 流程：
+     * 1. 写入 WAL (Tombstone)
+     * 2. 在 MemTable 中标记删除
+     */
+    template <typename... Args>
+    uint32_t remove(Args &&...args);
+
+    /**
+     * @brief 检查 key 是否存在。
+     * @param key 要检查的 key
+     * @return 如果存在返回 true
+     */
+    bool contains(const std::string &key) const;
+
+    /**
+     * @brief 范围查询 - 获取指定范围内的所有 KV 对。
+     * @param start_key 起始 key（包含）
+     * @param end_key 结束 key（包含）
+     * @return 范围内的 KV 对列表（按 key 排序）
+     */
+    std::vector<std::pair<std::string, EyaValue>> range(
+        const std::string &start_key,
+        const std::string &end_key) const;
+
+    /**
+     * @brief 设置key的过期时间。
+     * @param key 要设置过期时间的key
+     * @param alive_time 过期时间（秒）
+     * @return 设置成功返回true，否则返回false
+     */
+    void set_expire(const std::string &key, uint64_t alive_time);
+
+    void set_key_expire(const std::string &key, uint64_t expire_time);
 };
+
+template <typename... Args>
+uint32_t remove(Args &&...args)
+{
+    if (read_only_)
+    {
+        LOG_WARN("Storage: remove failed, read only mode");
+        throw std::runtime_error("Remove key failed, read only mode");
+    }
+    if (sizeof...(Args) == 0)
+    {
+        throw std::runtime_error("Remove key failed, missing key");
+    }
+    uint32_t count = 0;
+    if (enable_wal_ && wal_)
+    {
+        (
+            [&](auto &&key)
+            {
+                if (!wal_->append_log(LogType::kRemove, std::forward<decltype(key)>(key), ""))
+                {
+                    LOG_ERROR("Storage: remove key %s failed, append log failed",
+                              std::forward<decltype(key)>(key).c_str());
+                    return;
+                }
+                memtable_->handle_value(key, remove_evalue);
+                ++count;
+            }(std::forward<Args>(args)),
+            ...);
+    }
+    else
+    {
+        (
+            [&](auto &&key)
+            {
+                memtable_->handle_value(key, remove_evalue);
+                ++count;
+            }(std::forward<Args>(args)),
+            ...);
+    }
+    return count;
+}
+
+template <typename... Args>
+Result Storage::excute(uint8_t type, Args &&...args)
+{
+    try
+    {
+        if (type == LogType::kRemove)
+        {
+            if (sizeof...(Args) == 0)
+            {
+                return Result.error("missing key");
+            }
+            return Result.success(remove(std::forward<Args>(args)...));
+        }
+        else if (type == LogType::kExists)
+        {
+            if (sizeof...(Args) == 0)
+            {
+                return Result.error("missing key");
+            }
+            else if (sizeof...(Args) > 1)
+            {
+                return Result.error("too many arguments");
+            }
+            return Result.success(contains(std::forward<Args>(args)...) ? "1" : "0");
+        }
+        else if (type == LogType::kRange)
+        {
+            if (sizeof...(Args) <= 1)
+            {
+                return Result.error("missing key");
+            }
+            if (sizeof...(Args) > 2)
+            {
+                return Result.error("too many arguments");
+            }
+            return Result.success(range(std::forward<Args>(args)...));
+        }
+        else if (type == LogType::kExpire)
+        {
+            if (sizeof...(Args) <= 1)
+            {
+                return Result.error("missing key");
+            }
+            if (sizeof...(Args) > 2)
+            {
+                return Result.error("too many arguments");
+            }
+            auto tup = std::forward_as_tuple(std::forward<Args>(args)...);
+            std::string key = std::get<0>(tup);
+            uint64_t expire_time = std::stoull(std::get<1>(tup));
+            return Result.success(set_expire(key, expire_time));
+        }
+        else if (type == LogType::kGet)
+        {
+            if (sizeof...(Args) == 0)
+            {
+                return Result.error("missing key");
+            }
+            if (sizeof...(Args) > 1)
+            {
+                return Result.error("too many arguments");
+            }
+            auto value = get(std::forward<Args>(args)...);
+            EData data = value == std::nullopt ? std::monostate(), value.value();
+            return Result.success(data);
+        }
+        else
+        {
+            auto processor = get_processor(type);
+            if (processor)
+            {
+                std::vector<std::string> vec = {std::forward<Args>(args)...};
+                if (enable_wal_ && wal_)
+                {
+                    return processor->excute(memtable_.get(), wal_.get(), type, vec);
+                }
+                else
+                {
+                    return processor->excute(memtable_.get(), nullptr, type, vec);
+                }
+            }
+            return Result.error("unknown command");
+        }
+    }
+    catch (const std::runtime_error &e)
+    {
+        return Result.error(e.what());
+    }
+    catch (const std::exception &e)
+    {
+        return Result.error("unknown error");
+    }
+}
+
 #endif // STORAGE_H
