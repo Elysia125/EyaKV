@@ -30,6 +30,12 @@ struct Result
     {
         return Result{data, error_msg};
     }
+    /**
+     * @brief 创建一个包含错误信息的Result对象
+     *
+     * @param error_msg 错误描述信息
+     * @return Result 包含错误信息的Result对象
+     */
     static Result error(const std::string error_msg)
     {
         return Result{std::monostate{}, error_msg};

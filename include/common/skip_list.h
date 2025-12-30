@@ -813,5 +813,11 @@ public:
             std::cout << std::endl;
         }
     }
+
+    void set_max_node_count(const size_t&max_node_count)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        MAX_NODE_COUNT = max_node_count;
+    }
 };
 #endif

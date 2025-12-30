@@ -5,17 +5,21 @@
 #include <vector>
 #include <string>
 #include "common/common.h"
-#include "storage/wal.h"
+
 class Storage;
 
 class ValueProcessor
 {
 public:
     virtual ~ValueProcessor() = default;
-
-    virtual Result execute(MemTable<std::string, EValue> *memtable, Wal *wal, const uint8_t type, const std::vector<std::string> &args) = 0;
-
-    virtual bool recover(MemTable<std::string, EValue> *memtable,const uint8_t type, const std::string &key, const std::string &payload) = 0;
+    /**
+     * @brief 执行操作
+     */
+    virtual Result execute(Storage *storage, const uint8_t type, const std::vector<std::string> &args) = 0;
+    /**
+     * @brief 恢复操作
+     */
+    virtual bool recover(Storage *storage,MemTable<std::string, EValue> *memtable, const uint8_t type, const std::string &key, const std::string &payload) = 0;
     /**
      * @brief 获取支持的类型
      */

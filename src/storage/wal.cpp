@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <cstring>
 #include <cerrno>
+#include <set>
 #include "common/path_utils.h"
 #include "logger/logger.h"
 
@@ -82,59 +83,63 @@ bool Wal::recover(std::function<void(std::string, uint8_t, std::string, std::str
     }
     // 打开wal目录下的所有wal文件进行恢复
     fs::directory_iterator dir_iter(wal_dir_);
+    std::set<std::string> wal_files;
     for (const auto &entry : dir_iter)
     {
         if (entry.path().extension() == ".wal")
         {
-            std::string filepath = entry.path().string();
-            LOG_INFO("Recovering from WAL file: %s", filepath);
-            std::ifstream reader(filepath, std::ios::binary);
-            if (!reader.is_open())
-            {
-                LOG_ERROR("Wal::Recover: Failed to open WAL file at %s", filepath);
-                continue;
-            }
-
-            while (reader.peek() != EOF)
-            {
-                uint8_t type_u8;
-                uint32_t key_len;
-                uint32_t val_len;
-
-                reader.read(reinterpret_cast<char *>(&type_u8), sizeof(type_u8));
-                if (reader.eof())
-                    break;
-
-                reader.read(reinterpret_cast<char *>(&key_len), sizeof(key_len));
-
-                std::string key(key_len, '\0');
-                reader.read(&key[0], key_len);
-
-                reader.read(reinterpret_cast<char *>(&val_len), sizeof(val_len));
-
-                // 使用 std::vector 自动管理内存，避免内存泄漏
-                std::vector<char> val_data(val_len);
-                if (val_len > 0)
-                {
-                    reader.read(val_data.data(), val_len);
-                }
-                
-                if (reader.fail())
-                {
-                    std::cerr << "Wal::Recover: Error reading log file " << filepath << ", maybe truncated." << std::endl;
-                    break;
-                }
-
-                // Call generic callback
-                std::string payload(val_data.begin(), val_data.end());
-                callback(std::filesystem::path(filepath).filename().string(), type_u8, key, payload);
-            }
-
-            reader.close();
-            // 删除已恢复的日志文件
-            // std::filesystem::remove(filepath);
-            LOG_INFO("Completed recovery from WAL file: %s", filepath);
+            wal_files.insert(entry.path().string());
         }
+    }
+    for (const auto &filepath : wal_files)
+    {
+        LOG_INFO("Recovering from WAL file: %s", filepath.c_str());
+        std::ifstream reader(filepath, std::ios::binary);
+        if (!reader.is_open())
+        {
+            LOG_ERROR("Wal::Recover: Failed to open WAL file at %s", filepath);
+            continue;
+        }
+
+        while (reader.peek() != EOF)
+        {
+            uint8_t type_u8;
+            uint32_t key_len;
+            uint32_t val_len;
+
+            reader.read(reinterpret_cast<char *>(&type_u8), sizeof(type_u8));
+            if (reader.eof())
+                break;
+
+            reader.read(reinterpret_cast<char *>(&key_len), sizeof(key_len));
+
+            std::string key(key_len, '\0');
+            reader.read(&key[0], key_len);
+
+            reader.read(reinterpret_cast<char *>(&val_len), sizeof(val_len));
+
+            // 使用 std::vector 自动管理内存，避免内存泄漏
+            std::vector<char> val_data(val_len);
+            if (val_len > 0)
+            {
+                reader.read(val_data.data(), val_len);
+            }
+
+            if (reader.fail())
+            {
+                std::cerr << "Wal::Recover: Error reading log file " << filepath << ", maybe truncated." << std::endl;
+                break;
+            }
+
+            // Call generic callback
+            std::string payload(val_data.begin(), val_data.end());
+            callback(std::filesystem::path(filepath).filename().string(), type_u8, key, payload);
+        }
+
+        reader.close();
+        // 删除已恢复的日志文件
+        // std::filesystem::remove(filepath);
+        LOG_INFO("Completed recovery from WAL file: %s", filepath);
     }
     // Reopen for appending
     // open_wal_file();

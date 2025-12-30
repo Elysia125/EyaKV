@@ -122,4 +122,15 @@ V MemTable<K, V>::handle_value(const K &key, std::function<V &(V &)> value_handl
     return table_.handle_value(key, value_handle);
 }
 
+template <typename K, typename V>
+void MemTable<K, V>::set_memory_limit(const size_t &memtable_size)
+{
+    memtable_size_ = memtable_size * 1024;
+}
+template <typename K, typename V>
+void MemTable<K, V>::set_skiplist_max_node_count(const size_t &skiplist_max_node_count)
+{
+    std::unique_lock<std::shared_mutex> lock(mutex_);
+    table_.set_max_node_count(skiplist_max_node_count);
+}
 template class MemTable<std::string, EValue>;

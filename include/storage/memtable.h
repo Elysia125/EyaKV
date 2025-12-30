@@ -45,7 +45,7 @@ public:
              std::optional<int (*)(const K &, const K &)> compare_func = std::nullopt,
              std::optional<size_t (*)(const K &)> calculate_key_size_func = std::nullopt,
              std::optional<size_t (*)(const V &)> calculate_value_size_func = std::nullopt);
-    
+
     /**
      * @brief 析构函数，释放 MemTable 占用的资源。
      */
@@ -146,7 +146,7 @@ public:
      * @return std::vector<std::pair<K, V>> 包含所有 KV 对的向量，按 Key 升序排列
      */
     std::vector<std::pair<K, V>> get_all_entries() const;
-    
+
     /**
      * @brief 遍历所有 Key-Value 对，按 Key 升序调用回调函数。
      *
@@ -155,7 +155,7 @@ public:
      * @param callback 回调函数，接受 (const K&, const V&) 参数
      */
     void for_each(const std::function<void(const K &, const V &)> &callback) const;
-    
+
     /**
      * @brief 对指定 Key 对应的 Value 进行原子操作。
      *
@@ -169,6 +169,10 @@ public:
      * @note 如果 Key 已过期，会自动标记为删除状态
      */
     V handle_value(const K &key, std::function<V &(V &)> value_handle);
+
+    void set_memory_limit(const size_t &memtable_size);
+
+    void set_skiplist_max_node_count(const size_t &skiplist_max_node_count);
 
 private:
     size_t memtable_size_; ///< MemTable 大小限制（字节数）

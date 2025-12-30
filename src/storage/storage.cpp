@@ -3,6 +3,7 @@
 #include <thread>
 #include "logger/logger.h"
 #include "storage/processors/structure_processors.h"
+#include "storage/storage.h"
 
 const auto remove_evalue = [](EValue &value) -> EValue &
 {
@@ -126,28 +127,46 @@ void Storage::recover()
 {
     if (wal_)
     {
+        // 记录下当前的memtable_size和skiplist_max_node_count
+        size_t current_memtable_size = memtable_size_;
+        size_t current_skiplist_max_node_count = skiplist_max_node_count_;
+        // 设置这两个为最大值，避免恢复过程中大小不足
+        memtable_size_ = std::numeric_limits<size_t>::max();
+        skiplist_max_node_count_ = std::numeric_limits<size_t>::max();
+        // 记录下当前的文件名
+        std::string current_wal_filename = "";
+        std::unique_ptr<MemTable<std::string, EValue>> memtable = nullptr;
         std::unique_lock<std::shared_mutex> lock(immutable_mutex_);
-        bool success = wal_->recover([this](std::string filename, uint8_t type, std::string key, std::string payload)
+        bool success = wal_->recover([this, &current_wal_filename, &memtable](std::string filename, uint8_t type, std::string key, std::string payload)
                                      {
-            if (immutable_memtables_.find(filename) == immutable_memtables_.end())
-            {
-                immutable_memtables_[filename] = create_new_memtable();
+            if(filename != current_wal_filename){
+                current_wal_filename = filename;
+                memtable = create_new_memtable();
+                immutable_memtables_[current_wal_filename] = std::move(memtable);
             }
-            auto &memtable = immutable_memtables_[filename];
-            if(type == LogType::kRemove){
-                memtable->handle_value(key, remove_evalue);
+            //auto &memtable = immutable_memtables_[filename];
+            try{if(type == LogType::kRemove){
+                remove(memtable.get(),key);
             }else if(type == LogType::kExpire){
                 uint64_t expire_time = std::stoull(payload);
-                set_key_expire(key, expire_time);
+                set_key_expire(memtable.get(),key, expire_time);
             }
             else if (processors_.find(type) != processors_.end())
             {
-                processors_[type]->recover(memtable.get(), type, key, payload);
+                if(!processors_[type]->recover(this,memtable.get(), type, key, payload)){
+                    LOG_ERROR("Storage: WAL recovery failed for type: %d, key: %s, payload: %s", type, key.c_str(), payload.c_str());
+                }
             }
             else
             {
                 LOG_ERROR("Unknown log type: %d", type);
+            }}catch(std::exception&e){
+                LOG_WARN("Occur exception when recover wal for type %d key %s payload %s, exception: %s", type, key.c_str(), payload.c_str(), e.what());
             } });
+        // 恢复完成，恢复memtable_size和skiplist_max_node_count
+        memtable_size_ = current_memtable_size;
+        skiplist_max_node_count_ = current_skiplist_max_node_count;
+
         if (!success)
         {
             LOG_ERROR("Storage: WAL recovery failed.");
@@ -161,6 +180,8 @@ void Storage::recover()
             }
             // 判断最后一个（最新的）memtable是否需要flush
             auto last_memtable = immutable_memtables_.rbegin();
+            last_memtable->second->set_memory_limit(current_memtable_size);
+            last_memtable->second->set_skiplist_max_node_count(current_skiplist_max_node_count);
             if (!last_memtable->second->should_flush() && !read_only_)
             {
                 memtable_ = std::move(last_memtable->second);
@@ -218,38 +239,60 @@ bool Storage::write_memtable(const std::string &key, EValue &value)
 
 std::optional<EyaValue> Storage::get(const std::string &key) const
 {
-    // 1. 查 MemTable（最新数据）
+    std::optional<EValue> result;
+    LOG_INFO("Get from latest memtable: %s", key.c_str());
+    if (get_from_latest(key, result))
+    {
+        return result->value;
+    }
+    LOG_WARN("Get from latest memtable failed, try to get from old memtable: %s", key.c_str());
+    LOG_INFO("Get from old memtable: %s", key.c_str());
+    if (get_from_old(key, result))
+    {
+        return result->value;
+    }
+    LOG_WARN("Get from old memtable failed, key: %s not found", key.c_str());
+    return std::nullopt;
+}
+
+bool Storage::get_from_latest(const std::string &key, std::optional<EValue> &value) const
+{
     std::optional<EValue> result;
     try
     {
-        result = memtable_->handle_value(key, [](EValue &value) -> EValue &
-                                         { 
-                                            if(value.is_deleted()||value.is_expired()){
-                                                throw std::out_of_range("key not found");
-                                            }
-                                            return value; });
+        result = memtable_->get(key);
         if (result.has_value())
         {
-            return result->value;
+            if (result->is_expired() || result->is_deleted())
+            {
+                return false;
+            }
+            value = result.value();
+            return true;
         }
     }
     catch (const std::out_of_range &e)
     {
-        LOG_INFO("key not found in memtable:%s", key);
+        return false;
     }
+}
 
-    // 2. 查 Immutable MemTables
+bool Storage::get_from_old(const std::string &key, std::optional<EValue> &value) const
+{
+    std::optional<EValue> result;
+    // 查 Immutable MemTables
     result = get_from_immutable_memtables(key);
     if (result.has_value())
     {
         if (result->is_expired() || result->is_deleted())
         {
-            return std::nullopt;
+            return false;
         }
-        return result->value;
+        value = result.value();
+        return true;
     }
 
-    // 3. 查 SSTable
+    // 查 SSTable
     if (sstable_manager_)
     {
         EValue value;
@@ -257,13 +300,13 @@ std::optional<EyaValue> Storage::get(const std::string &key) const
         {
             if (value.is_expired() || value.is_deleted())
             {
-                return std::nullopt;
+                return false;
             }
-            return value.value;
+            value = value.value;
+            return true;
         }
     }
-
-    return std::nullopt;
+    return false;
 }
 
 std::optional<EValue> Storage::get_from_immutable_memtables(const std::string &key) const
@@ -546,7 +589,7 @@ void Storage::init_command_handlers()
     register_processor(std::make_shared<SetProcessor>());
     register_processor(std::make_shared<ZSetProcessor>());
     register_processor(std::make_shared<DequeProcessor>());
-    register_processor(std::make_shared<MapProcessor>());
+    register_processor(std::make_shared<HashProcessor>());
 }
 
 void Storage::set_expire(const std::string &key, uint64_t alive_time)
@@ -562,15 +605,15 @@ void Storage::set_expire(const std::string &key, uint64_t alive_time)
         std::string payload = std::to_string(expire_time);
         wal_->append_log(LogType::kExpire, key, payload);
     }
-    set_key_expire(key, expire_time);
+    set_key_expire(memtable_.get(), key, expire_time);
 }
 
-void Storage::set_key_expire(const std::string &key, uint64_t expire_time)
+void Storage::set_key_expire(MemTable<std::string, EValue> *memtable, const std::string &key, uint64_t expire_time)
 {
     try
     {
-        memtable_->handle_value(key, [&](EValue &v) -> EValue &
-                                {
+        memtable->handle_value(key, [&](EValue &v) -> EValue &
+                               {
         v.expire_time = expire_time;
         return v; });
     }
@@ -586,12 +629,158 @@ void Storage::set_key_expire(const std::string &key, uint64_t expire_time)
         value.expire_time = expire_time;
         try
         {
-            memtable_->put(key, value);
+            memtable->put(key, value);
         }
         catch (const std::overflow_error &)
         {
             rotate_memtable();
-            memtable_->put(key, value);
+            memtable->put(key, value);
         }
+    }
+}
+
+uint32_t Storage::remove(std::vector<std::string> &keys)
+{
+    if (read_only_)
+    {
+        LOG_WARN("Storage: remove failed, read only mode");
+        throw std::runtime_error("Remove key failed, read only mode");
+    }
+    if (keys.empty())
+    {
+        throw std::runtime_error("Remove key failed, missing key");
+    }
+    uint32_t count = 0;
+    for (auto &key : keys)
+    {
+        if (enable_wal_ && wal_ && !wal_->append_log(LogType::kRemove, std::forward<decltype(key)>(key), ""))
+        {
+            LOG_ERROR("Storage: remove key %s failed, append log failed",
+                      key.c_str());
+            continue;
+        }
+        if (remove(memtable_.get(), key))
+        {
+            ++count;
+        }
+    }
+
+    return count;
+}
+
+bool Storage::remove(MemTable<std::string, EValue> *memtable, const std::string &key)
+{
+    try
+    {
+        memtable->handle_value(key, remove_evalue);
+        return true;
+    }
+    catch (const std::out_of_range &)
+    {
+        // 插入一个delete值
+        EValue delete_value;
+        delete_value.deleted = true;
+        memtable->put(key, delete_value);
+        return true;
+    }
+    catch (const std::exception &e)
+    {
+        LOG_ERROR("Storage: remove key %s failed, %s", key.c_str(), e.what());
+        return false;
+    }
+}
+
+Result Storage::execute(uint8_t type, std::vector<std::string> &args)
+{
+    try
+    {
+        if (type == LogType::kRemove)
+        {
+            if (args.empty())
+            {
+                return Result::error("missing key");
+            }
+            return Result::success(std::to_string(remove(args)));
+        }
+        else if (type == LogType::kExists)
+        {
+            if (args.empty())
+            {
+                return Result::error("missing key");
+            }
+            else if (args.size() > 1)
+            {
+                return Result::error("too many arguments");
+            }
+            return Result::success(std::string(contains(args[0]) ? "1" : "0"));
+        }
+        else if (type == LogType::kRange)
+        {
+            if (args.size() < 2)
+            {
+                return Result::error("missing key");
+            }
+            if (args.size() > 2)
+            {
+                return Result::error("too many arguments");
+            }
+            return Result::success(range(args[0], args[1]));
+        }
+        else if (type == LogType::kExpire)
+        {
+            if (args.size() <= 1)
+            {
+                return Result::error("missing key");
+            }
+            if (args.size() > 2)
+            {
+                return Result::error("too many arguments");
+            }
+            uint64_t expire_time = std::stoull(args[1]);
+            set_expire(args[0], expire_time);
+            return Result::success(std::string("1"));
+        }
+        else if (type == LogType::kGet)
+        {
+            if (args.size() == 0)
+            {
+                return Result::error("missing key");
+            }
+            if (args.size() > 1)
+            {
+                return Result::error("too many arguments");
+            }
+            auto value = get(args[0]);
+            EData data;
+            if (value.has_value())
+            {
+                data = value.value();
+            }
+            return Result::success(data);
+        }
+        else
+        {
+            auto processor = get_processor(type);
+            if (processor)
+            {
+                try
+                {
+                    return processor->execute(this, type, args);
+                }
+                catch (const std::exception &e)
+                {
+                    return Result::error(e.what());
+                }
+            }
+            return Result::error("unknown command");
+        }
+    }
+    catch (const std::runtime_error &e)
+    {
+        return Result::error(e.what());
+    }
+    catch (const std::exception &e)
+    {
+        return Result::error("unknown error");
     }
 }

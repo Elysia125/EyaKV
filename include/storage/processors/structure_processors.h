@@ -2,20 +2,17 @@
 #define TINYKV_STORAGE_STRUCTURE_PROCESSORS_H_
 
 #include "storage/processors/processor.h"
-#include "storage/storage.h"
 #include "common/serializer.h"
 #include "common/common.h"
-
 // String Processor
 class StringProcessor : public ValueProcessor
 {
 private:
-    // Operations
-    bool set(MemTable<std::string, EValue> *memtable, Wal *wal, const std::string &key, const std::string &value, const uint64_t &ttl = 0);
+    bool set(Storage *storage, const std::string &key, const std::string &value, const uint64_t &ttl = 0);
 
 public:
-    Result execute(MemTable<std::string, EValue> *memtable, Wal *wal, const uint8_t type, const std::vector<std::string> &args) override;
-    bool recover(MemTable<std::string, EValue> *memtable, const uint8_t type, const std::string &key, const std::string &payload) override;
+    Result execute(Storage *storage, const uint8_t type, const std::vector<std::string> &args) override;
+    bool recover(Storage *storage, MemTable<std::string, EValue> *memtable, const uint8_t type, const std::string &key, const std::string &payload) override;
     std::vector<uint8_t> get_supported_types() const override;
 };
 
@@ -23,48 +20,180 @@ public:
 class SetProcessor : public ValueProcessor
 {
 public:
-    Result execute(MemTable<std::string, EValue> *memtable, Wal *wal, const uint8_t type, const std::vector<std::string> &args) override;
-    std::vector<uint8_t> get_supported_types() const override;
-    bool recover(MemTable<std::string, EValue> *memtable, const uint8_t type, const std::string &key, const std::string &payload) override;
+    /**
+     * @brief 执行 Set 相关命令
+     * @param storage 存储引擎实例
+     * @param type 操作类型 (kSAdd, kSRem, kSMembers)
+     * @param args 命令参数
+     * @return Result 执行结果
+     */
+    Result execute(Storage *storage, const uint8_t type, const std::vector<std::string> &args) override;
 
-    // Operations
-    bool sadd(Storage &storage, const std::string &key, const std::vector<std::string> &members);
-    bool srem(Storage &storage, const std::string &key, const std::vector<std::string> &members);
+    /**
+     * @brief 获取支持的操作类型
+     * @return 支持的 LogType 列表
+     */
+    std::vector<uint8_t> get_supported_types() const override;
+
+    /**
+     * @brief 恢复 Set 数据
+     * @param storage 存储引擎实例
+     * @param memtable 内存表
+     * @param type 操作类型
+     * @param key 键
+     * @param payload 数据载荷
+     * @return true 成功, false 失败
+     */
+    bool recover(Storage *storage, MemTable<std::string, EValue> *memtable, const uint8_t type, const std::string &key, const std::string &payload) override;
+
+private:
+    /**
+     * @brief 向集合添加元素
+     * @param storage 存储引擎
+     * @param key 键
+     * @param member 成员
+     * @return true 添加成功 (之前不存在), false 成员已存在
+     */
+    bool s_add(Storage *storage, const std::string &key, const std::string &member);
+
+    /**
+     * @brief 从集合移除元素
+     * @param storage 存储引擎
+     * @param key 键
+     * @param member 成员
+     * @return true 移除成功, false 成员不存在
+     */
+    bool s_rem(Storage *storage, const std::string &key, const std::string &member);
+
+    /**
+     * @brief 获取集合所有成员
+     * @param storage 存储引擎
+     * @param key 键
+     * @return 成员列表
+     */
+    std::vector<std::string> s_members(Storage *storage, const std::string &key);
 };
 
 // ZSet Processor
 class ZSetProcessor : public ValueProcessor
 {
 public:
-    Result execute(MemTable<std::string, EValue> *memtable, Wal *wal, const uint8_t type, const std::vector<std::string> &args) override;
-    std::vector<uint8_t> get_supported_types() const override;
-    bool recover(MemTable<std::string, EValue> *memtable, const uint8_t type, const std::string &key, const std::string &payload) override;
+    /**
+     * @brief 执行 ZSet 相关命令
+     * @param storage 存储引擎实例
+     * @param type 操作类型
+     * @param args 命令参数
+     * @return Result 执行结果
+     */
+    Result execute(Storage *storage, const uint8_t type, const std::vector<std::string> &args) override;
 
-    // Operations
-    bool zadd(Storage &storage, const std::string &key, double score, const std::string &member);
-    bool zrem(Storage &storage, const std::string &key, const std::string &member);
+    /**
+     * @brief 获取支持的操作类型
+     * @return 支持的 LogType 列表
+     */
+    std::vector<uint8_t> get_supported_types() const override;
+
+    /**
+     * @brief 恢复 ZSet 数据
+     * @param memtable 内存表
+     * @param type 操作类型
+     * @param key 键
+     * @param payload 数据载荷
+     * @return true 成功, false 失败
+     */
+    bool recover(Storage *storage, MemTable<std::string, EValue> *memtable, const uint8_t type, const std::string &key, const std::string &payload) override;
+
+private:
+    // Helper methods for ZSet operations
+    bool z_add(Storage *storage, const std::string &key, const std::string &score, const std::string &member);
+    bool z_rem(Storage *storage, const std::string &key, const std::string &member);
+    std::optional<std::string> z_score(Storage *storage, const std::string &key, const std::string &member);
+    std::optional<size_t> z_rank(Storage *storage, const std::string &key, const std::string &member);
+    size_t z_card(Storage *storage, const std::string &key);
+    std::string z_incr_by(Storage *storage, const std::string &key, const std::string &increment, const std::string &member);
+    std::vector<std::pair<std::string, EyaValue>> z_range_by_rank(Storage *storage, const std::string &key, long long start, long long end);
+    std::vector<std::pair<std::string, EyaValue>> z_range_by_score(Storage *storage, const std::string &key, const std::string &min, const std::string &max);
+    size_t z_rem_by_rank(Storage *storage, const std::string &key, long long start, long long end);
+    size_t z_rem_by_score(Storage *storage, const std::string &key, const std::string &min, const std::string &max);
 };
 
 // Deque (List) Processor
 class DequeProcessor : public ValueProcessor
 {
 public:
-    Result execute(MemTable<std::string, EValue> *memtable, Wal *wal, const uint8_t type, const std::vector<std::string> &args) override;
-    std::vector<uint8_t> get_supported_types() const override;
-    bool recover(MemTable<std::string, EValue> *memtable, const uint8_t type, const std::string &key, const std::string &payload) override;
+    /**
+     * @brief 执行 List 相关命令
+     * @param storage 存储引擎实例
+     * @param type 操作类型
+     * @param args 命令参数
+     * @return Result 执行结果
+     */
+    Result execute(Storage *storage, const uint8_t type, const std::vector<std::string> &args) override;
 
-    // Operations
-    bool lpush(Storage &storage, const std::string &key, const std::string &element);
-    std::optional<std::string> rpop(Storage &storage, const std::string &key);
+    /**
+     * @brief 获取支持的操作类型
+     * @return 支持的 LogType 列表
+     */
+    std::vector<uint8_t> get_supported_types() const override;
+
+    /**
+     * @brief 恢复 List 数据
+     * @param memtable 内存表
+     * @param type 操作类型
+     * @param key 键
+     * @param payload 数据载荷
+     * @return true 成功, false 失败
+     */
+    bool recover(Storage *storage, MemTable<std::string, EValue> *memtable, const uint8_t type, const std::string &key, const std::string &payload) override;
+
+private:
+    size_t l_push(Storage *storage, const std::string &key, const std::string &value);
+    std::optional<std::string> l_pop(Storage *storage, const std::string &key);
+    size_t r_push(Storage *storage, const std::string &key, const std::string &value);
+    std::optional<std::string> r_pop(Storage *storage, const std::string &key);
+    std::vector<std::string> l_range(Storage *storage, const std::string &key, long long start, long long end);
+    std::optional<std::string> l_get(Storage *storage, const std::string &key, long long index);
+    size_t l_size(Storage *storage, const std::string &key);
+    std::vector<std::string> l_pop_n(Storage *storage, const std::string &key, size_t n);
+    std::vector<std::string> r_pop_n(Storage *storage, const std::string &key, size_t n);
 };
 
-// Map Processor
-class MapProcessor : public ValueProcessor
+// Hash Processor
+class HashProcessor : public ValueProcessor
 {
 public:
-    Result execute(MemTable<std::string, EValue> *memtable, Wal *wal, const uint8_t type, const std::vector<std::string> &args) override;
+    /**
+     * @brief 执行 Hash 相关命令
+     * @param storage 存储引擎实例
+     * @param type 操作类型
+     * @param args 命令参数
+     * @return Result 执行结果
+     */
+    Result execute(Storage *storage, const uint8_t type, const std::vector<std::string> &args) override;
+
+    /**
+     * @brief 获取支持的操作类型
+     * @return 支持的 LogType 列表
+     */
     std::vector<uint8_t> get_supported_types() const override;
-    bool recover(MemTable<std::string, EValue> *memtable, const uint8_t type, const std::string &key, const std::string &payload) override;
+
+    /**
+     * @brief 恢复 Hash 数据
+     * @param memtable 内存表
+     * @param type 操作类型
+     * @param key 键
+     * @param payload 数据载荷
+     * @return true 成功, false 失败
+     */
+    bool recover(Storage *storage, MemTable<std::string, EValue> *memtable, const uint8_t type, const std::string &key, const std::string &payload) override;
+
+private:
+    bool h_set(Storage *storage, const std::string &key, const std::string &field, const std::string &value);
+    std::optional<std::string> h_get(Storage *storage, const std::string &key, const std::string &field);
+    bool h_del(Storage *storage, const std::string &key, const std::string &field);
+    std::vector<std::string> h_keys(Storage *storage, const std::string &key);
+    std::vector<std::string> h_values(Storage *storage, const std::string &key);
+    std::unordered_map<std::string, std::string> h_entries(Storage *storage, const std::string &key);
 };
 
 #endif // TINYKV_STORAGE_STRUCTURE_PROCESSORS_H_

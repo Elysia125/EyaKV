@@ -81,8 +81,7 @@ public:
      */
     std::optional<EyaValue> get(const std::string &key) const;
 
-    template <typename... Args>
-    Result excute(uint8_t type, Args &&...args);
+    Result execute(uint8_t type, std::vector<std::string> &args);
     /**
      * @brief 注册自定义命令处理器
      */
@@ -196,7 +195,9 @@ private:
      * @brief 内部写入实现，处理 WAL 和 MemTable 的写入。
      */
     bool write_memtable(const std::string &key, EValue &value);
-
+    /**
+     * @brief 获取处理器
+     */
     std::shared_ptr<ValueProcessor> get_processor(uint8_t type) const
     {
         auto it = processors_.find(type);
@@ -220,9 +221,17 @@ private:
      * 1. 写入 WAL (Tombstone)
      * 2. 在 MemTable 中标记删除
      */
-    template <typename... Args>
-    uint32_t remove(Args &&...args);
-
+    uint32_t remove(std::vector<std::string> &keys);
+    /**
+     * @brief 删除单个数据。
+     *
+     * 在 LSM-tree 中，删除操作实际上是写入一个 Tombstone 标记。
+     * 真正的删除发生在 Compaction 过程中。
+     *
+     * 流程：
+     * 在 MemTable 中标记删除
+     */
+    bool remove(MemTable<std::string, EValue> *memtable, const std::string &key);
     /**
      * @brief 检查 key 是否存在。
      * @param key 要检查的 key
@@ -241,150 +250,35 @@ private:
         const std::string &end_key) const;
 
     /**
-     * @brief 设置key的过期时间。
+     * @brief 设置key的存活时间（从当前时间戳开始）。
      * @param key 要设置过期时间的key
-     * @param alive_time 过期时间（秒）
+     * @param alive_time 存活时间（秒）
      * @return 设置成功返回true，否则返回false
      */
     void set_expire(const std::string &key, uint64_t alive_time);
+    /**
+     * @brief 设置key的过期时间戳。
+     * @param memtable 目标MemTable
+     * @param key 要设置过期时间的key
+     * @param expire_time 过期时间戳（秒）
+     * @return 设置成功返回true，否则返回false
+     */
+    void set_key_expire(MemTable<std::string, EValue> *memtable, const std::string &key, uint64_t expire_time);
+    /**
+     * @brief 根据key从最新数据中获取
+     */
+    bool get_from_latest(const std::string &key, std::optional<EValue> &value) const;
 
-    void set_key_expire(const std::string &key, uint64_t expire_time);
+    /**
+     * @brief 根据key从旧数据中获取
+     */
+    bool get_from_old(const std::string &key, std::optional<EValue> &value) const;
+    // 设置友元类
+    friend class StringProcessor;
+    friend class SetProcessor;
+    friend class ZSetProcessor;
+    friend class DequeProcessor;
+    friend class HashProcessor;
 };
-
-template <typename... Args>
-uint32_t remove(Args &&...args)
-{
-    if (read_only_)
-    {
-        LOG_WARN("Storage: remove failed, read only mode");
-        throw std::runtime_error("Remove key failed, read only mode");
-    }
-    if (sizeof...(Args) == 0)
-    {
-        throw std::runtime_error("Remove key failed, missing key");
-    }
-    uint32_t count = 0;
-    if (enable_wal_ && wal_)
-    {
-        (
-            [&](auto &&key)
-            {
-                if (!wal_->append_log(LogType::kRemove, std::forward<decltype(key)>(key), ""))
-                {
-                    LOG_ERROR("Storage: remove key %s failed, append log failed",
-                              std::forward<decltype(key)>(key).c_str());
-                    return;
-                }
-                memtable_->handle_value(key, remove_evalue);
-                ++count;
-            }(std::forward<Args>(args)),
-            ...);
-    }
-    else
-    {
-        (
-            [&](auto &&key)
-            {
-                memtable_->handle_value(key, remove_evalue);
-                ++count;
-            }(std::forward<Args>(args)),
-            ...);
-    }
-    return count;
-}
-
-template <typename... Args>
-Result Storage::excute(uint8_t type, Args &&...args)
-{
-    try
-    {
-        if (type == LogType::kRemove)
-        {
-            if (sizeof...(Args) == 0)
-            {
-                return Result.error("missing key");
-            }
-            return Result.success(remove(std::forward<Args>(args)...));
-        }
-        else if (type == LogType::kExists)
-        {
-            if (sizeof...(Args) == 0)
-            {
-                return Result.error("missing key");
-            }
-            else if (sizeof...(Args) > 1)
-            {
-                return Result.error("too many arguments");
-            }
-            return Result.success(contains(std::forward<Args>(args)...) ? "1" : "0");
-        }
-        else if (type == LogType::kRange)
-        {
-            if (sizeof...(Args) <= 1)
-            {
-                return Result.error("missing key");
-            }
-            if (sizeof...(Args) > 2)
-            {
-                return Result.error("too many arguments");
-            }
-            return Result.success(range(std::forward<Args>(args)...));
-        }
-        else if (type == LogType::kExpire)
-        {
-            if (sizeof...(Args) <= 1)
-            {
-                return Result.error("missing key");
-            }
-            if (sizeof...(Args) > 2)
-            {
-                return Result.error("too many arguments");
-            }
-            auto tup = std::forward_as_tuple(std::forward<Args>(args)...);
-            std::string key = std::get<0>(tup);
-            uint64_t expire_time = std::stoull(std::get<1>(tup));
-            return Result.success(set_expire(key, expire_time));
-        }
-        else if (type == LogType::kGet)
-        {
-            if (sizeof...(Args) == 0)
-            {
-                return Result.error("missing key");
-            }
-            if (sizeof...(Args) > 1)
-            {
-                return Result.error("too many arguments");
-            }
-            auto value = get(std::forward<Args>(args)...);
-            EData data = value == std::nullopt ? std::monostate(), value.value();
-            return Result.success(data);
-        }
-        else
-        {
-            auto processor = get_processor(type);
-            if (processor)
-            {
-                std::vector<std::string> vec = {std::forward<Args>(args)...};
-                if (enable_wal_ && wal_)
-                {
-                    return processor->excute(memtable_.get(), wal_.get(), type, vec);
-                }
-                else
-                {
-                    return processor->excute(memtable_.get(), nullptr, type, vec);
-                }
-            }
-            return Result.error("unknown command");
-        }
-    }
-    catch (const std::runtime_error &e)
-    {
-        return Result.error(e.what());
-    }
-    catch (const std::exception &e)
-    {
-        return Result.error("unknown error");
-    }
-}
 
 #endif // STORAGE_H
