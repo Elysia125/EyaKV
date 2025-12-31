@@ -126,19 +126,19 @@ bool SetProcessor::s_add(Storage *storage, const std::string &key, const std::st
     {
         storage->memtable_->handle_value(key, [&member](EValue &val) -> EValue &
                                          {
-                                            if(val.is_deleted()||val.is_expired()){
-                                                throw std::runtime_error("key not be found");
-                                            }
                                             if (!std::holds_alternative<std::unordered_set<std::string>>(val.value))
                                             {
                                                 throw std::runtime_error("value is not a set");
                                             }
-                                            else
+                                            auto &set = std::get<std::unordered_set<std::string>>(val.value);
+                                            if (val.is_deleted() || val.is_expired())
                                             {
-                                                auto &set = std::get<std::unordered_set<std::string>>(val.value);
-                                                set.insert(member);
-                                                return val;
-                                            } });
+                                                val.deleted = false;
+                                                val.expire_time = 0;
+                                                set.clear();
+                                            }
+                                            set.insert(member);
+                                            return val; });
         return true;
     }
     catch (const std::out_of_range &e)
@@ -182,7 +182,7 @@ bool SetProcessor::s_rem(Storage *storage, const std::string &key, const std::st
         storage->memtable_->handle_value(key, [&member](EValue &val) -> EValue &
                                          {
                                             if(val.is_deleted()||val.is_expired()){
-                                                throw std::runtime_error("key not be found");
+                                                return val;
                                             }
                                             if (!std::holds_alternative<std::unordered_set<std::string>>(val.value))
                                             {
@@ -209,9 +209,8 @@ bool SetProcessor::s_rem(Storage *storage, const std::string &key, const std::st
             auto &set = std::get<std::unordered_set<std::string>>(val.value);
             set.erase(member);
             storage->write_memtable(key, val);
-            return true;
         }
-        throw std::runtime_error("key not be found");
+        return true;
     }
     catch (const std::exception &e)
     {
@@ -225,7 +224,7 @@ std::vector<std::string> SetProcessor::s_members(Storage *storage, const std::st
     auto val_opt = storage->get(key);
     if (!val_opt.has_value())
     {
-        throw std::runtime_error("key not be found");
+        return {};
     }
 
     if (!std::holds_alternative<std::unordered_set<std::string>>(val_opt.value()))
@@ -358,19 +357,18 @@ bool ZSetProcessor::z_add(Storage *storage, const std::string &key, const std::s
     {
         storage->memtable_->handle_value(key, [&score, &member](EValue &val) -> EValue &
                                          {
-                                            if(val.is_deleted()||val.is_expired()){
-                                                throw std::runtime_error("key not be found");
-                                            }
                                             if (!std::holds_alternative<ZSet>(val.value))
                                             {
                                                 throw std::runtime_error("value is not a zset");
                                             }
-                                            else
-                                            {
-                                                auto &zset = std::get<ZSet>(val.value);
-                                                zset.zadd(member, score);
-                                                return val;
-                                            } });
+                                            auto &zset = std::get<ZSet>(val.value);
+                                            if(val.is_deleted()||val.is_expired()){
+                                                val.deleted = false;
+                                                val.expire_time = 0;
+                                                zset.z_clear();
+                                            }
+                                            zset.zadd(member, score);
+                                                return val; });
         return true;
     }
     catch (const std::out_of_range &e)
@@ -418,18 +416,15 @@ bool ZSetProcessor::z_rem(Storage *storage, const std::string &key, const std::s
         storage->memtable_->handle_value(key, [&member](EValue &val) -> EValue &
                                          {
                                             if(val.is_deleted()||val.is_expired()){
-                                                throw std::runtime_error("key not be found");
+                                                return val;
                                             }
                                             if (!std::holds_alternative<ZSet>(val.value))
                                             {
                                                 throw std::runtime_error("value is not a zset");
                                             }
-                                            else
-                                            {
-                                                auto &zset = std::get<ZSet>(val.value);
-                                                zset.zrem(member);
-                                                return val;
-                                            } });
+                                            auto &zset = std::get<ZSet>(val.value);
+                                            zset.zrem(member);
+                                            return val; });
         return true;
     }
     catch (const std::out_of_range &e)
@@ -445,12 +440,8 @@ bool ZSetProcessor::z_rem(Storage *storage, const std::string &key, const std::s
             auto &zset = std::get<ZSet>(val.value);
             zset.zrem(member);
             storage->write_memtable(key, val);
-            return true;
         }
-        else
-        {
-            throw std::runtime_error("key not be found");
-        }
+        return true;
     }
     catch (const std::exception &e)
     {
@@ -464,7 +455,7 @@ std::optional<std::string> ZSetProcessor::z_score(Storage *storage, const std::s
 {
     auto val_opt = storage->get(key);
     if (!val_opt.has_value())
-        throw std::runtime_error("key not be found");
+        return std::nullopt;
     if (!std::holds_alternative<ZSet>(val_opt.value()))
         throw std::runtime_error("value is not a zset");
     return std::get<ZSet>(val_opt.value()).zscore(member);
@@ -474,7 +465,7 @@ std::optional<size_t> ZSetProcessor::z_rank(Storage *storage, const std::string 
 {
     auto val_opt = storage->get(key);
     if (!val_opt.has_value())
-        throw std::runtime_error("key not be found");
+        return std::nullopt;
     if (!std::holds_alternative<ZSet>(val_opt.value()))
         throw std::runtime_error("value is not a zset");
     return std::get<ZSet>(val_opt.value()).zrank(member);
@@ -484,7 +475,7 @@ size_t ZSetProcessor::z_card(Storage *storage, const std::string &key)
 {
     auto val_opt = storage->get(key);
     if (!val_opt.has_value())
-        throw std::runtime_error("key not be found");
+        return 0;
     if (!std::holds_alternative<ZSet>(val_opt.value()))
         throw std::runtime_error("value is not a zset");
     return std::get<ZSet>(val_opt.value()).zcard();
@@ -549,15 +540,22 @@ std::vector<std::pair<std::string, EyaValue>> ZSetProcessor::z_range_by_rank(Sto
 {
     auto val_opt = storage->get(key);
     if (!val_opt.has_value())
-        throw std::runtime_error("key not be found");
+        return {};
     if (!std::holds_alternative<ZSet>(val_opt.value()))
         throw std::runtime_error("value is not a zset");
     auto &zset = std::get<ZSet>(val_opt.value());
 
-    if (start < 0 || end < 0)
-    {
-        throw std::runtime_error("start and end must be positive");
-    }
+    long long size = zset.zcard();
+    if (start < 0)
+        start += size;
+    if (end < 0)
+        end += size;
+    if (start < 0)
+        start = 0;
+    if (end >= size)
+        end = size - 1;
+    if (start > end)
+        return {};
 
     auto res = zset.zrange_by_rank((size_t)start, (size_t)end);
     std::vector<std::pair<std::string, EyaValue>> ret;
@@ -572,7 +570,7 @@ std::vector<std::pair<std::string, EyaValue>> ZSetProcessor::z_range_by_score(St
 {
     auto val_opt = storage->get(key);
     if (!val_opt.has_value())
-        throw std::runtime_error("key not be found");
+        return {};
     if (!std::holds_alternative<ZSet>(val_opt.value()))
         throw std::runtime_error("value is not a zset");
     auto &zset = std::get<ZSet>(val_opt.value());
@@ -588,10 +586,6 @@ std::vector<std::pair<std::string, EyaValue>> ZSetProcessor::z_range_by_score(St
 
 size_t ZSetProcessor::z_rem_by_rank(Storage *storage, const std::string &key, long long start, long long end, const bool is_recover)
 {
-    if (start < 0 || end < 0)
-    {
-        throw std::runtime_error("start and end must be positive");
-    }
     if (storage->enable_wal_ && storage->wal_ && !is_recover)
     {
         std::string payload = Serializer::serialize(std::to_string(start)) + Serializer::serialize(std::to_string(end));
@@ -603,7 +597,7 @@ size_t ZSetProcessor::z_rem_by_rank(Storage *storage, const std::string &key, lo
         storage->memtable_->handle_value(key, [&start, &end, &count](EValue &val) -> EValue &
                                          {
                                             if(val.is_deleted()||val.is_expired()){
-                                                throw std::runtime_error("key not be found");
+                                                return val;
                                             }
                                             if (!std::holds_alternative<ZSet>(val.value))
                                             {
@@ -612,7 +606,14 @@ size_t ZSetProcessor::z_rem_by_rank(Storage *storage, const std::string &key, lo
                                             else
                                             {
                                                 auto &zset = std::get<ZSet>(val.value);
-                                                count = zset.zrem_range_by_rank((size_t)start, (size_t)end);
+                                                long long size = zset.zcard();
+                                                long long s = start, e = end;
+                                                if (s < 0) s += size;
+                                                if (e < 0) e += size;
+                                                if (s < 0) s = 0;
+                                                if (e >= size) e = size - 1;
+                                                if (s > e) count = 0;
+                                                else count = zset.zrem_range_by_rank((size_t)s, (size_t)e);
                                                 return val;
                                             } });
         return count;
@@ -628,14 +629,26 @@ size_t ZSetProcessor::z_rem_by_rank(Storage *storage, const std::string &key, lo
                 throw std::runtime_error("value is not a zset");
             }
             auto &zset = std::get<ZSet>(val.value);
-            count = zset.zrem_range_by_rank((size_t)start, (size_t)end);
-            storage->write_memtable(key, val);
+            long long size = zset.zcard();
+            long long s = start, e = end;
+            if (s < 0)
+                s += size;
+            if (e < 0)
+                e += size;
+            if (s < 0)
+                s = 0;
+            if (e >= size)
+                e = size - 1;
+            if (s > e)
+                count = 0;
+            else
+            {
+                count = zset.zrem_range_by_rank((size_t)s, (size_t)e);
+                storage->write_memtable(key, val);
+            }
             return count;
         }
-        else
-        {
-            throw std::runtime_error("key not be found");
-        }
+        return 0;
     }
     catch (const std::exception &e)
     {
@@ -658,7 +671,7 @@ size_t ZSetProcessor::z_rem_by_score(Storage *storage, const std::string &key, c
         storage->memtable_->handle_value(key, [&min, &max, &count](EValue &val) -> EValue &
                                          {
                                             if(val.is_deleted()||val.is_expired()){
-                                                throw std::runtime_error("key not be found");
+                                                return val;
                                             }
                                             if (!std::holds_alternative<ZSet>(val.value))
                                             {
@@ -681,12 +694,8 @@ size_t ZSetProcessor::z_rem_by_score(Storage *storage, const std::string &key, c
             auto &zset = std::get<ZSet>(val.value);
             count = zset.zrem_range_by_score(min, max);
             storage->write_memtable(key, val);
-            return count;
         }
-        else
-        {
-            throw std::runtime_error("key not found");
-        }
+        return count;
     }
     catch (const std::exception &e)
     {
@@ -719,13 +728,29 @@ Result DequeProcessor::execute(Storage *storage, const uint8_t type, const std::
         return Result::success(std::to_string(r_push(storage, key, args[1])));
     case LogType::kLPop:
     {
-        auto v = l_pop(storage, key);
-        return v.has_value() ? Result::success(v.value()) : Result::error("empty");
+        if (args.size() == 1)
+        {
+            auto v = l_pop(storage, key);
+            return v.has_value() ? Result::success(v.value()) : Result::error("empty");
+        }
+        else
+        {
+            size_t count = std::stoull(args[1]);
+            return Result::success(l_pop_n(storage, key, count));
+        }
     }
     case LogType::kRPop:
     {
-        auto v = r_pop(storage, key);
-        return v.has_value() ? Result::success(v.value()) : Result::error("empty");
+        if (args.size() == 1)
+        {
+            auto v = r_pop(storage, key);
+            return v.has_value() ? Result::success(v.value()) : Result::error("empty");
+        }
+        else
+        {
+            size_t count = std::stoull(args[1]);
+            return Result::success(r_pop_n(storage, key, count));
+        }
     }
     case LogType::kLSize:
         return Result::success(std::to_string(l_size(storage, key)));
@@ -743,7 +768,14 @@ Result DequeProcessor::execute(Storage *storage, const uint8_t type, const std::
             auto v = l_get(storage, key, std::stoll(args[1]));
             return v.has_value() ? Result::success(v.value()) : Result::error("not found");
         }
-    // ... implement others as needed
+    case LogType::kLPopN:
+        if (args.size() < 2)
+            return Result::error("missing count");
+        return Result::success(l_pop_n(storage, key, std::stoll(args[1])));
+    case LogType::kRPopN:
+        if (args.size() < 2)
+            return Result::error("missing count");
+        return Result::success(r_pop_n(storage, key, std::stoll(args[1])));
     default:
         return Result::error("unsupported type");
     }
@@ -751,123 +783,274 @@ Result DequeProcessor::execute(Storage *storage, const uint8_t type, const std::
 
 bool DequeProcessor::recover(Storage *storage, const uint8_t type, const std::string &key, const std::string &payload)
 {
-    EValue val;
-    auto existing = memtable->get(key);
-    if (existing.has_value())
-        val = existing.value();
-    else
-        val.value = std::deque<std::string>();
-
-    if (!std::holds_alternative<std::deque<std::string>>(val.value))
-        return false;
-    auto &dq = std::get<std::deque<std::string>>(val.value);
-
     size_t offset = 0;
     if (type == LogType::kLPush)
     {
-        dq.push_front(Serializer::deserializeString(payload.data(), offset));
+        std::string value = Serializer::deserializeString(payload.data(), offset);
+        l_push(storage, key, value, true);
     }
     else if (type == LogType::kRPush)
     {
-        dq.push_back(Serializer::deserializeString(payload.data(), offset));
+        std::string value = Serializer::deserializeString(payload.data(), offset);
+        r_push(storage, key, value, true);
     }
     else if (type == LogType::kLPop)
     {
-        if (!dq.empty())
-            dq.pop_front();
+        l_pop(storage, key, true);
     }
     else if (type == LogType::kRPop)
     {
-        if (!dq.empty())
-            dq.pop_back();
+        r_pop(storage, key, true);
     }
-
-    memtable->put(key, val);
+    else if (type == LogType::kLPopN)
+    {
+        std::string count_str = Serializer::deserializeString(payload.data(), offset);
+        l_pop_n(storage, key, std::stoll(count_str), true);
+    }
+    else if (type == LogType::kRPopN)
+    {
+        std::string count_str = Serializer::deserializeString(payload.data(), offset);
+        r_pop_n(storage, key, std::stoll(count_str), true);
+    }
+    else
+    {
+        return false;
+    }
     return true;
 }
 
-size_t DequeProcessor::l_push(Storage *storage, const std::string &key, const std::string &value)
+size_t DequeProcessor::l_push(Storage *storage, const std::string &key, const std::string &value, const bool is_recover)
 {
-    auto val_opt = storage->get(key);
-    EValue val;
-    if (val_opt.has_value())
-        val.value = val_opt.value();
-    else
-        val.value = std::deque<std::string>();
-
-    if (!std::holds_alternative<std::deque<std::string>>(val.value))
-        return 0;
-    auto &dq = std::get<std::deque<std::string>>(val.value);
-
-    dq.push_front(value);
-    if (storage->wal_)
+    if (storage->enable_wal_ && storage->wal_ && !is_recover)
+    {
         storage->wal_->append_log(LogType::kLPush, key, Serializer::serialize(value));
-    storage->write_memtable(key, val);
-    return dq.size();
+    }
+    size_t size = 0;
+    try
+    {
+        storage->memtable_->handle_value(key, [&value, &size](EValue &val) -> EValue &
+                                         {
+                                            if (!std::holds_alternative<std::deque<std::string>>(val.value))
+                                            {
+                                                throw std::runtime_error("value is not a list");
+                                            }
+                                            auto &dq = std::get<std::deque<std::string>>(val.value);
+                                            if(val.is_deleted() || val.is_expired()){
+                                                val.deleted=false;
+                                                val.expire_time=0;
+                                                dq.clear();
+                                            }
+                                            dq.push_front(value);
+                                            size = dq.size();
+                                            return val; });
+        return size;
+    }
+    catch (const std::out_of_range &e)
+    {
+        std::optional<EValue> val_opt;
+        if (storage->get_from_old(key, val_opt))
+        {
+            EValue val = val_opt.value();
+            if (!std::holds_alternative<std::deque<std::string>>(val.value))
+            {
+                throw std::runtime_error("value is not a list");
+            }
+            auto &dq = std::get<std::deque<std::string>>(val.value);
+            dq.push_front(value);
+            size = dq.size();
+            storage->write_memtable(key, val);
+            return size;
+        }
+        else
+        {
+            std::deque<std::string> dq;
+            dq.push_front(value);
+            size = dq.size();
+            EValue val;
+            val.value = dq;
+            storage->write_memtable(key, val);
+            return size;
+        }
+    }
+    catch (const std::exception &e)
+    {
+        LOG_ERROR("l_push key: %s, value: %s, error: %s", key, value, e.what());
+        throw e;
+    }
 }
 
-size_t DequeProcessor::r_push(Storage *storage, const std::string &key, const std::string &value)
+size_t DequeProcessor::r_push(Storage *storage, const std::string &key, const std::string &value, const bool is_recover)
 {
-    auto val_opt = storage->get(key);
-    EValue val;
-    if (val_opt.has_value())
-        val.value = val_opt.value();
-    else
-        val.value = std::deque<std::string>();
-
-    if (!std::holds_alternative<std::deque<std::string>>(val.value))
-        return 0;
-    auto &dq = std::get<std::deque<std::string>>(val.value);
-
-    dq.push_back(value);
-    if (storage->wal_)
+    if (storage->enable_wal_ && storage->wal_ && !is_recover)
+    {
         storage->wal_->append_log(LogType::kRPush, key, Serializer::serialize(value));
-    storage->write_memtable(key, val);
-    return dq.size();
+    }
+    size_t size = 0;
+    try
+    {
+        storage->memtable_->handle_value(key, [&value, &size](EValue &val) -> EValue &
+                                         {
+                                            if (!std::holds_alternative<std::deque<std::string>>(val.value))
+                                            {
+                                                throw std::runtime_error("value is not a list");
+                                            }
+                                            auto &dq = std::get<std::deque<std::string>>(val.value);
+                                             if(val.is_deleted() || val.is_expired()){
+                                                val.deleted=false;
+                                                val.expire_time=0;
+                                                dq.clear();
+                                            }
+                                            dq.push_back(value);
+                                            size = dq.size();
+                                            return val; });
+        return size;
+    }
+    catch (const std::out_of_range &e)
+    {
+        std::optional<EValue> val_opt;
+        if (storage->get_from_old(key, val_opt))
+        {
+            EValue val = val_opt.value();
+            if (!std::holds_alternative<std::deque<std::string>>(val.value))
+            {
+                throw std::runtime_error("value is not a list");
+            }
+            auto &dq = std::get<std::deque<std::string>>(val.value);
+            dq.push_back(value);
+            size = dq.size();
+            storage->write_memtable(key, val);
+            return size;
+        }
+        else
+        {
+            std::deque<std::string> dq;
+            dq.push_back(value);
+            size = dq.size();
+            EValue val;
+            val.value = dq;
+            storage->write_memtable(key, val);
+            return size;
+        }
+    }
+    catch (const std::exception &e)
+    {
+        LOG_ERROR("r_push key: %s, value: %s, error: %s", key, value, e.what());
+        throw e;
+    }
 }
 
-std::optional<std::string> DequeProcessor::l_pop(Storage *storage, const std::string &key)
+std::optional<std::string> DequeProcessor::l_pop(Storage *storage, const std::string &key, const bool is_recover)
 {
-    auto val_opt = storage->get(key);
-    if (!val_opt.has_value())
-        return std::nullopt;
-    EValue val;
-    val.value = val_opt.value();
-    if (!std::holds_alternative<std::deque<std::string>>(val.value))
-        return std::nullopt;
-    auto &dq = std::get<std::deque<std::string>>(val.value);
-
-    if (dq.empty())
-        return std::nullopt;
-    std::string v = dq.front();
-    dq.pop_front();
-
-    if (storage->wal_)
+    if (storage->enable_wal_ && storage->wal_ && !is_recover)
+    {
         storage->wal_->append_log(LogType::kLPop, key, "");
-    storage->write_memtable(key, val);
-    return v;
+    }
+    std::optional<std::string> popped_val = std::nullopt;
+    try
+    {
+        storage->memtable_->handle_value(key, [&popped_val](EValue &val) -> EValue &
+                                         {
+                                            if(val.is_deleted() || val.is_expired()){
+                                                return val;
+                                            }
+                                            if (!std::holds_alternative<std::deque<std::string>>(val.value))
+                                            {
+                                                throw std::runtime_error("value is not a list");
+                                            }
+                                            auto &dq = std::get<std::deque<std::string>>(val.value);
+                                            if (!dq.empty()) {
+                                                popped_val = dq.front();
+                                                dq.pop_front();
+                                            }
+                                            return val; });
+        return popped_val;
+    }
+    catch (const std::out_of_range &e)
+    {
+        std::optional<EValue> val_opt;
+        if (storage->get_from_old(key, val_opt))
+        {
+            EValue val = val_opt.value();
+            if (!std::holds_alternative<std::deque<std::string>>(val.value))
+            {
+                throw std::runtime_error("value is not a list");
+            }
+            auto &dq = std::get<std::deque<std::string>>(val.value);
+            if (!dq.empty())
+            {
+                popped_val = dq.front();
+                dq.pop_front();
+                storage->write_memtable(key, val);
+            }
+            return popped_val;
+        }
+        else
+        {
+            return std::nullopt;
+        }
+    }
+    catch (const std::exception &e)
+    {
+        LOG_ERROR("l_pop key: %s, error: %s", key, e.what());
+        throw e;
+    }
 }
 
-std::optional<std::string> DequeProcessor::r_pop(Storage *storage, const std::string &key)
+std::optional<std::string> DequeProcessor::r_pop(Storage *storage, const std::string &key, const bool is_recover)
 {
-    auto val_opt = storage->get(key);
-    if (!val_opt.has_value())
-        return std::nullopt;
-    EValue val;
-    val.value = val_opt.value();
-    if (!std::holds_alternative<std::deque<std::string>>(val.value))
-        return std::nullopt;
-    auto &dq = std::get<std::deque<std::string>>(val.value);
-
-    if (dq.empty())
-        return std::nullopt;
-    std::string v = dq.back();
-    dq.pop_back();
-
-    if (storage->wal_)
+    if (storage->enable_wal_ && storage->wal_ && !is_recover)
+    {
         storage->wal_->append_log(LogType::kRPop, key, "");
-    storage->write_memtable(key, val);
-    return v;
+    }
+    std::optional<std::string> popped_val = std::nullopt;
+    try
+    {
+        storage->memtable_->handle_value(key, [&popped_val](EValue &val) -> EValue &
+                                         {
+                                            if(val.is_deleted() || val.is_expired()){
+                                                return val;
+                                            }
+                                            if (!std::holds_alternative<std::deque<std::string>>(val.value))
+                                            {
+                                                throw std::runtime_error("value is not a list");
+                                            }
+                                            auto &dq = std::get<std::deque<std::string>>(val.value);
+                                            if (!dq.empty()) {
+                                                popped_val = dq.back();
+                                                dq.pop_back();
+                                            }
+                                            return val; });
+        return popped_val;
+    }
+    catch (const std::out_of_range &e)
+    {
+        std::optional<EValue> val_opt;
+        if (storage->get_from_old(key, val_opt))
+        {
+            EValue val = val_opt.value();
+            if (!std::holds_alternative<std::deque<std::string>>(val.value))
+            {
+                throw std::runtime_error("value is not a list");
+            }
+            auto &dq = std::get<std::deque<std::string>>(val.value);
+            if (!dq.empty())
+            {
+                popped_val = dq.back();
+                dq.pop_back();
+                storage->write_memtable(key, val);
+            }
+            return popped_val;
+        }
+        else
+        {
+            return std::nullopt;
+        }
+    }
+    catch (const std::exception &e)
+    {
+        LOG_ERROR("r_pop key: %s, error: %s", key, e.what());
+        throw e;
+    }
 }
 
 std::vector<std::string> DequeProcessor::l_range(Storage *storage, const std::string &key, long long start, long long end)
@@ -876,7 +1059,7 @@ std::vector<std::string> DequeProcessor::l_range(Storage *storage, const std::st
     if (!val_opt.has_value())
         return {};
     if (!std::holds_alternative<std::deque<std::string>>(val_opt.value()))
-        return {};
+        throw std::runtime_error("value is not a list");
     auto &dq = std::get<std::deque<std::string>>(val_opt.value());
 
     if (start < 0)
@@ -905,7 +1088,7 @@ std::optional<std::string> DequeProcessor::l_get(Storage *storage, const std::st
     if (!val_opt.has_value())
         return std::nullopt;
     if (!std::holds_alternative<std::deque<std::string>>(val_opt.value()))
-        return std::nullopt;
+        throw std::runtime_error("value is not a list");
     auto &dq = std::get<std::deque<std::string>>(val_opt.value());
 
     if (index < 0)
@@ -921,19 +1104,116 @@ size_t DequeProcessor::l_size(Storage *storage, const std::string &key)
     if (!val_opt.has_value())
         return 0;
     if (!std::holds_alternative<std::deque<std::string>>(val_opt.value()))
-        return 0;
-    auto &dq = std::get<std::deque<std::string>>(val_opt.value());
-    return dq.size();
+        throw std::runtime_error("value is not a list");
+    return std::get<std::deque<std::string>>(val_opt.value()).size();
 }
 
-std::vector<std::string> DequeProcessor::l_pop_n(Storage *storage, const std::string &key, size_t n)
+std::vector<std::string> DequeProcessor::l_pop_n(Storage *storage, const std::string &key, size_t n, const bool is_recover)
 {
-    // simplified implementation
-    return {};
+    if (storage->enable_wal_ && storage->wal_ && !is_recover)
+    {
+        storage->wal_->append_log(LogType::kLPopN, key, Serializer::serialize(std::to_string(n)));
+    }
+    std::vector<std::string> popped;
+    try
+    {
+        storage->memtable_->handle_value(key, [&](EValue &val) -> EValue &
+                                         {
+            if(val.is_deleted() || val.is_expired()){
+                return val;
+            }
+            if (!std::holds_alternative<std::deque<std::string>>(val.value)) {
+                throw std::runtime_error("value is not a list");
+            }
+            auto &dq = std::get<std::deque<std::string>>(val.value);
+            for (size_t i = 0; i < n && !dq.empty(); ++i) {
+                popped.push_back(dq.front());
+                dq.pop_front();
+            }
+            return val; });
+        return popped;
+    }
+    catch (const std::out_of_range &e)
+    {
+        std::optional<EValue> val_opt;
+        if (storage->get_from_old(key, val_opt))
+        {
+            EValue val = val_opt.value();
+            if (!std::holds_alternative<std::deque<std::string>>(val.value))
+                throw std::runtime_error("value is not a list");
+            auto &dq = std::get<std::deque<std::string>>(val.value);
+            for (size_t i = 0; i < n && !dq.empty(); ++i)
+            {
+                popped.push_back(dq.front());
+                dq.pop_front();
+            }
+            storage->write_memtable(key, val);
+            return popped;
+        }
+        else
+        {
+            return {};
+        }
+    }
+    catch (const std::exception &e)
+    {
+        LOG_ERROR("l_pop_n key: %s, error: %s", key, e.what());
+        throw e;
+    }
 }
-std::vector<std::string> DequeProcessor::r_pop_n(Storage *storage, const std::string &key, size_t n)
+
+std::vector<std::string> DequeProcessor::r_pop_n(Storage *storage, const std::string &key, size_t n, const bool is_recover)
 {
-    return {};
+    if (storage->enable_wal_ && storage->wal_ && !is_recover)
+    {
+        storage->wal_->append_log(LogType::kRPopN, key, Serializer::serialize(std::to_string(n)));
+    }
+    std::vector<std::string> popped;
+    try
+    {
+        storage->memtable_->handle_value(key, [&](EValue &val) -> EValue &
+                                         {
+            if(val.is_deleted() || val.is_expired()){
+                return val;
+            }
+            if (!std::holds_alternative<std::deque<std::string>>(val.value)) {
+                throw std::runtime_error("value is not a list");
+            }
+            auto &dq = std::get<std::deque<std::string>>(val.value);
+            for (size_t i = 0; i < n && !dq.empty(); ++i) {
+                popped.push_back(dq.back());
+                dq.pop_back();
+            }
+            return val; });
+        return popped;
+    }
+    catch (const std::out_of_range &e)
+    {
+        std::optional<EValue> val_opt;
+        if (storage->get_from_old(key, val_opt))
+        {
+            EValue val = val_opt.value();
+            if (!std::holds_alternative<std::deque<std::string>>(val.value))
+                throw std::runtime_error("value is not a list");
+            auto &dq = std::get<std::deque<std::string>>(val.value);
+            for (size_t i = 0; i < n && !dq.empty(); ++i)
+            {
+                popped.push_back(dq.back());
+                dq.pop_back();
+            }
+            storage->write_memtable(key, val);
+            return popped;
+        }
+        else
+        {
+            return {};
+        }
+    }
+    catch (const std::exception &e)
+    {
+        LOG_ERROR("r_pop_n key: %s, error: %s", key, e.what());
+        throw e;
+    }
 }
 
 // HashProcessor
@@ -984,56 +1264,84 @@ Result HashProcessor::execute(Storage *storage, const uint8_t type, const std::v
 
 bool HashProcessor::recover(Storage *storage, const uint8_t type, const std::string &key, const std::string &payload)
 {
-    EValue val;
-    auto existing = memtable->get(key);
-    if (existing.has_value())
-        val = existing.value();
-    else
-        val.value = std::unordered_map<std::string, std::string>();
-
-    if (!std::holds_alternative<std::unordered_map<std::string, std::string>>(val.value))
-        return false;
-    auto &map = std::get<std::unordered_map<std::string, std::string>>(val.value);
-
     size_t offset = 0;
     if (type == LogType::kHSet)
     {
         std::string field = Serializer::deserializeString(payload.data(), offset);
         std::string value = Serializer::deserializeString(payload.data(), offset);
-        map[field] = value;
+        h_set(storage, key, field, value, true);
     }
     else if (type == LogType::kHDel)
     {
         std::string field = Serializer::deserializeString(payload.data(), offset);
-        map.erase(field);
+        h_del(storage, key, field, true);
     }
-    memtable->put(key, val);
+    else
+    {
+        return false;
+    }
     return true;
 }
 
-bool HashProcessor::h_set(Storage *storage, const std::string &key, const std::string &field, const std::string &value)
+bool HashProcessor::h_set(Storage *storage, const std::string &key, const std::string &field, const std::string &value, const bool is_recover)
 {
-    auto val_opt = storage->get(key);
-    EValue val;
-    if (val_opt.has_value())
-        val.value = val_opt.value();
-    else
-        val.value = std::unordered_map<std::string, std::string>();
-
-    if (!std::holds_alternative<std::unordered_map<std::string, std::string>>(val.value))
-        return false;
-    auto &map = std::get<std::unordered_map<std::string, std::string>>(val.value);
-
-    bool new_field = map.find(field) == map.end();
-    map[field] = value;
-
-    if (storage->wal_)
+    if (storage->enable_wal_ && storage->wal_ && !is_recover)
     {
         std::string payload = Serializer::serialize(field) + Serializer::serialize(value);
         storage->wal_->append_log(LogType::kHSet, key, payload);
     }
-    storage->write_memtable(key, val);
-    return new_field;
+    bool is_new = false;
+    try
+    {
+        storage->memtable_->handle_value(key, [&field, &value, &is_new](EValue &val) -> EValue &
+                                         {
+                                            if (!std::holds_alternative<std::unordered_map<std::string, std::string>>(val.value))
+                                            {
+                                                throw std::runtime_error("value is not a hash");
+                                            }
+                                            auto &map = std::get<std::unordered_map<std::string, std::string>>(val.value);
+                                            if(val.is_deleted() || val.is_expired()){
+                                                val.deleted=false;
+                                                val.expire_time=0;
+                                                map.clear();
+                                            }
+                                            if (map.find(field) == map.end()) is_new = true;
+                                            map[field] = value;
+                                            return val; });
+        return is_new;
+    }
+    catch (const std::out_of_range &e)
+    {
+        std::optional<EValue> val_opt;
+        if (storage->get_from_old(key, val_opt))
+        {
+            EValue val = val_opt.value();
+            if (!std::holds_alternative<std::unordered_map<std::string, std::string>>(val.value))
+            {
+                throw std::runtime_error("value is not a hash");
+            }
+            auto &map = std::get<std::unordered_map<std::string, std::string>>(val.value);
+            if (map.find(field) == map.end())
+                is_new = true;
+            map[field] = value;
+            storage->write_memtable(key, val);
+            return is_new;
+        }
+        else
+        {
+            std::unordered_map<std::string, std::string> map;
+            map[field] = value;
+            EValue val;
+            val.value = map;
+            storage->write_memtable(key, val);
+            return true;
+        }
+    }
+    catch (const std::exception &e)
+    {
+        LOG_ERROR("h_set key: %s, field: %s, error: %s", key, field, e.what());
+        throw e;
+    }
 }
 
 std::optional<std::string> HashProcessor::h_get(Storage *storage, const std::string &key, const std::string &field)
@@ -1042,7 +1350,7 @@ std::optional<std::string> HashProcessor::h_get(Storage *storage, const std::str
     if (!val_opt.has_value())
         return std::nullopt;
     if (!std::holds_alternative<std::unordered_map<std::string, std::string>>(val_opt.value()))
-        return std::nullopt;
+        throw std::runtime_error("value is not a hash");
     auto &map = std::get<std::unordered_map<std::string, std::string>>(val_opt.value());
 
     auto it = map.find(field);
@@ -1051,25 +1359,58 @@ std::optional<std::string> HashProcessor::h_get(Storage *storage, const std::str
     return std::nullopt;
 }
 
-bool HashProcessor::h_del(Storage *storage, const std::string &key, const std::string &field)
+bool HashProcessor::h_del(Storage *storage, const std::string &key, const std::string &field, const bool is_recover)
 {
-    auto val_opt = storage->get(key);
-    if (!val_opt.has_value())
-        return false;
-    EValue val;
-    val.value = val_opt.value();
-    if (!std::holds_alternative<std::unordered_map<std::string, std::string>>(val.value))
-        return false;
-    auto &map = std::get<std::unordered_map<std::string, std::string>>(val.value);
-
-    if (map.erase(field))
+    if (storage->enable_wal_ && storage->wal_ && !is_recover)
     {
-        if (storage->wal_)
-            storage->wal_->append_log(LogType::kHDel, key, Serializer::serialize(field));
-        storage->write_memtable(key, val);
-        return true;
+        storage->wal_->append_log(LogType::kHDel, key, Serializer::serialize(field));
     }
-    return false;
+    bool deleted = false;
+    try
+    {
+        storage->memtable_->handle_value(key, [&field, &deleted](EValue &val) -> EValue &
+                                         {
+                                            if(val.is_deleted() || val.is_expired()){
+                                                deleted = true;
+                                                return val;
+                                            }
+                                            if (!std::holds_alternative<std::unordered_map<std::string, std::string>>(val.value))
+                                            {
+                                                throw std::runtime_error("value is not a hash");
+                                            }
+                                            auto &map = std::get<std::unordered_map<std::string, std::string>>(val.value);
+                                            if(map.erase(field)) deleted = true;
+                                            return val; });
+        return deleted;
+    }
+    catch (const std::out_of_range &e)
+    {
+        std::optional<EValue> val_opt;
+        if (storage->get_from_old(key, val_opt))
+        {
+            EValue val = val_opt.value();
+            if (!std::holds_alternative<std::unordered_map<std::string, std::string>>(val.value))
+            {
+                throw std::runtime_error("value is not a hash");
+            }
+            auto &map = std::get<std::unordered_map<std::string, std::string>>(val.value);
+            if (map.erase(field))
+            {
+                deleted = true;
+                storage->write_memtable(key, val);
+            }
+            return deleted;
+        }
+        else
+        {
+            return true;
+        }
+    }
+    catch (const std::exception &e)
+    {
+        LOG_ERROR("h_del key: %s, field: %s, error: %s", key, field, e.what());
+        throw e;
+    }
 }
 
 std::vector<std::string> HashProcessor::h_keys(Storage *storage, const std::string &key)
@@ -1078,7 +1419,7 @@ std::vector<std::string> HashProcessor::h_keys(Storage *storage, const std::stri
     if (!val_opt.has_value())
         return {};
     if (!std::holds_alternative<std::unordered_map<std::string, std::string>>(val_opt.value()))
-        return {};
+        throw std::runtime_error("value is not a hash");
     auto &map = std::get<std::unordered_map<std::string, std::string>>(val_opt.value());
 
     std::vector<std::string> res;
@@ -1093,7 +1434,7 @@ std::vector<std::string> HashProcessor::h_values(Storage *storage, const std::st
     if (!val_opt.has_value())
         return {};
     if (!std::holds_alternative<std::unordered_map<std::string, std::string>>(val_opt.value()))
-        return {};
+        throw std::runtime_error("value is not a hash");
     auto &map = std::get<std::unordered_map<std::string, std::string>>(val_opt.value());
 
     std::vector<std::string> res;
@@ -1108,6 +1449,6 @@ std::unordered_map<std::string, std::string> HashProcessor::h_entries(Storage *s
     if (!val_opt.has_value())
         return {};
     if (!std::holds_alternative<std::unordered_map<std::string, std::string>>(val_opt.value()))
-        return {};
+        throw std::runtime_error("value is not a hash");
     return std::get<std::unordered_map<std::string, std::string>>(val_opt.value());
 }

@@ -24,19 +24,20 @@ using EData = std::variant<std::monostate,                                // 空
                            >;
 struct Result
 {
+    int code;
     EData data;
     std::string error_msg;
     static Result success(EData data, const std::string error_msg = "")
     {
-        return Result{data, error_msg};
+        return Result{1, data, error_msg};
     }
     static Result success(bool success, const std::string error_msg = "")
     {
-        return Result{std::string(success ? "1" : "0"), error_msg};
+        return Result{1, std::string(success ? "1" : "0"), error_msg};
     }
     static Result success(size_t data, const std::string error_msg = "")
     {
-        return Result{std::to_string(data), error_msg};
+        return Result{1, std::to_string(data), error_msg};
     }
     /**
      * @brief 创建一个包含错误信息的Result对象
@@ -46,7 +47,7 @@ struct Result
      */
     static Result error(const std::string error_msg)
     {
-        return Result{std::monostate{}, error_msg};
+        return Result{0, std::monostate{}, error_msg};
     }
 };
 // LogType constants
@@ -230,6 +231,7 @@ inline size_t estimateEValueSize(const EValue &value)
 inline std::string serialize(const Result &result)
 {
     std::string es;
+    es.append(reinterpret_cast<const char *>(result.code), sizeof(result.code));
     es.append(std::visit([](auto &&arg) -> std::string
                          {
                     std::string s;
@@ -257,11 +259,15 @@ inline std::string serialize(const Result &result)
 
 inline Result deserializeResult(const char *data, size_t &offset)
 {
+    int code;
+    std::memcpy(&code, data + offset, sizeof(code));
+    offset += sizeof(code);
     uint8_t type_index;
     std::memcpy(&type_index, data + offset, sizeof(type_index));
     offset += sizeof(type_index);
     size_t index = type_index;
     Result result;
+    result.code = code;
     switch (index)
     {
     case 0:
@@ -373,10 +379,12 @@ inline std::string to_string(const EyaValue &value)
 }
 inline void printResult(const Result &result)
 {
-    if (!std::holds_alternative<std::monostate>(result.data))
+    if (result.code != 1)
     {
-        std::visit([](auto &&arg)
-                   {
+        if (!std::holds_alternative<std::monostate>(result.data))
+        {
+            std::visit([](auto &&arg)
+                       {
         using T = std::decay_t<decltype(arg)>;
         if constexpr (std::is_same_v<T, std::string>)
         {
@@ -405,14 +413,15 @@ inline void printResult(const Result &result)
         {
             std::cout << "unknown type" << std::endl;
         } }, result.data);
+        }
+        else
+        {
+            std::cout << "null" << std::endl;
+        }
     }
-    else if (!result.error_msg.empty())
+    else if (result.code == 0)
     {
         std::cout << result.error_msg << std::endl;
-    }
-    else
-    {
-        std::cout << "null" << std::endl;
     }
 }
 #endif

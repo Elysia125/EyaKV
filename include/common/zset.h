@@ -143,7 +143,14 @@ public:
      * @brief 增加分数
      */
     std::optional<std::string> z_incrby(const std::string &member, const std::string &increment);
-
+    
+    /**
+     * @brief 清空
+     */
+    void z_clear(){
+        skiplist_.clear();
+        member_score_map_.clear();
+    }
 private:
     SkipList<std::string, std::string> skiplist_;                   // 按分值排序的跳表
     std::unordered_map<std::string, std::string> member_score_map_; // 成员到分值的映射

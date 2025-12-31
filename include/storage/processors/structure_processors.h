@@ -147,15 +147,15 @@ public:
     bool recover(Storage *storage, const uint8_t type, const std::string &key, const std::string &payload) override;
 
 private:
-    size_t l_push(Storage *storage, const std::string &key, const std::string &value);
-    std::optional<std::string> l_pop(Storage *storage, const std::string &key);
-    size_t r_push(Storage *storage, const std::string &key, const std::string &value);
-    std::optional<std::string> r_pop(Storage *storage, const std::string &key);
+    size_t l_push(Storage *storage, const std::string &key, const std::string &value, const bool is_recover = false);
+    std::optional<std::string> l_pop(Storage *storage, const std::string &key, const bool is_recover = false);
+    size_t r_push(Storage *storage, const std::string &key, const std::string &value, const bool is_recover = false);
+    std::optional<std::string> r_pop(Storage *storage, const std::string &key, const bool is_recover = false);
     std::vector<std::string> l_range(Storage *storage, const std::string &key, long long start, long long end);
     std::optional<std::string> l_get(Storage *storage, const std::string &key, long long index);
     size_t l_size(Storage *storage, const std::string &key);
-    std::vector<std::string> l_pop_n(Storage *storage, const std::string &key, size_t n);
-    std::vector<std::string> r_pop_n(Storage *storage, const std::string &key, size_t n);
+    std::vector<std::string> l_pop_n(Storage *storage, const std::string &key, size_t n, const bool is_recover = false);
+    std::vector<std::string> r_pop_n(Storage *storage, const std::string &key, size_t n, const bool is_recover = false);
 };
 
 // Hash Processor
@@ -188,9 +188,9 @@ public:
     bool recover(Storage *storage, const uint8_t type, const std::string &key, const std::string &payload) override;
 
 private:
-    bool h_set(Storage *storage, const std::string &key, const std::string &field, const std::string &value);
+    bool h_set(Storage *storage, const std::string &key, const std::string &field, const std::string &value, const bool is_recover = false);
     std::optional<std::string> h_get(Storage *storage, const std::string &key, const std::string &field);
-    bool h_del(Storage *storage, const std::string &key, const std::string &field);
+    bool h_del(Storage *storage, const std::string &key, const std::string &field, const bool is_recover = false);
     std::vector<std::string> h_keys(Storage *storage, const std::string &key);
     std::vector<std::string> h_values(Storage *storage, const std::string &key);
     std::unordered_map<std::string, std::string> h_entries(Storage *storage, const std::string &key);
