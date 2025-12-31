@@ -147,9 +147,9 @@ public:
     bool recover(Storage *storage, const uint8_t type, const std::string &key, const std::string &payload) override;
 
 private:
-    size_t l_push(Storage *storage, const std::string &key, const std::string &value, const bool is_recover = false);
+    size_t l_push(Storage *storage, const std::string &key, const std::vector<std::string> &values, const bool is_recover = false);
     std::optional<std::string> l_pop(Storage *storage, const std::string &key, const bool is_recover = false);
-    size_t r_push(Storage *storage, const std::string &key, const std::string &value, const bool is_recover = false);
+    size_t r_push(Storage *storage, const std::string &key, const std::vector<std::string> &values, const bool is_recover = false);
     std::optional<std::string> r_pop(Storage *storage, const std::string &key, const bool is_recover = false);
     std::vector<std::string> l_range(Storage *storage, const std::string &key, long long start, long long end);
     std::optional<std::string> l_get(Storage *storage, const std::string &key, long long index);

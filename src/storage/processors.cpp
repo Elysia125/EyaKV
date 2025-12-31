@@ -721,11 +721,19 @@ Result DequeProcessor::execute(Storage *storage, const uint8_t type, const std::
     case LogType::kLPush:
         if (args.size() < 2)
             return Result::error("missing value");
-        return Result::success(std::to_string(l_push(storage, key, args[1])));
+        {
+            std::vector<std::string> values;
+            for (size_t i = 1; i < args.size(); ++i) values.push_back(args[i]);
+            return Result::success(std::to_string(l_push(storage, key, values)));
+        }
     case LogType::kRPush:
         if (args.size() < 2)
             return Result::error("missing value");
-        return Result::success(std::to_string(r_push(storage, key, args[1])));
+        {
+            std::vector<std::string> values;
+            for (size_t i = 1; i < args.size(); ++i) values.push_back(args[i]);
+            return Result::success(std::to_string(r_push(storage, key, values)));
+        }
     case LogType::kLPop:
     {
         if (args.size() == 1)
@@ -786,13 +794,15 @@ bool DequeProcessor::recover(Storage *storage, const uint8_t type, const std::st
     size_t offset = 0;
     if (type == LogType::kLPush)
     {
-        std::string value = Serializer::deserializeString(payload.data(), offset);
-        l_push(storage, key, value, true);
+        std::vector<std::string> values;
+        Serializer::deserializeVector(payload.data(), offset, values);
+        l_push(storage, key, values, true);
     }
     else if (type == LogType::kRPush)
     {
-        std::string value = Serializer::deserializeString(payload.data(), offset);
-        r_push(storage, key, value, true);
+        std::vector<std::string> values;
+        Serializer::deserializeVector(payload.data(), offset, values);
+        r_push(storage, key, values, true);
     }
     else if (type == LogType::kLPop)
     {
@@ -819,16 +829,16 @@ bool DequeProcessor::recover(Storage *storage, const uint8_t type, const std::st
     return true;
 }
 
-size_t DequeProcessor::l_push(Storage *storage, const std::string &key, const std::string &value, const bool is_recover)
+size_t DequeProcessor::l_push(Storage *storage, const std::string &key, const std::vector<std::string> &values, const bool is_recover)
 {
     if (storage->enable_wal_ && storage->wal_ && !is_recover)
     {
-        storage->wal_->append_log(LogType::kLPush, key, Serializer::serialize(value));
+        storage->wal_->append_log(LogType::kLPush, key, Serializer::serialize(values));
     }
     size_t size = 0;
     try
     {
-        storage->memtable_->handle_value(key, [&value, &size](EValue &val) -> EValue &
+        storage->memtable_->handle_value(key, [&values, &size](EValue &val) -> EValue &
                                          {
                                             if (!std::holds_alternative<std::deque<std::string>>(val.value))
                                             {
@@ -840,7 +850,9 @@ size_t DequeProcessor::l_push(Storage *storage, const std::string &key, const st
                                                 val.expire_time=0;
                                                 dq.clear();
                                             }
-                                            dq.push_front(value);
+                                            for(const auto& value : values) {
+                                                dq.push_front(value);
+                                            }
                                             size = dq.size();
                                             return val; });
         return size;
@@ -856,7 +868,9 @@ size_t DequeProcessor::l_push(Storage *storage, const std::string &key, const st
                 throw std::runtime_error("value is not a list");
             }
             auto &dq = std::get<std::deque<std::string>>(val.value);
-            dq.push_front(value);
+            for(const auto& value : values) {
+                dq.push_front(value);
+            }
             size = dq.size();
             storage->write_memtable(key, val);
             return size;
@@ -864,7 +878,9 @@ size_t DequeProcessor::l_push(Storage *storage, const std::string &key, const st
         else
         {
             std::deque<std::string> dq;
-            dq.push_front(value);
+            for(const auto& value : values) {
+                dq.push_front(value);
+            }
             size = dq.size();
             EValue val;
             val.value = dq;
@@ -874,21 +890,21 @@ size_t DequeProcessor::l_push(Storage *storage, const std::string &key, const st
     }
     catch (const std::exception &e)
     {
-        LOG_ERROR("l_push key: %s, value: %s, error: %s", key, value, e.what());
+        LOG_ERROR("l_push key: %s, error: %s", key, e.what());
         throw e;
     }
 }
 
-size_t DequeProcessor::r_push(Storage *storage, const std::string &key, const std::string &value, const bool is_recover)
+size_t DequeProcessor::r_push(Storage *storage, const std::string &key, const std::vector<std::string> &values, const bool is_recover)
 {
     if (storage->enable_wal_ && storage->wal_ && !is_recover)
     {
-        storage->wal_->append_log(LogType::kRPush, key, Serializer::serialize(value));
+        storage->wal_->append_log(LogType::kRPush, key, Serializer::serialize(values));
     }
     size_t size = 0;
     try
     {
-        storage->memtable_->handle_value(key, [&value, &size](EValue &val) -> EValue &
+        storage->memtable_->handle_value(key, [&values, &size](EValue &val) -> EValue &
                                          {
                                             if (!std::holds_alternative<std::deque<std::string>>(val.value))
                                             {
@@ -900,7 +916,9 @@ size_t DequeProcessor::r_push(Storage *storage, const std::string &key, const st
                                                 val.expire_time=0;
                                                 dq.clear();
                                             }
-                                            dq.push_back(value);
+                                            for(const auto& value : values) {
+                                                dq.push_back(value);
+                                            }
                                             size = dq.size();
                                             return val; });
         return size;
@@ -916,7 +934,9 @@ size_t DequeProcessor::r_push(Storage *storage, const std::string &key, const st
                 throw std::runtime_error("value is not a list");
             }
             auto &dq = std::get<std::deque<std::string>>(val.value);
-            dq.push_back(value);
+            for(const auto& value : values) {
+                dq.push_back(value);
+            }
             size = dq.size();
             storage->write_memtable(key, val);
             return size;
@@ -924,7 +944,9 @@ size_t DequeProcessor::r_push(Storage *storage, const std::string &key, const st
         else
         {
             std::deque<std::string> dq;
-            dq.push_back(value);
+            for(const auto& value : values) {
+                dq.push_back(value);
+            }
             size = dq.size();
             EValue val;
             val.value = dq;
@@ -934,7 +956,7 @@ size_t DequeProcessor::r_push(Storage *storage, const std::string &key, const st
     }
     catch (const std::exception &e)
     {
-        LOG_ERROR("r_push key: %s, value: %s, error: %s", key, value, e.what());
+        LOG_ERROR("r_push key: %s, error: %s", key, e.what());
         throw e;
     }
 }
