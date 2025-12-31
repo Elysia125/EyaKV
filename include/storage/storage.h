@@ -222,16 +222,7 @@ private:
      * 2. 在 MemTable 中标记删除
      */
     uint32_t remove(std::vector<std::string> &keys);
-    /**
-     * @brief 删除单个数据。
-     *
-     * 在 LSM-tree 中，删除操作实际上是写入一个 Tombstone 标记。
-     * 真正的删除发生在 Compaction 过程中。
-     *
-     * 流程：
-     * 在 MemTable 中标记删除
-     */
-    bool remove(MemTable<std::string, EValue> *memtable, const std::string &key);
+
     /**
      * @brief 检查 key 是否存在。
      * @param key 要检查的 key
@@ -258,12 +249,11 @@ private:
     void set_expire(const std::string &key, uint64_t alive_time);
     /**
      * @brief 设置key的过期时间戳。
-     * @param memtable 目标MemTable
      * @param key 要设置过期时间的key
      * @param expire_time 过期时间戳（秒）
      * @return 设置成功返回true，否则返回false
      */
-    void set_key_expire(MemTable<std::string, EValue> *memtable, const std::string &key, uint64_t expire_time);
+    void set_key_expire(const std::string &key, uint64_t expire_time);
     /**
      * @brief 根据key从最新数据中获取
      */

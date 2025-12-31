@@ -15,7 +15,7 @@ bool StringProcessor::set(Storage *storage, const std::string &key, const std::s
     EValue val;
     val.value = value;
     val.expire_time = ttl == 0 ? 0 : std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count() + ttl;
-    if (storage->wal_)
+    if (storage->enable_wal_ && storage->wal_)
     {
         storage->wal_->append_log(LogType::kSet, key, serialize(val));
     }
@@ -31,17 +31,17 @@ Result StringProcessor::execute(Storage *storage, const uint8_t type, const std:
         {
             return Result::error("missing arguments");
         }
-        return Result::success(std::string(set(storage, args[0], args[1], args.size() > 2 ? std::stoll(args[2]) : 0) ? "1" : "0"));
+        return Result::success(set(storage, args[0], args[1], args.size() > 2 ? std::stoll(args[2]) : 0));
     }
     return Result::error("unsupported type");
 }
-bool StringProcessor::recover(Storage *storage, MemTable<std::string, EValue> *memtable, const uint8_t type, const std::string &key, const std::string &payload)
+bool StringProcessor::recover(Storage *storage, const uint8_t type, const std::string &key, const std::string &payload)
 {
     if (type == LogType::kSet)
     {
         size_t offset = 0;
         EValue val = deserialize(payload.data(), offset);
-        memtable->put(key, val);
+        storage->write_memtable(key, val);
         return true;
     }
     return false;
@@ -67,7 +67,7 @@ Result SetProcessor::execute(Storage *storage, const uint8_t type, const std::ve
     {
         if (args.size() < 2)
             return Result::error("missing member");
-        int added = 0;
+        size_t added = 0;
         for (size_t i = 1; i < args.size(); ++i)
         {
             if (s_add(storage, key, args[i]))
@@ -75,13 +75,13 @@ Result SetProcessor::execute(Storage *storage, const uint8_t type, const std::ve
                 added++;
             }
         }
-        return Result::success(std::to_string(added));
+        return Result::success(added);
     }
     case LogType::kSRem:
     {
         if (args.size() < 2)
             return Result::error("missing member");
-        int removed = 0;
+        size_t removed = 0;
         for (size_t i = 1; i < args.size(); ++i)
         {
             if (s_rem(storage, key, args[i]))
@@ -89,7 +89,7 @@ Result SetProcessor::execute(Storage *storage, const uint8_t type, const std::ve
                 removed++;
             }
         }
-        return Result::success(std::to_string(removed));
+        return Result::success(removed);
     }
     case LogType::kSMembers:
     {
@@ -100,23 +100,25 @@ Result SetProcessor::execute(Storage *storage, const uint8_t type, const std::ve
     }
 }
 
-bool SetProcessor::recover(Storage *storage, MemTable<std::string, EValue> *memtable, const uint8_t type, const std::string &key, const std::string &payload)
+bool SetProcessor::recover(Storage *storage, const uint8_t type, const std::string &key, const std::string &payload)
 {
     size_t offset = 0;
     std::string member = Serializer::deserializeString(payload.data(), offset);
 
     if (type == LogType::kSAdd)
     {
+        return s_add(storage, key, member, true);
     }
     else if (type == LogType::kSRem)
     {
+        return s_rem(storage, key, member, true);
     }
     return false;
 }
 
-bool SetProcessor::s_add(Storage *storage, const std::string &key, const std::string &member)
+bool SetProcessor::s_add(Storage *storage, const std::string &key, const std::string &member, const bool is_recover)
 {
-    if (storage->enable_wal_ && storage->wal_)
+    if (storage->enable_wal_ && storage->wal_ && !is_recover)
     {
         storage->wal_->append_log(LogType::kSAdd, key, Serializer::serialize(member));
     }
@@ -169,9 +171,9 @@ bool SetProcessor::s_add(Storage *storage, const std::string &key, const std::st
     }
 }
 
-bool SetProcessor::s_rem(Storage *storage, const std::string &key, const std::string &member)
+bool SetProcessor::s_rem(Storage *storage, const std::string &key, const std::string &member, const bool is_recover)
 {
-    if (storage->enable_wal_ && storage->wal_)
+    if (storage->enable_wal_ && storage->wal_ && !is_recover)
     {
         storage->wal_->append_log(LogType::kSRem, key, Serializer::serialize(member));
     }
@@ -222,7 +224,9 @@ std::vector<std::string> SetProcessor::s_members(Storage *storage, const std::st
 {
     auto val_opt = storage->get(key);
     if (!val_opt.has_value())
+    {
         throw std::runtime_error("key not be found");
+    }
 
     if (!std::holds_alternative<std::unordered_set<std::string>>(val_opt.value()))
     {
@@ -249,13 +253,11 @@ Result ZSetProcessor::execute(Storage *storage, const uint8_t type, const std::v
     case LogType::kZAdd:
         if (args.size() < 3)
             return Result::error("missing score or member");
-        // args: key, score, member. (Redis: zadd key score member)
-        return Result::success(z_add(storage, key, args[1], args[2]) ? "1" : "0");
+        return Result::success(z_add(storage, key, args[1], args[2]));
     case LogType::kZRem:
         if (args.size() < 2)
             return Result::error("missing member");
-        // args: key, member
-        return Result::success(z_rem(storage, key, args[1]) ? "1" : "0");
+        return Result::success(z_rem(storage, key, args[1]));
     case LogType::kZScore:
         if (args.size() < 2)
             return Result::error("missing member");
@@ -288,110 +290,172 @@ Result ZSetProcessor::execute(Storage *storage, const uint8_t type, const std::v
     case LogType::kZRemByRank:
         if (args.size() < 3)
             return Result::error("missing start or end");
-        return Result::success(std::to_string(z_rem_by_rank(storage, key, std::stoll(args[1]), std::stoll(args[2]))));
+        return Result::success(z_rem_by_rank(storage, key, std::stoll(args[1]), std::stoll(args[2])));
     case LogType::kZRemByScore:
         if (args.size() < 3)
             return Result::error("missing min or max");
-        return Result::success(std::to_string(z_rem_by_score(storage, key, args[1], args[2])));
+        return Result::success(z_rem_by_score(storage, key, args[1], args[2]));
     default:
         return Result::error("unsupported type");
     }
 }
 
-bool ZSetProcessor::recover(Storage *storage, MemTable<std::string, EValue> *memtable, const uint8_t type, const std::string &key, const std::string &payload)
+bool ZSetProcessor::recover(Storage *storage, const uint8_t type, const std::string &key, const std::string &payload)
 {
-    EValue val;
-    auto existing = memtable->get(key);
-    if (existing.has_value())
-        val = existing.value();
-    else
-        val.value = ZSet();
-
-    if (!std::holds_alternative<ZSet>(val.value))
-        return false;
-    auto &zset = std::get<ZSet>(val.value);
     size_t offset = 0;
-
-    if (type == LogType::kZAdd)
+    switch (type)
     {
-        std::string score = Serializer::deserializeString(payload.data(), offset);
-        std::string member = Serializer::deserializeString(payload.data(), offset);
-        zset.zadd(member, score);
-    }
-    else if (type == LogType::kZRem)
+    case LogType::kZAdd:
     {
-        std::string member = Serializer::deserializeString(payload.data(), offset);
-        zset.zrem(member);
+        auto score = Serializer::deserializeString(payload.data(), offset);
+        auto member = Serializer::deserializeString(payload.data(), offset);
+        ;
+        z_add(storage, key, score, member, true);
+        break;
     }
-    else if (type == LogType::kZIncrBy)
+    case LogType::kZRem:
     {
-        std::string increment = Serializer::deserializeString(payload.data(), offset);
-        std::string member = Serializer::deserializeString(payload.data(), offset);
-        // Emulate IncrBy since ZSet doesn't expose it directly but zadd updates
-        auto curr = zset.zscore(member);
-        double old_score = curr.has_value() ? std::stod(curr.value()) : 0.0;
-        double inc = std::stod(increment);
-        zset.zadd(member, std::to_string(old_score + inc));
+        auto member = Serializer::deserializeString(payload.data(), offset);
+        z_rem(storage, key, member, true);
+        break;
     }
-    else if (type == LogType::kZRemByRank)
+    case LogType::kZIncrBy:
     {
-        // Need to parse start/end
-        // Wait, payload needs to contain start/end.
-        // I need to ensure recover logic matches WAL log format.
-        // Current plan: log args.
-        // I will implement helper methods to follow this.
+        auto increment = Serializer::deserializeString(payload.data(), offset);
+        auto member = Serializer::deserializeString(payload.data(), offset);
+        z_incr_by(storage, key, increment, member, true);
+        break;
     }
-    // ... Implement other recoveries if they are logged
-    // Ideally operations like RemByRank are logged as is.
-    // Assuming simple payload serialization of arguments.
-    // For simplicity, let's implement basic add/rem/incrby recovery mostly used.
-
-    memtable->put(key, val);
+    case LogType::kZRemByRank:
+    {
+        auto start = Serializer::deserializeString(payload.data(), offset);
+        auto end = Serializer::deserializeString(payload.data(), offset);
+        z_rem_by_rank(storage, key, std::stoll(start), std::stoll(end), true);
+        break;
+    }
+    case LogType::kZRemByScore:
+    {
+        auto min = Serializer::deserializeString(payload.data(), offset);
+        auto max = Serializer::deserializeString(payload.data(), offset);
+        z_rem_by_score(storage, key, min, max, true);
+        break;
+    }
+    default:
+        break;
+    }
     return true;
 }
 
 // ZSet Helpers
-bool ZSetProcessor::z_add(Storage *storage, const std::string &key, const std::string &score, const std::string &member)
+bool ZSetProcessor::z_add(Storage *storage, const std::string &key, const std::string &score, const std::string &member, const bool is_recover)
 {
-    auto val_opt = storage->get(key);
-    EValue val;
-    if (val_opt.has_value())
-        val.value = val_opt.value();
-    else
-        val.value = ZSet();
-
-    if (!std::holds_alternative<ZSet>(val.value))
-        return false;
-    auto &zset = std::get<ZSet>(val.value);
-
-    zset.zadd(member, score);
-
-    if (storage->wal_)
+    if (storage->enable_wal_ && storage->wal_ && !is_recover)
     {
         std::string payload = Serializer::serialize(score) + Serializer::serialize(member);
         storage->wal_->append_log(LogType::kZAdd, key, payload);
     }
-    storage->write_memtable(key, val);
-    return true;
+    try
+    {
+        storage->memtable_->handle_value(key, [&score, &member](EValue &val) -> EValue &
+                                         {
+                                            if(val.is_deleted()||val.is_expired()){
+                                                throw std::runtime_error("key not be found");
+                                            }
+                                            if (!std::holds_alternative<ZSet>(val.value))
+                                            {
+                                                throw std::runtime_error("value is not a zset");
+                                            }
+                                            else
+                                            {
+                                                auto &zset = std::get<ZSet>(val.value);
+                                                zset.zadd(member, score);
+                                                return val;
+                                            } });
+        return true;
+    }
+    catch (const std::out_of_range &e)
+    {
+        std::optional<EValue> val_opt;
+        if (storage->get_from_old(key, val_opt))
+        {
+            EValue val = val_opt.value();
+            if (!std::holds_alternative<ZSet>(val.value))
+            {
+                throw std::runtime_error("value is not a zset");
+            }
+            auto &zset = std::get<ZSet>(val.value);
+            zset.zadd(member, score);
+            storage->write_memtable(key, val);
+            return true;
+        }
+        else
+        {
+            ZSet zset;
+            zset.zadd(member, score);
+            EValue val;
+            val.value = zset;
+            storage->write_memtable(key, val);
+            return true;
+        }
+    }
+    catch (const std::exception &e)
+    {
+        LOG_ERROR("z_add key: %s, score: %s, member: %s, error: %s", key, score, member, e.what());
+        throw e;
+    }
+    return false;
 }
 
-bool ZSetProcessor::z_rem(Storage *storage, const std::string &key, const std::string &member)
+bool ZSetProcessor::z_rem(Storage *storage, const std::string &key, const std::string &member, const bool is_recover)
 {
-    auto val_opt = storage->get(key);
-    if (!val_opt.has_value())
-        return false;
-    EValue val;
-    val.value = val_opt.value();
-    if (!std::holds_alternative<ZSet>(val.value))
-        return false;
-    auto &zset = std::get<ZSet>(val.value);
-
-    if (zset.zrem(member))
+    if (storage->enable_wal_ && storage->wal_ && !is_recover)
     {
-        if (storage->wal_)
-            storage->wal_->append_log(LogType::kZRem, key, Serializer::serialize(member));
-        storage->write_memtable(key, val);
+        std::string payload = Serializer::serialize(member);
+        storage->wal_->append_log(LogType::kZRem, key, payload);
+    }
+    try
+    {
+        storage->memtable_->handle_value(key, [&member](EValue &val) -> EValue &
+                                         {
+                                            if(val.is_deleted()||val.is_expired()){
+                                                throw std::runtime_error("key not be found");
+                                            }
+                                            if (!std::holds_alternative<ZSet>(val.value))
+                                            {
+                                                throw std::runtime_error("value is not a zset");
+                                            }
+                                            else
+                                            {
+                                                auto &zset = std::get<ZSet>(val.value);
+                                                zset.zrem(member);
+                                                return val;
+                                            } });
         return true;
+    }
+    catch (const std::out_of_range &e)
+    {
+        std::optional<EValue> val_opt;
+        if (storage->get_from_old(key, val_opt))
+        {
+            EValue val = val_opt.value();
+            if (!std::holds_alternative<ZSet>(val.value))
+            {
+                throw std::runtime_error("value is not a zset");
+            }
+            auto &zset = std::get<ZSet>(val.value);
+            zset.zrem(member);
+            storage->write_memtable(key, val);
+            return true;
+        }
+        else
+        {
+            throw std::runtime_error("key not be found");
+        }
+    }
+    catch (const std::exception &e)
+    {
+        LOG_ERROR("z_rem key: %s, member: %s, error: %s", key, member, e.what());
+        throw e;
     }
     return false;
 }
@@ -400,9 +464,9 @@ std::optional<std::string> ZSetProcessor::z_score(Storage *storage, const std::s
 {
     auto val_opt = storage->get(key);
     if (!val_opt.has_value())
-        return std::nullopt;
+        throw std::runtime_error("key not be found");
     if (!std::holds_alternative<ZSet>(val_opt.value()))
-        return std::nullopt;
+        throw std::runtime_error("value is not a zset");
     return std::get<ZSet>(val_opt.value()).zscore(member);
 }
 
@@ -410,9 +474,9 @@ std::optional<size_t> ZSetProcessor::z_rank(Storage *storage, const std::string 
 {
     auto val_opt = storage->get(key);
     if (!val_opt.has_value())
-        return std::nullopt;
+        throw std::runtime_error("key not be found");
     if (!std::holds_alternative<ZSet>(val_opt.value()))
-        return std::nullopt;
+        throw std::runtime_error("value is not a zset");
     return std::get<ZSet>(val_opt.value()).zrank(member);
 }
 
@@ -420,59 +484,87 @@ size_t ZSetProcessor::z_card(Storage *storage, const std::string &key)
 {
     auto val_opt = storage->get(key);
     if (!val_opt.has_value())
-        return 0;
+        throw std::runtime_error("key not be found");
     if (!std::holds_alternative<ZSet>(val_opt.value()))
-        return 0;
+        throw std::runtime_error("value is not a zset");
     return std::get<ZSet>(val_opt.value()).zcard();
 }
 
-std::string ZSetProcessor::z_incr_by(Storage *storage, const std::string &key, const std::string &increment, const std::string &member)
+std::string ZSetProcessor::z_incr_by(Storage *storage, const std::string &key, const std::string &increment, const std::string &member, const bool is_recover)
 {
-    auto val_opt = storage->get(key);
-    EValue val;
-    if (val_opt.has_value())
-        val.value = val_opt.value();
-    else
-        val.value = ZSet();
-    if (!std::holds_alternative<ZSet>(val.value))
-        return "WRONGTYPE";
-    auto &zset = std::get<ZSet>(val.value);
-
-    auto curr = zset.zscore(member);
-    double old = curr.has_value() ? std::stod(curr.value()) : 0.0;
-    double inc = std::stod(increment);
-    std::string new_score = std::to_string(old + inc);
-    zset.zadd(member, new_score);
-
-    if (storage->wal_)
+    if (storage->enable_wal_ && storage->wal_ && !is_recover)
     {
         std::string payload = Serializer::serialize(increment) + Serializer::serialize(member);
         storage->wal_->append_log(LogType::kZIncrBy, key, payload);
     }
-    storage->write_memtable(key, val);
-    return new_score;
+    std::optional<std::string> new_score;
+    try
+    {
+        storage->memtable_->handle_value(key, [&increment, &member, &new_score](EValue &val) -> EValue &
+                                         {
+                                            if(val.is_deleted()||val.is_expired()){
+                                                throw std::runtime_error("key not be found");
+                                            }
+                                            if (!std::holds_alternative<ZSet>(val.value))
+                                            {
+                                                throw std::runtime_error("value is not a zset");
+                                            }
+                                            else
+                                            {
+                                                auto &zset = std::get<ZSet>(val.value);
+                                                new_score = zset.z_incrby(member, increment);
+                                                return val;
+                                            } });
+        return new_score == std::nullopt ? std::string("Member not be found") : new_score.value();
+    }
+    catch (const std::out_of_range &e)
+    {
+        std::optional<EValue> val_opt;
+        if (storage->get_from_old(key, val_opt))
+        {
+            EValue val = val_opt.value();
+            if (!std::holds_alternative<ZSet>(val.value))
+            {
+                throw std::runtime_error("value is not a zset");
+            }
+            auto &zset = std::get<ZSet>(val.value);
+            new_score = zset.z_incrby(member, increment);
+            storage->write_memtable(key, val);
+            return new_score == std::nullopt ? std::string("Member not be found") : new_score.value();
+        }
+        else
+        {
+            throw std::runtime_error("key not be found");
+        }
+    }
+    catch (const std::exception &e)
+    {
+        LOG_ERROR("z_incr_by key: %s, increment: %s, member: %s, error: %s", key, increment, member, e.what());
+        throw e;
+    }
+    return "";
 }
 
 std::vector<std::pair<std::string, EyaValue>> ZSetProcessor::z_range_by_rank(Storage *storage, const std::string &key, long long start, long long end)
 {
     auto val_opt = storage->get(key);
     if (!val_opt.has_value())
-        return {};
+        throw std::runtime_error("key not be found");
     if (!std::holds_alternative<ZSet>(val_opt.value()))
-        return {};
+        throw std::runtime_error("value is not a zset");
     auto &zset = std::get<ZSet>(val_opt.value());
 
-    // ZSet::zrange_by_rank takes size_t. Handle negative logic if needed (Redis style).
-    // Assuming simple mapping for now:
-    if (start < 0)
-        start = 0; // simplified
-    if (end < 0)
-        end = std::numeric_limits<long long>::max(); // simplified
+    if (start < 0 || end < 0)
+    {
+        throw std::runtime_error("start and end must be positive");
+    }
 
     auto res = zset.zrange_by_rank((size_t)start, (size_t)end);
     std::vector<std::pair<std::string, EyaValue>> ret;
     for (auto &p : res)
+    {
         ret.push_back({p.first, p.second});
+    }
     return ret;
 }
 
@@ -480,74 +572,129 @@ std::vector<std::pair<std::string, EyaValue>> ZSetProcessor::z_range_by_score(St
 {
     auto val_opt = storage->get(key);
     if (!val_opt.has_value())
-        return {};
+        throw std::runtime_error("key not be found");
     if (!std::holds_alternative<ZSet>(val_opt.value()))
-        return {};
+        throw std::runtime_error("value is not a zset");
     auto &zset = std::get<ZSet>(val_opt.value());
 
     auto res = zset.zrange_by_score(min, max);
     std::vector<std::pair<std::string, EyaValue>> ret;
     for (auto &p : res)
+    {
         ret.push_back({p.first, p.second});
+    }
     return ret;
 }
 
-size_t ZSetProcessor::z_rem_by_rank(Storage *storage, const std::string &key, long long start, long long end)
+size_t ZSetProcessor::z_rem_by_rank(Storage *storage, const std::string &key, long long start, long long end, const bool is_recover)
 {
-    auto val_opt = storage->get(key);
-    if (!val_opt.has_value())
-        return 0;
-    EValue val;
-    val.value = val_opt.value();
-    if (!std::holds_alternative<ZSet>(val.value))
-        return 0;
-    auto &zset = std::get<ZSet>(val.value);
-
-    // Arg logic
-    if (start < 0)
-        start = 0;
-    if (end < 0)
-        end = std::numeric_limits<long long>::max();
-
-    size_t count = zset.zrem_range_by_rank((size_t)start, (size_t)end);
-    if (count > 0)
+    if (start < 0 || end < 0)
     {
-        // Logging range removal is tricky without complex payload.
-        // We log "args" basically.
-        if (storage->wal_)
-        {
-            std::string payload = Serializer::serialize(std::to_string(start)) + Serializer::serialize(std::to_string(end));
-            storage->wal_->append_log(LogType::kZRemByRank, key, payload);
-        }
-        storage->write_memtable(key, val);
+        throw std::runtime_error("start and end must be positive");
     }
-    return count;
+    if (storage->enable_wal_ && storage->wal_ && !is_recover)
+    {
+        std::string payload = Serializer::serialize(std::to_string(start)) + Serializer::serialize(std::to_string(end));
+        storage->wal_->append_log(LogType::kZRemByRank, key, payload);
+    }
+    size_t count = 0;
+    try
+    {
+        storage->memtable_->handle_value(key, [&start, &end, &count](EValue &val) -> EValue &
+                                         {
+                                            if(val.is_deleted()||val.is_expired()){
+                                                throw std::runtime_error("key not be found");
+                                            }
+                                            if (!std::holds_alternative<ZSet>(val.value))
+                                            {
+                                                throw std::runtime_error("value is not a zset");
+                                            }
+                                            else
+                                            {
+                                                auto &zset = std::get<ZSet>(val.value);
+                                                count = zset.zrem_range_by_rank((size_t)start, (size_t)end);
+                                                return val;
+                                            } });
+        return count;
+    }
+    catch (const std::out_of_range &e)
+    {
+        std::optional<EValue> val_opt;
+        if (storage->get_from_old(key, val_opt))
+        {
+            EValue val = val_opt.value();
+            if (!std::holds_alternative<ZSet>(val.value))
+            {
+                throw std::runtime_error("value is not a zset");
+            }
+            auto &zset = std::get<ZSet>(val.value);
+            count = zset.zrem_range_by_rank((size_t)start, (size_t)end);
+            storage->write_memtable(key, val);
+            return count;
+        }
+        else
+        {
+            throw std::runtime_error("key not be found");
+        }
+    }
+    catch (const std::exception &e)
+    {
+        LOG_ERROR("z_rem_by_rank key: %s, start: %lld, end: %lld, error: %s", key, start, end, e.what());
+        throw e;
+    }
+    return 0;
 }
 
-size_t ZSetProcessor::z_rem_by_score(Storage *storage, const std::string &key, const std::string &min, const std::string &max)
+size_t ZSetProcessor::z_rem_by_score(Storage *storage, const std::string &key, const std::string &min, const std::string &max, const bool is_recover)
 {
-    auto val_opt = storage->get(key);
-    if (!val_opt.has_value())
-        return 0;
-    EValue val;
-    val.value = val_opt.value();
-    if (!std::holds_alternative<ZSet>(val.value))
-        return 0;
-    auto &zset = std::get<ZSet>(val.value);
-
-    size_t count = zset.zrem_range_by_score(min, max);
-    if (count > 0)
+    if (storage->enable_wal_ && storage->wal_ && !is_recover)
     {
-        if (storage->wal_)
-        {
-            std::string payload = Serializer::serialize(min) + Serializer::serialize(max);
-            storage->wal_->append_log(LogType::kZRemByScore, key, payload);
-        }
-        storage->write_memtable(key, val);
+        std::string payload = Serializer::serialize(min) + Serializer::serialize(max);
+        storage->wal_->append_log(LogType::kZRemByScore, key, payload);
     }
-    return count;
+    size_t count = 0;
+    try
+    {
+        storage->memtable_->handle_value(key, [&min, &max, &count](EValue &val) -> EValue &
+                                         {
+                                            if(val.is_deleted()||val.is_expired()){
+                                                throw std::runtime_error("key not be found");
+                                            }
+                                            if (!std::holds_alternative<ZSet>(val.value))
+                                            {
+                                                throw std::runtime_error("value is not a zset");
+                                            }
+                                            else
+                                            {
+                                                auto &zset = std::get<ZSet>(val.value);
+                                                count = zset.zrem_range_by_score(min, max);
+                                                return val;
+                                            } });
+        return count;
+    }
+    catch (const std::out_of_range &e)
+    {
+        std::optional<EValue> val_opt;
+        if (storage->get_from_old(key, val_opt))
+        {
+            EValue val = val_opt.value();
+            auto &zset = std::get<ZSet>(val.value);
+            count = zset.zrem_range_by_score(min, max);
+            storage->write_memtable(key, val);
+            return count;
+        }
+        else
+        {
+            throw std::runtime_error("key not found");
+        }
+    }
+    catch (const std::exception &e)
+    {
+        LOG_ERROR("z_rem_by_score key: %s, min: %s, max: %s, error: %s", key, min, max, e.what());
+        throw e;
+    }
+    return 0;
 }
-
 // DequeProcessor (List)
 std::vector<uint8_t> DequeProcessor::get_supported_types() const
 {
@@ -602,7 +749,7 @@ Result DequeProcessor::execute(Storage *storage, const uint8_t type, const std::
     }
 }
 
-bool DequeProcessor::recover(Storage *storage, MemTable<std::string, EValue> *memtable, const uint8_t type, const std::string &key, const std::string &payload)
+bool DequeProcessor::recover(Storage *storage, const uint8_t type, const std::string &key, const std::string &payload)
 {
     EValue val;
     auto existing = memtable->get(key);
@@ -835,7 +982,7 @@ Result HashProcessor::execute(Storage *storage, const uint8_t type, const std::v
     }
 }
 
-bool HashProcessor::recover(Storage *storage, MemTable<std::string, EValue> *memtable, const uint8_t type, const std::string &key, const std::string &payload)
+bool HashProcessor::recover(Storage *storage, const uint8_t type, const std::string &key, const std::string &payload)
 {
     EValue val;
     auto existing = memtable->get(key);

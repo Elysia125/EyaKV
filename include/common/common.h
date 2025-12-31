@@ -30,6 +30,14 @@ struct Result
     {
         return Result{data, error_msg};
     }
+    static Result success(bool success, const std::string error_msg = "")
+    {
+        return Result{std::string(success ? "1" : "0"), error_msg};
+    }
+    static Result success(size_t data, const std::string error_msg = "")
+    {
+        return Result{std::to_string(data), error_msg};
+    }
     /**
      * @brief 创建一个包含错误信息的Result对象
      *

@@ -12,7 +12,7 @@ private:
 
 public:
     Result execute(Storage *storage, const uint8_t type, const std::vector<std::string> &args) override;
-    bool recover(Storage *storage, MemTable<std::string, EValue> *memtable, const uint8_t type, const std::string &key, const std::string &payload) override;
+    bool recover(Storage *storage, const uint8_t type, const std::string &key, const std::string &payload) override;
     std::vector<uint8_t> get_supported_types() const override;
 };
 
@@ -44,7 +44,7 @@ public:
      * @param payload 数据载荷
      * @return true 成功, false 失败
      */
-    bool recover(Storage *storage, MemTable<std::string, EValue> *memtable, const uint8_t type, const std::string &key, const std::string &payload) override;
+    bool recover(Storage *storage, const uint8_t type, const std::string &key, const std::string &payload) override;
 
 private:
     /**
@@ -54,7 +54,7 @@ private:
      * @param member 成员
      * @return true 添加成功 (之前不存在), false 成员已存在
      */
-    bool s_add(Storage *storage, const std::string &key, const std::string &member);
+    bool s_add(Storage *storage, const std::string &key, const std::string &member, const bool is_recover = false);
 
     /**
      * @brief 从集合移除元素
@@ -63,7 +63,7 @@ private:
      * @param member 成员
      * @return true 移除成功, false 成员不存在
      */
-    bool s_rem(Storage *storage, const std::string &key, const std::string &member);
+    bool s_rem(Storage *storage, const std::string &key, const std::string &member, const bool is_recover = false);
 
     /**
      * @brief 获取集合所有成员
@@ -101,20 +101,20 @@ public:
      * @param payload 数据载荷
      * @return true 成功, false 失败
      */
-    bool recover(Storage *storage, MemTable<std::string, EValue> *memtable, const uint8_t type, const std::string &key, const std::string &payload) override;
+    bool recover(Storage *storage, const uint8_t type, const std::string &key, const std::string &payload) override;
 
 private:
     // Helper methods for ZSet operations
-    bool z_add(Storage *storage, const std::string &key, const std::string &score, const std::string &member);
-    bool z_rem(Storage *storage, const std::string &key, const std::string &member);
+    bool z_add(Storage *storage, const std::string &key, const std::string &score, const std::string &member, const bool is_recover = false);
+    bool z_rem(Storage *storage, const std::string &key, const std::string &member, const bool is_recover = false);
     std::optional<std::string> z_score(Storage *storage, const std::string &key, const std::string &member);
     std::optional<size_t> z_rank(Storage *storage, const std::string &key, const std::string &member);
     size_t z_card(Storage *storage, const std::string &key);
-    std::string z_incr_by(Storage *storage, const std::string &key, const std::string &increment, const std::string &member);
+    std::string z_incr_by(Storage *storage, const std::string &key, const std::string &increment, const std::string &member, const bool is_recover = false);
     std::vector<std::pair<std::string, EyaValue>> z_range_by_rank(Storage *storage, const std::string &key, long long start, long long end);
     std::vector<std::pair<std::string, EyaValue>> z_range_by_score(Storage *storage, const std::string &key, const std::string &min, const std::string &max);
-    size_t z_rem_by_rank(Storage *storage, const std::string &key, long long start, long long end);
-    size_t z_rem_by_score(Storage *storage, const std::string &key, const std::string &min, const std::string &max);
+    size_t z_rem_by_rank(Storage *storage, const std::string &key, long long start, long long end, const bool is_recover = false);
+    size_t z_rem_by_score(Storage *storage, const std::string &key, const std::string &min, const std::string &max, const bool is_recover = false);
 };
 
 // Deque (List) Processor
@@ -144,7 +144,7 @@ public:
      * @param payload 数据载荷
      * @return true 成功, false 失败
      */
-    bool recover(Storage *storage, MemTable<std::string, EValue> *memtable, const uint8_t type, const std::string &key, const std::string &payload) override;
+    bool recover(Storage *storage, const uint8_t type, const std::string &key, const std::string &payload) override;
 
 private:
     size_t l_push(Storage *storage, const std::string &key, const std::string &value);
@@ -185,7 +185,7 @@ public:
      * @param payload 数据载荷
      * @return true 成功, false 失败
      */
-    bool recover(Storage *storage, MemTable<std::string, EValue> *memtable, const uint8_t type, const std::string &key, const std::string &payload) override;
+    bool recover(Storage *storage, const uint8_t type, const std::string &key, const std::string &payload) override;
 
 private:
     bool h_set(Storage *storage, const std::string &key, const std::string &field, const std::string &value);

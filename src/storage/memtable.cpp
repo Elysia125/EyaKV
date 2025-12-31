@@ -91,7 +91,7 @@ size_t MemTable<K, V>::memory_limit() const
 template <typename K, typename V>
 bool MemTable<K, V>::should_flush() const
 {
-    return memory_usage() >= memtable_size_;
+    return memtable_size_!=0&&memory_usage() >= memtable_size_;
 }
 
 template <typename K, typename V>

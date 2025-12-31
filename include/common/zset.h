@@ -139,6 +139,10 @@ public:
      * @brief 遍历
      */
     void for_each(std::function<void(const std::string &, const std::string &)> callback) const;
+    /**
+     * @brief 增加分数
+     */
+    std::optional<std::string> z_incrby(const std::string &member, const std::string &increment);
 
 private:
     SkipList<std::string, std::string> skiplist_;                   // 按分值排序的跳表

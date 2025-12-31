@@ -147,3 +147,20 @@ void ZSet::for_each(std::function<void(const std::string &, const std::string &)
 {
     skiplist_.for_each(callback);
 }
+
+std::optional<std::string> ZSet::z_incrby(const std::string &member, const std::string &increment)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = member_score_map_.find(member);
+    if (it == member_score_map_.end())
+    {
+        return std::nullopt;
+    }
+    std::string score = it->second;
+    std::string key = score + "\0" + member;
+    skiplist_.remove(key);
+    std::string new_score = std::to_string(std::stod(score) + std::stod(increment));
+    skiplist_.insert(new_score + "\0" + member, member);
+    member_score_map_[member] = new_score;
+    return new_score;
+}

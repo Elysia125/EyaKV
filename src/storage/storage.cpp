@@ -52,9 +52,6 @@ Storage::Storage(const std::string &data_dir,
         wal_flush_interval_ = 1000; // 默认1秒
     }
 
-    // 初始化 MemTable
-    memtable_ = create_new_memtable();
-
     // 初始化 SSTable 管理器
     sstable_manager_ = std::make_unique<SSTableManager>(sstable_dir_,
                                                         sstable_merge_strategy,
@@ -63,18 +60,28 @@ Storage::Storage(const std::string &data_dir,
                                                         sstable_level_size_ratio);
 
     // 初始化 WAL
-    if (enable_wal_)
-    {
-        wal_ = std::make_unique<Wal>(wal_dir, wal_flush_strategy_ == WALFlushStrategy::IMMEDIATE_ON_WRITE);
-    }
-    else
-    {
-        current_wal_filename_ = std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
-    }
-    // 恢复数据
+    wal_ = std::make_unique<Wal>(wal_dir, wal_flush_strategy_ == WALFlushStrategy::IMMEDIATE_ON_WRITE);
+
     init_command_handlers();
+    // 恢复数据
     recover();
 
+    // 初始化 MemTable
+    if (!memtable_)
+    {
+        memtable_ = create_new_memtable();
+    }
+    if (current_wal_filename_ == "")
+    {
+        if (enable_wal_)
+        {
+            current_wal_filename_ = wal_->open_wal_file();
+        }
+        else
+        {
+            current_wal_filename_ = std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
+        }
+    }
     start_background_flush_thread();
     LOG_INFO("Storage engine initialized. Data dir:%s ", data_dir_.c_str());
 }
@@ -130,37 +137,41 @@ void Storage::recover()
         // 记录下当前的memtable_size和skiplist_max_node_count
         size_t current_memtable_size = memtable_size_;
         size_t current_skiplist_max_node_count = skiplist_max_node_count_;
-        // 设置这两个为最大值，避免恢复过程中大小不足
-        memtable_size_ = std::numeric_limits<size_t>::max();
-        skiplist_max_node_count_ = std::numeric_limits<size_t>::max();
-        // 记录下当前的文件名
-        std::string current_wal_filename = "";
-        std::unique_ptr<MemTable<std::string, EValue>> memtable = nullptr;
+        // 设置这两个为0(无限)，避免恢复过程中大小不足
+        memtable_size_ = 0;
+        skiplist_max_node_count_ = 0;
+        // 初始化memtable_
+        memtable_ = create_new_memtable();
+        current_wal_filename_ = "";
         std::unique_lock<std::shared_mutex> lock(immutable_mutex_);
-        bool success = wal_->recover([this, &current_wal_filename, &memtable](std::string filename, uint8_t type, std::string key, std::string payload)
+        bool success = wal_->recover([this](std::string filename, uint8_t type, std::string key, std::string payload)
                                      {
-            if(filename != current_wal_filename){
-                current_wal_filename = filename;
-                memtable = create_new_memtable();
-                immutable_memtables_[current_wal_filename] = std::move(memtable);
-            }
-            //auto &memtable = immutable_memtables_[filename];
-            try{if(type == LogType::kRemove){
-                remove(memtable.get(),key);
-            }else if(type == LogType::kExpire){
-                uint64_t expire_time = std::stoull(payload);
-                set_key_expire(memtable.get(),key, expire_time);
-            }
-            else if (processors_.find(type) != processors_.end())
-            {
-                if(!processors_[type]->recover(this,memtable.get(), type, key, payload)){
-                    LOG_ERROR("Storage: WAL recovery failed for type: %d, key: %s, payload: %s", type, key.c_str(), payload.c_str());
+            if(filename != current_wal_filename_){
+                if(current_wal_filename_!=""){
+                    immutable_memtables_[current_wal_filename_] = std::move(memtable_);
+                    memtable_ = create_new_memtable();
                 }
+                current_wal_filename_ = filename;
             }
-            else
-            {
-                LOG_ERROR("Unknown log type: %d", type);
-            }}catch(std::exception&e){
+            try{
+                if(type == LogType::kRemove){
+                    std::vector<std::string> keys{key};
+                    remove(keys);
+                }else if(type == LogType::kExpire){
+                    uint64_t expire_time = std::stoull(payload);
+                    set_key_expire(key, expire_time);
+                }
+                else if (processors_.find(type) != processors_.end())
+                {
+                    if(!processors_[type]->recover(this, type, key, payload)){
+                        LOG_ERROR("Storage: WAL recovery failed for type: %d, key: %s, payload: %s", type, key.c_str(), payload.c_str());
+                    }
+                }
+                else
+                {
+                    LOG_ERROR("Unknown log type: %d", type);
+                }
+            }catch(std::exception& e){
                 LOG_WARN("Occur exception when recover wal for type %d key %s payload %s, exception: %s", type, key.c_str(), payload.c_str(), e.what());
             } });
         // 恢复完成，恢复memtable_size和skiplist_max_node_count
@@ -174,27 +185,24 @@ void Storage::recover()
         else
         {
             LOG_INFO("Storage: WAL recovery completed.");
-            if (immutable_memtables_.empty())
+            memtable_->set_memory_limit(memtable_size_);
+            memtable_->set_skiplist_max_node_count(skiplist_max_node_count_);
+            if (memtable_->should_flush() || !enable_wal_)
             {
-                return;
-            }
-            // 判断最后一个（最新的）memtable是否需要flush
-            auto last_memtable = immutable_memtables_.rbegin();
-            last_memtable->second->set_memory_limit(current_memtable_size);
-            last_memtable->second->set_skiplist_max_node_count(current_skiplist_max_node_count);
-            if (!last_memtable->second->should_flush() && !read_only_)
-            {
-                memtable_ = std::move(last_memtable->second);
-                if (wal_ && enable_wal_)
+                immutable_memtables_[current_wal_filename_] = std::move(memtable_);
+                memtable_ = create_new_memtable();
+                if (enable_wal_)
                 {
-                    wal_->open_wal_file(last_memtable->first);
-                    current_wal_filename_ = last_memtable->first;
+                    current_wal_filename_ = wal_->open_wal_file();
                 }
-                immutable_memtables_.erase(last_memtable->first);
+                else
+                {
+                    current_wal_filename_ = std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
+                }
             }
-            else if (!read_only_ && enable_wal_ && wal_)
+            else
             {
-                current_wal_filename_ = wal_->open_wal_file();
+                wal_->open_wal_file(current_wal_filename_);
             }
             if (immutable_memtables_.empty())
             {
@@ -605,15 +613,15 @@ void Storage::set_expire(const std::string &key, uint64_t alive_time)
         std::string payload = std::to_string(expire_time);
         wal_->append_log(LogType::kExpire, key, payload);
     }
-    set_key_expire(memtable_.get(), key, expire_time);
+    set_key_expire(key, expire_time);
 }
 
-void Storage::set_key_expire(MemTable<std::string, EValue> *memtable, const std::string &key, uint64_t expire_time)
+void Storage::set_key_expire(const std::string &key, uint64_t expire_time)
 {
     try
     {
-        memtable->handle_value(key, [&](EValue &v) -> EValue &
-                               {
+        memtable_->handle_value(key, [&](EValue &v) -> EValue &
+                                {
         v.expire_time = expire_time;
         return v; });
     }
@@ -629,12 +637,12 @@ void Storage::set_key_expire(MemTable<std::string, EValue> *memtable, const std:
         value.expire_time = expire_time;
         try
         {
-            memtable->put(key, value);
+            memtable_->put(key, value);
         }
         catch (const std::overflow_error &)
         {
             rotate_memtable();
-            memtable->put(key, value);
+            memtable_->put(key, value);
         }
     }
 }
@@ -659,37 +667,27 @@ uint32_t Storage::remove(std::vector<std::string> &keys)
                       key.c_str());
             continue;
         }
-        if (remove(memtable_.get(), key))
+        try
         {
+            memtable_->handle_value(key, remove_evalue);
             ++count;
+        }
+        catch (const std::out_of_range &)
+        {
+            // 插入一个delete值
+            EValue delete_value;
+            delete_value.deleted = true;
+            memtable_->put(key, delete_value);
+            ++count;
+        }
+        catch (const std::exception &e)
+        {
+            LOG_ERROR("Storage: remove key %s failed, %s", key.c_str(), e.what());
         }
     }
 
     return count;
 }
-
-bool Storage::remove(MemTable<std::string, EValue> *memtable, const std::string &key)
-{
-    try
-    {
-        memtable->handle_value(key, remove_evalue);
-        return true;
-    }
-    catch (const std::out_of_range &)
-    {
-        // 插入一个delete值
-        EValue delete_value;
-        delete_value.deleted = true;
-        memtable->put(key, delete_value);
-        return true;
-    }
-    catch (const std::exception &e)
-    {
-        LOG_ERROR("Storage: remove key %s failed, %s", key.c_str(), e.what());
-        return false;
-    }
-}
-
 Result Storage::execute(uint8_t type, std::vector<std::string> &args)
 {
     try
