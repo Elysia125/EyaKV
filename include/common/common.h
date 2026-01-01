@@ -231,21 +231,26 @@ inline size_t estimateEValueSize(const EValue &value)
 inline std::string serialize(const Result &result)
 {
     std::string es;
-    es.append(reinterpret_cast<const char *>(result.code), sizeof(result.code));
+    // Serialize code
+    es.append(reinterpret_cast<const char *>(&result.code), sizeof(result.code));
+    // Serialize data with proper type handling
+    uint8_t type_index = static_cast<uint8_t>(result.data.index());
+    es.append(reinterpret_cast<const char *>(&type_index), sizeof(type_index));
     es.append(std::visit([](auto &&arg) -> std::string
                          {
                     std::string s;
-                    s.append(reinterpret_cast<const char *>(&arg.index()), sizeof(arg.index()));
-        using T = std::decay_t<decltype(arg)>;
-        if constexpr (std::is_same_v<T, std::vector<std::pair<std::string, EyaValue>>)
+                    using T = std::decay_t<decltype(arg)>;
+                    // Serialize value based on type
+        if constexpr (std::is_same_v<T, std::vector<std::pair<std::string, EyaValue>>>)
         {
-            s.append(reinterpret_cast<const char *>(&arg.size()), sizeof(arg.size()));
+            size_t vec_size = arg.size();
+            s.append(reinterpret_cast<const char *>(&vec_size), sizeof(vec_size));
             for (const auto &[k, v] : arg)
             {
-                s.append(k);
+                s.append(Serializer::serialize(k));
                 s.append(serialize_eya_value(v));
             }
-        }else if constexpr (std::is_same_v<T, EyaValue>)
+        } else if constexpr (std::is_same_v<T, EyaValue>)
         {
             s.append(serialize_eya_value(arg));
         }
@@ -316,7 +321,7 @@ inline Result deserializeResult(const char *data, size_t &offset)
 }
 inline std::string to_string(const EyaValue &value)
 {
-    std::visit([](auto &&arg)
+    return std::visit([](auto &&arg)
                {
         using T = std::decay_t<decltype(arg)>;
         if constexpr (std::is_same_v<T, std::string>)

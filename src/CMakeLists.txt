@@ -9,6 +9,7 @@ add_library(eyakv_lib
     common/path_utils.cpp
     common/zset.cpp
     starter/starter.cpp
+    storage/processors.cpp
 )
 
 target_link_libraries(eyakv_lib PUBLIC glog::glog asio::asio)

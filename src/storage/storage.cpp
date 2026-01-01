@@ -283,6 +283,12 @@ bool Storage::get_from_latest(const std::string &key, std::optional<EValue> &val
     {
         return false;
     }
+    catch (const std::exception &e)
+    {
+        LOG_ERROR("Exception caught while getting key: %s, error: %s", key, e.what());
+        return false;
+    }
+    return false;
 }
 
 bool Storage::get_from_old(const std::string &key, std::optional<EValue> &value) const
@@ -581,6 +587,8 @@ Storage::Stats Storage::get_stats() const
         stats.sstable_count = 0;
         stats.total_sstable_size = 0;
     }
+    
+    return stats;
 }
 
 void Storage::register_processor(std::shared_ptr<ValueProcessor> processor)

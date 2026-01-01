@@ -58,7 +58,7 @@ private:
     /**
      * @brief 跳表的最大节点数（0表示无限制）
      */
-    const size_t MAX_NODE_COUNT;
+    size_t MAX_NODE_COUNT;
     /**
      * @brief 当前跳表的最大层数
      */
@@ -814,7 +814,7 @@ public:
         }
     }
 
-    void set_max_node_count(const size_t&max_node_count)
+    void set_max_node_count(const size_t &max_node_count)
     {
         std::lock_guard<std::mutex> lock(mutex_);
         MAX_NODE_COUNT = max_node_count;

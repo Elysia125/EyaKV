@@ -63,43 +63,6 @@ Connection::Connection(asio::ip::tcp::socket socket, Storage *storage)
         eyakv::protocol::Message resp;
         resp.type = eyakv::protocol::MessageType::kResponse;
 
-        switch (req.type)
-        {
-        case eyakv::protocol::MessageType::kGet:
-        {
-            auto val = storage_->get(req.key);
-            if (val.has_value())
-            {
-                //resp.value = val.value();
-                resp.status = true;
-            }
-            else
-            {
-                resp.status = false;
-                resp.error = "Key not found";
-            }
-            break;
-        }
-        case eyakv::protocol::MessageType::kPut:
-        {
-            bool success = storage_->put(req.key, req.value);
-            resp.status = success;
-            break;
-        }
-        case eyakv::protocol::MessageType::kDelete:
-        {
-            bool success = storage_->remove(req.key);
-            resp.status = success;
-            break;
-        }
-        default:
-        {
-            resp.status = false;
-            resp.error = "Unknown request type";
-            break;
-        }
-        }
-
         SendResponse(resp);
     }
 

@@ -308,7 +308,6 @@ bool ZSetProcessor::recover(Storage *storage, const uint8_t type, const std::str
     {
         auto score = Serializer::deserializeString(payload.data(), offset);
         auto member = Serializer::deserializeString(payload.data(), offset);
-        ;
         z_add(storage, key, score, member, true);
         break;
     }
