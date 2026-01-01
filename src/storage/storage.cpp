@@ -4,6 +4,7 @@
 #include "logger/logger.h"
 #include "storage/processors/structure_processors.h"
 #include "storage/storage.h"
+#include "common/operation_type.h"
 
 const auto remove_evalue = [](EValue &value) -> EValue &
 {
@@ -154,10 +155,10 @@ void Storage::recover()
                 current_wal_filename_ = filename;
             }
             try{
-                if(type == LogType::kRemove){
+                if(type == OperationType::kRemove){
                     std::vector<std::string> keys{key};
                     remove(keys);
-                }else if(type == LogType::kExpire){
+                }else if(type == OperationType::kExpire){
                     uint64_t expire_time = std::stoull(payload);
                     set_key_expire(key, expire_time);
                 }
@@ -619,7 +620,7 @@ void Storage::set_expire(const std::string &key, uint64_t alive_time)
     if (enable_wal_ && wal_)
     {
         std::string payload = std::to_string(expire_time);
-        wal_->append_log(LogType::kExpire, key, payload);
+        wal_->append_log(OperationType::kExpire, key, payload);
     }
     set_key_expire(key, expire_time);
 }
@@ -669,7 +670,7 @@ uint32_t Storage::remove(std::vector<std::string> &keys)
     uint32_t count = 0;
     for (auto &key : keys)
     {
-        if (enable_wal_ && wal_ && !wal_->append_log(LogType::kRemove, std::forward<decltype(key)>(key), ""))
+        if (enable_wal_ && wal_ && !wal_->append_log(OperationType::kRemove, std::forward<decltype(key)>(key), ""))
         {
             LOG_ERROR("Storage: remove key %s failed, append log failed",
                       key.c_str());
@@ -696,73 +697,73 @@ uint32_t Storage::remove(std::vector<std::string> &keys)
 
     return count;
 }
-Result Storage::execute(uint8_t type, std::vector<std::string> &args)
+Response Storage::execute(uint8_t type, std::vector<std::string> &args)
 {
     try
     {
-        if (type == LogType::kRemove)
+        if (type == OperationType::kRemove)
         {
             if (args.empty())
             {
-                return Result::error("missing key");
+                return Response::error("missing key");
             }
-            return Result::success(std::to_string(remove(args)));
+            return Response::success(std::to_string(remove(args)));
         }
-        else if (type == LogType::kExists)
+        else if (type == OperationType::kExists)
         {
             if (args.empty())
             {
-                return Result::error("missing key");
+                return Response::error("missing key");
             }
             else if (args.size() > 1)
             {
-                return Result::error("too many arguments");
+                return Response::error("too many arguments");
             }
-            return Result::success(std::string(contains(args[0]) ? "1" : "0"));
+            return Response::success(std::string(contains(args[0]) ? "1" : "0"));
         }
-        else if (type == LogType::kRange)
+        else if (type == OperationType::kRange)
         {
             if (args.size() < 2)
             {
-                return Result::error("missing key");
+                return Response::error("missing key");
             }
             if (args.size() > 2)
             {
-                return Result::error("too many arguments");
+                return Response::error("too many arguments");
             }
-            return Result::success(range(args[0], args[1]));
+            return Response::success(range(args[0], args[1]));
         }
-        else if (type == LogType::kExpire)
+        else if (type == OperationType::kExpire)
         {
             if (args.size() <= 1)
             {
-                return Result::error("missing key");
+                return Response::error("missing key");
             }
             if (args.size() > 2)
             {
-                return Result::error("too many arguments");
+                return Response::error("too many arguments");
             }
             uint64_t expire_time = std::stoull(args[1]);
             set_expire(args[0], expire_time);
-            return Result::success(std::string("1"));
+            return Response::success(std::string("1"));
         }
-        else if (type == LogType::kGet)
+        else if (type == OperationType::kGet)
         {
             if (args.size() == 0)
             {
-                return Result::error("missing key");
+                return Response::error("missing key");
             }
             if (args.size() > 1)
             {
-                return Result::error("too many arguments");
+                return Response::error("too many arguments");
             }
             auto value = get(args[0]);
-            EData data;
+            ResponseData data;
             if (value.has_value())
             {
                 data = value.value();
             }
-            return Result::success(data);
+            return Response::success(data);
         }
         else
         {
@@ -775,18 +776,18 @@ Result Storage::execute(uint8_t type, std::vector<std::string> &args)
                 }
                 catch (const std::exception &e)
                 {
-                    return Result::error(e.what());
+                    return Response::error(e.what());
                 }
             }
-            return Result::error("unknown command");
+            return Response::error("unknown command");
         }
     }
     catch (const std::runtime_error &e)
     {
-        return Result::error(e.what());
+        return Response::error(e.what());
     }
     catch (const std::exception &e)
     {
-        return Result::error("unknown error");
+        return Response::error("unknown error");
     }
 }

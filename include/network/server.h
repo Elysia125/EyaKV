@@ -1,6 +1,6 @@
-#pragma once
+#ifndef SERVER_H
+#define SERVER_H
 
-#include <asio.hpp>
 #include <memory>
 #include <thread>
 #include <vector>
@@ -9,7 +9,7 @@
 class Connection; // Forward declaration
 
 /**
- * @brief Server 负责监听端口并接受连接 (Reactor 模式/Asio).
+ * @brief Server 负责监听端口并接受连接
  */
 class Server
 {
@@ -30,7 +30,7 @@ public:
 private:
     void DoAccept();
 
-    asio::io_context io_context_;
-    asio::ip::tcp::acceptor acceptor_;
     Storage *storage_; // 引用，不拥有所有权
 };
+
+#endif // SERVER_H

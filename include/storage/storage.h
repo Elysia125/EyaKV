@@ -16,6 +16,8 @@
 #include <condition_variable>
 #include "common/common.h"
 #include "storage/processors/processor.h"
+#include "network/protocol/protocol.h"
+#include "storage/node.h"
 
 // Forward declaration
 class ValueProcessor;
@@ -81,7 +83,7 @@ public:
      */
     std::optional<EyaValue> get(const std::string &key) const;
 
-    Result execute(uint8_t type, std::vector<std::string> &args);
+    Response execute(uint8_t type, std::vector<std::string> &args);
     /**
      * @brief 注册自定义命令处理器
      */

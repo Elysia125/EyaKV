@@ -29,19 +29,6 @@ FetchContent_Declare(
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
-# Asio (Standalone)
-FetchContent_Declare(
-  asio
-  URL https://github.com/chriskohlhoff/asio/archive/refs/tags/asio-1-30-2.zip
-)
-FetchContent_MakeAvailable(asio)
-
-if(NOT TARGET asio::asio)
-    add_library(asio_interface INTERFACE)
-    target_include_directories(asio_interface INTERFACE ${asio_SOURCE_DIR}/asio/include)
-    target_compile_definitions(asio_interface INTERFACE ASIO_STANDALONE)
-    add_library(asio::asio ALIAS asio_interface)
-endif()
 
 # GLog (Simplified for now, can be replaced/enhanced later)
 # We will check if it's installed, otherwise we might skip or fetch.

@@ -11,7 +11,7 @@ private:
     bool set(Storage *storage, const std::string &key, const std::string &value, const uint64_t &ttl = 0);
 
 public:
-    Result execute(Storage *storage, const uint8_t type, const std::vector<std::string> &args) override;
+    Response execute(Storage *storage, const uint8_t type, const std::vector<std::string> &args) override;
     bool recover(Storage *storage, const uint8_t type, const std::string &key, const std::string &payload) override;
     std::vector<uint8_t> get_supported_types() const override;
 };
@@ -25,13 +25,13 @@ public:
      * @param storage 存储引擎实例
      * @param type 操作类型 (kSAdd, kSRem, kSMembers)
      * @param args 命令参数
-     * @return Result 执行结果
+     * @return Response 执行结果
      */
-    Result execute(Storage *storage, const uint8_t type, const std::vector<std::string> &args) override;
+    Response execute(Storage *storage, const uint8_t type, const std::vector<std::string> &args) override;
 
     /**
      * @brief 获取支持的操作类型
-     * @return 支持的 LogType 列表
+     * @return 支持的 OperationType 列表
      */
     std::vector<uint8_t> get_supported_types() const override;
 
@@ -83,13 +83,13 @@ public:
      * @param storage 存储引擎实例
      * @param type 操作类型
      * @param args 命令参数
-     * @return Result 执行结果
+     * @return Response 执行结果
      */
-    Result execute(Storage *storage, const uint8_t type, const std::vector<std::string> &args) override;
+    Response execute(Storage *storage, const uint8_t type, const std::vector<std::string> &args) override;
 
     /**
      * @brief 获取支持的操作类型
-     * @return 支持的 LogType 列表
+     * @return 支持的 OperationType 列表
      */
     std::vector<uint8_t> get_supported_types() const override;
 
@@ -126,13 +126,13 @@ public:
      * @param storage 存储引擎实例
      * @param type 操作类型
      * @param args 命令参数
-     * @return Result 执行结果
+     * @return Response 执行结果
      */
-    Result execute(Storage *storage, const uint8_t type, const std::vector<std::string> &args) override;
+    Response execute(Storage *storage, const uint8_t type, const std::vector<std::string> &args) override;
 
     /**
      * @brief 获取支持的操作类型
-     * @return 支持的 LogType 列表
+     * @return 支持的 OperationType 列表
      */
     std::vector<uint8_t> get_supported_types() const override;
 
@@ -167,13 +167,13 @@ public:
      * @param storage 存储引擎实例
      * @param type 操作类型
      * @param args 命令参数
-     * @return Result 执行结果
+     * @return Response 执行结果
      */
-    Result execute(Storage *storage, const uint8_t type, const std::vector<std::string> &args) override;
+    Response execute(Storage *storage, const uint8_t type, const std::vector<std::string> &args) override;
 
     /**
      * @brief 获取支持的操作类型
-     * @return 支持的 LogType 列表
+     * @return 支持的 OperationType 列表
      */
     std::vector<uint8_t> get_supported_types() const override;
 

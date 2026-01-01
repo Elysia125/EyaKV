@@ -2,9 +2,8 @@
 #include <mutex>
 #include "logger/logger.h"
 #include "common/common.h"
-
-// ==================== MemTable 实现 ====================
-
+#include "storage/node.h"
+// MemTable 实现
 template <typename K, typename V>
 MemTable<K, V>::MemTable(const size_t &memtable_size,
                          const size_t &skiplist_max_level,
@@ -133,4 +132,5 @@ void MemTable<K, V>::set_skiplist_max_node_count(const size_t &skiplist_max_node
     std::unique_lock<std::shared_mutex> lock(mutex_);
     table_.set_max_node_count(skiplist_max_node_count);
 }
+
 template class MemTable<std::string, EValue>;

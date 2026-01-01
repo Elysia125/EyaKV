@@ -2,12 +2,13 @@
 #include "logger/logger.h"
 #include "storage/storage.h"
 #include "common/serializer.h"
+#include "common/operation_type.h"
 #include <limits>
 
 // StringProcessor
 std::vector<uint8_t> StringProcessor::get_supported_types() const
 {
-    return {LogType::kSet};
+    return {OperationType::kSet};
 }
 
 bool StringProcessor::set(Storage *storage, const std::string &key, const std::string &value, const uint64_t &ttl)
@@ -17,27 +18,27 @@ bool StringProcessor::set(Storage *storage, const std::string &key, const std::s
     val.expire_time = ttl == 0 ? 0 : std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count() + ttl;
     if (storage->enable_wal_ && storage->wal_)
     {
-        storage->wal_->append_log(LogType::kSet, key, serialize(val));
+        storage->wal_->append_log(OperationType::kSet, key, serialize(val));
     }
     storage->write_memtable(key, val);
     return true;
 }
 
-Result StringProcessor::execute(Storage *storage, const uint8_t type, const std::vector<std::string> &args)
+Response StringProcessor::execute(Storage *storage, const uint8_t type, const std::vector<std::string> &args)
 {
-    if (type == LogType::kSet)
+    if (type == OperationType::kSet)
     {
         if (args.size() < 2)
         {
-            return Result::error("missing arguments");
+            return Response::error("missing arguments");
         }
-        return Result::success(set(storage, args[0], args[1], args.size() > 2 ? std::stoll(args[2]) : 0));
+        return Response::success(set(storage, args[0], args[1], args.size() > 2 ? std::stoll(args[2]) : 0));
     }
-    return Result::error("unsupported type");
+    return Response::error("unsupported type");
 }
 bool StringProcessor::recover(Storage *storage, const uint8_t type, const std::string &key, const std::string &payload)
 {
-    if (type == LogType::kSet)
+    if (type == OperationType::kSet)
     {
         size_t offset = 0;
         EValue val = deserialize(payload.data(), offset);
@@ -50,23 +51,23 @@ bool StringProcessor::recover(Storage *storage, const uint8_t type, const std::s
 // SetProcessor
 std::vector<uint8_t> SetProcessor::get_supported_types() const
 {
-    return {LogType::kSAdd, LogType::kSRem, LogType::kSMembers};
+    return {OperationType::kSAdd, OperationType::kSRem, OperationType::kSMembers};
 }
 
-Result SetProcessor::execute(Storage *storage, const uint8_t type, const std::vector<std::string> &args)
+Response SetProcessor::execute(Storage *storage, const uint8_t type, const std::vector<std::string> &args)
 {
     if (args.empty())
     {
-        return Result::error("missing key");
+        return Response::error("missing key");
     }
     std::string key = args[0];
 
     switch (type)
     {
-    case LogType::kSAdd:
+    case OperationType::kSAdd:
     {
         if (args.size() < 2)
-            return Result::error("missing member");
+            return Response::error("missing member");
         size_t added = 0;
         for (size_t i = 1; i < args.size(); ++i)
         {
@@ -75,12 +76,12 @@ Result SetProcessor::execute(Storage *storage, const uint8_t type, const std::ve
                 added++;
             }
         }
-        return Result::success(added);
+        return Response::success(added);
     }
-    case LogType::kSRem:
+    case OperationType::kSRem:
     {
         if (args.size() < 2)
-            return Result::error("missing member");
+            return Response::error("missing member");
         size_t removed = 0;
         for (size_t i = 1; i < args.size(); ++i)
         {
@@ -89,14 +90,14 @@ Result SetProcessor::execute(Storage *storage, const uint8_t type, const std::ve
                 removed++;
             }
         }
-        return Result::success(removed);
+        return Response::success(removed);
     }
-    case LogType::kSMembers:
+    case OperationType::kSMembers:
     {
-        return Result::success(s_members(storage, key));
+        return Response::success(s_members(storage, key));
     }
     default:
-        return Result::error("unsupported type");
+        return Response::error("unsupported type");
     }
 }
 
@@ -105,11 +106,11 @@ bool SetProcessor::recover(Storage *storage, const uint8_t type, const std::stri
     size_t offset = 0;
     std::string member = Serializer::deserializeString(payload.data(), offset);
 
-    if (type == LogType::kSAdd)
+    if (type == OperationType::kSAdd)
     {
         return s_add(storage, key, member, true);
     }
-    else if (type == LogType::kSRem)
+    else if (type == OperationType::kSRem)
     {
         return s_rem(storage, key, member, true);
     }
@@ -120,7 +121,7 @@ bool SetProcessor::s_add(Storage *storage, const std::string &key, const std::st
 {
     if (storage->enable_wal_ && storage->wal_ && !is_recover)
     {
-        storage->wal_->append_log(LogType::kSAdd, key, Serializer::serialize(member));
+        storage->wal_->append_log(OperationType::kSAdd, key, Serializer::serialize(member));
     }
     try
     {
@@ -175,7 +176,7 @@ bool SetProcessor::s_rem(Storage *storage, const std::string &key, const std::st
 {
     if (storage->enable_wal_ && storage->wal_ && !is_recover)
     {
-        storage->wal_->append_log(LogType::kSRem, key, Serializer::serialize(member));
+        storage->wal_->append_log(OperationType::kSRem, key, Serializer::serialize(member));
     }
     try
     {
@@ -238,64 +239,64 @@ std::vector<std::string> SetProcessor::s_members(Storage *storage, const std::st
 // ZSetProcessor
 std::vector<uint8_t> ZSetProcessor::get_supported_types() const
 {
-    return {LogType::kZAdd, LogType::kZRem, LogType::kZScore, LogType::kZRank, LogType::kZCard, LogType::kZIncrBy, LogType::kZRangeByRank, LogType::kZRangeByScore, LogType::kZRemByRank, LogType::kZRemByScore};
+    return {OperationType::kZAdd, OperationType::kZRem, OperationType::kZScore, OperationType::kZRank, OperationType::kZCard, OperationType::kZIncrBy, OperationType::kZRangeByRank, OperationType::kZRangeByScore, OperationType::kZRemByRank, OperationType::kZRemByScore};
 }
 
-Result ZSetProcessor::execute(Storage *storage, const uint8_t type, const std::vector<std::string> &args)
+Response ZSetProcessor::execute(Storage *storage, const uint8_t type, const std::vector<std::string> &args)
 {
     if (args.empty())
-        return Result::error("missing key");
+        return Response::error("missing key");
     std::string key = args[0];
 
     switch (type)
     {
-    case LogType::kZAdd:
+    case OperationType::kZAdd:
         if (args.size() < 3)
-            return Result::error("missing score or member");
-        return Result::success(z_add(storage, key, args[1], args[2]));
-    case LogType::kZRem:
+            return Response::error("missing score or member");
+        return Response::success(z_add(storage, key, args[1], args[2]));
+    case OperationType::kZRem:
         if (args.size() < 2)
-            return Result::error("missing member");
-        return Result::success(z_rem(storage, key, args[1]));
-    case LogType::kZScore:
+            return Response::error("missing member");
+        return Response::success(z_rem(storage, key, args[1]));
+    case OperationType::kZScore:
         if (args.size() < 2)
-            return Result::error("missing member");
+            return Response::error("missing member");
         {
             auto score = z_score(storage, key, args[1]);
-            return score.has_value() ? Result::success(score.value()) : Result::error("not found"); // Or null
+            return score.has_value() ? Response::success(score.value()) : Response::error("not found"); // Or null
         }
-    case LogType::kZRank:
+    case OperationType::kZRank:
         if (args.size() < 2)
-            return Result::error("missing member");
+            return Response::error("missing member");
         {
             auto rank = z_rank(storage, key, args[1]);
-            return rank.has_value() ? Result::success(std::to_string(rank.value())) : Result::error("not found");
+            return rank.has_value() ? Response::success(std::to_string(rank.value())) : Response::error("not found");
         }
-    case LogType::kZCard:
-        return Result::success(std::to_string(z_card(storage, key)));
-    case LogType::kZIncrBy:
+    case OperationType::kZCard:
+        return Response::success(std::to_string(z_card(storage, key)));
+    case OperationType::kZIncrBy:
         if (args.size() < 3)
-            return Result::error("missing increment or member");
-        return Result::success(z_incr_by(storage, key, args[1], args[2]));
-    case LogType::kZRangeByRank:
+            return Response::error("missing increment or member");
+        return Response::success(z_incr_by(storage, key, args[1], args[2]));
+    case OperationType::kZRangeByRank:
         if (args.size() < 3)
-            return Result::error("missing start or end");
+            return Response::error("missing start or end");
         // args: key, start, end
-        return Result::success(z_range_by_rank(storage, key, std::stoll(args[1]), std::stoll(args[2])));
-    case LogType::kZRangeByScore:
+        return Response::success(z_range_by_rank(storage, key, std::stoll(args[1]), std::stoll(args[2])));
+    case OperationType::kZRangeByScore:
         if (args.size() < 3)
-            return Result::error("missing min or max");
-        return Result::success(z_range_by_score(storage, key, args[1], args[2]));
-    case LogType::kZRemByRank:
+            return Response::error("missing min or max");
+        return Response::success(z_range_by_score(storage, key, args[1], args[2]));
+    case OperationType::kZRemByRank:
         if (args.size() < 3)
-            return Result::error("missing start or end");
-        return Result::success(z_rem_by_rank(storage, key, std::stoll(args[1]), std::stoll(args[2])));
-    case LogType::kZRemByScore:
+            return Response::error("missing start or end");
+        return Response::success(z_rem_by_rank(storage, key, std::stoll(args[1]), std::stoll(args[2])));
+    case OperationType::kZRemByScore:
         if (args.size() < 3)
-            return Result::error("missing min or max");
-        return Result::success(z_rem_by_score(storage, key, args[1], args[2]));
+            return Response::error("missing min or max");
+        return Response::success(z_rem_by_score(storage, key, args[1], args[2]));
     default:
-        return Result::error("unsupported type");
+        return Response::error("unsupported type");
     }
 }
 
@@ -304,34 +305,34 @@ bool ZSetProcessor::recover(Storage *storage, const uint8_t type, const std::str
     size_t offset = 0;
     switch (type)
     {
-    case LogType::kZAdd:
+    case OperationType::kZAdd:
     {
         auto score = Serializer::deserializeString(payload.data(), offset);
         auto member = Serializer::deserializeString(payload.data(), offset);
         z_add(storage, key, score, member, true);
         break;
     }
-    case LogType::kZRem:
+    case OperationType::kZRem:
     {
         auto member = Serializer::deserializeString(payload.data(), offset);
         z_rem(storage, key, member, true);
         break;
     }
-    case LogType::kZIncrBy:
+    case OperationType::kZIncrBy:
     {
         auto increment = Serializer::deserializeString(payload.data(), offset);
         auto member = Serializer::deserializeString(payload.data(), offset);
         z_incr_by(storage, key, increment, member, true);
         break;
     }
-    case LogType::kZRemByRank:
+    case OperationType::kZRemByRank:
     {
         auto start = Serializer::deserializeString(payload.data(), offset);
         auto end = Serializer::deserializeString(payload.data(), offset);
         z_rem_by_rank(storage, key, std::stoll(start), std::stoll(end), true);
         break;
     }
-    case LogType::kZRemByScore:
+    case OperationType::kZRemByScore:
     {
         auto min = Serializer::deserializeString(payload.data(), offset);
         auto max = Serializer::deserializeString(payload.data(), offset);
@@ -350,7 +351,7 @@ bool ZSetProcessor::z_add(Storage *storage, const std::string &key, const std::s
     if (storage->enable_wal_ && storage->wal_ && !is_recover)
     {
         std::string payload = Serializer::serialize(score) + Serializer::serialize(member);
-        storage->wal_->append_log(LogType::kZAdd, key, payload);
+        storage->wal_->append_log(OperationType::kZAdd, key, payload);
     }
     try
     {
@@ -408,7 +409,7 @@ bool ZSetProcessor::z_rem(Storage *storage, const std::string &key, const std::s
     if (storage->enable_wal_ && storage->wal_ && !is_recover)
     {
         std::string payload = Serializer::serialize(member);
-        storage->wal_->append_log(LogType::kZRem, key, payload);
+        storage->wal_->append_log(OperationType::kZRem, key, payload);
     }
     try
     {
@@ -485,7 +486,7 @@ std::string ZSetProcessor::z_incr_by(Storage *storage, const std::string &key, c
     if (storage->enable_wal_ && storage->wal_ && !is_recover)
     {
         std::string payload = Serializer::serialize(increment) + Serializer::serialize(member);
-        storage->wal_->append_log(LogType::kZIncrBy, key, payload);
+        storage->wal_->append_log(OperationType::kZIncrBy, key, payload);
     }
     std::optional<std::string> new_score;
     try
@@ -588,7 +589,7 @@ size_t ZSetProcessor::z_rem_by_rank(Storage *storage, const std::string &key, lo
     if (storage->enable_wal_ && storage->wal_ && !is_recover)
     {
         std::string payload = Serializer::serialize(std::to_string(start)) + Serializer::serialize(std::to_string(end));
-        storage->wal_->append_log(LogType::kZRemByRank, key, payload);
+        storage->wal_->append_log(OperationType::kZRemByRank, key, payload);
     }
     size_t count = 0;
     try
@@ -662,7 +663,7 @@ size_t ZSetProcessor::z_rem_by_score(Storage *storage, const std::string &key, c
     if (storage->enable_wal_ && storage->wal_ && !is_recover)
     {
         std::string payload = Serializer::serialize(min) + Serializer::serialize(max);
-        storage->wal_->append_log(LogType::kZRemByScore, key, payload);
+        storage->wal_->append_log(OperationType::kZRemByScore, key, payload);
     }
     size_t count = 0;
     try
@@ -706,117 +707,119 @@ size_t ZSetProcessor::z_rem_by_score(Storage *storage, const std::string &key, c
 // DequeProcessor (List)
 std::vector<uint8_t> DequeProcessor::get_supported_types() const
 {
-    return {LogType::kLPush, LogType::kLPop, LogType::kRPush, LogType::kRPop, LogType::kLRange, LogType::kLGet, LogType::kLSize, LogType::kLPopN, LogType::kRPopN};
+    return {OperationType::kLPush, OperationType::kLPop, OperationType::kRPush, OperationType::kRPop, OperationType::kLRange, OperationType::kLGet, OperationType::kLSize, OperationType::kLPopN, OperationType::kRPopN};
 }
 
-Result DequeProcessor::execute(Storage *storage, const uint8_t type, const std::vector<std::string> &args)
+Response DequeProcessor::execute(Storage *storage, const uint8_t type, const std::vector<std::string> &args)
 {
     if (args.empty())
-        return Result::error("missing key");
+        return Response::error("missing key");
     std::string key = args[0];
 
     switch (type)
     {
-    case LogType::kLPush:
+    case OperationType::kLPush:
         if (args.size() < 2)
-            return Result::error("missing value");
+            return Response::error("missing value");
         {
             std::vector<std::string> values;
-            for (size_t i = 1; i < args.size(); ++i) values.push_back(args[i]);
-            return Result::success(std::to_string(l_push(storage, key, values)));
+            for (size_t i = 1; i < args.size(); ++i)
+                values.push_back(args[i]);
+            return Response::success(std::to_string(l_push(storage, key, values)));
         }
-    case LogType::kRPush:
+    case OperationType::kRPush:
         if (args.size() < 2)
-            return Result::error("missing value");
+            return Response::error("missing value");
         {
             std::vector<std::string> values;
-            for (size_t i = 1; i < args.size(); ++i) values.push_back(args[i]);
-            return Result::success(std::to_string(r_push(storage, key, values)));
+            for (size_t i = 1; i < args.size(); ++i)
+                values.push_back(args[i]);
+            return Response::success(std::to_string(r_push(storage, key, values)));
         }
-    case LogType::kLPop:
+    case OperationType::kLPop:
     {
         if (args.size() == 1)
         {
             auto v = l_pop(storage, key);
-            return v.has_value() ? Result::success(v.value()) : Result::error("empty");
+            return v.has_value() ? Response::success(v.value()) : Response::error("empty");
         }
         else
         {
             size_t count = std::stoull(args[1]);
-            return Result::success(l_pop_n(storage, key, count));
+            return Response::success(l_pop_n(storage, key, count));
         }
     }
-    case LogType::kRPop:
+    case OperationType::kRPop:
     {
         if (args.size() == 1)
         {
             auto v = r_pop(storage, key);
-            return v.has_value() ? Result::success(v.value()) : Result::error("empty");
+            return v.has_value() ? Response::success(v.value()) : Response::error("empty");
         }
         else
         {
             size_t count = std::stoull(args[1]);
-            return Result::success(r_pop_n(storage, key, count));
+            return Response::success(r_pop_n(storage, key, count));
         }
     }
-    case LogType::kLSize:
-        return Result::success(std::to_string(l_size(storage, key)));
-    case LogType::kLRange:
+    case OperationType::kLSize:
+        return Response::success(std::to_string(l_size(storage, key)));
+    case OperationType::kLRange:
         if (args.size() < 3)
-            return Result::error("missing start/end");
+            return Response::error("missing start/end");
         {
             auto vec = l_range(storage, key, std::stoll(args[1]), std::stoll(args[2]));
-            return Result::success(vec);
+            return Response::success(vec);
         }
-    case LogType::kLGet:
+    case OperationType::kLGet:
         if (args.size() < 2)
-            return Result::error("missing index");
+            return Response::error("missing index");
         {
             auto v = l_get(storage, key, std::stoll(args[1]));
-            return v.has_value() ? Result::success(v.value()) : Result::error("not found");
+            return v.has_value() ? Response::success(v.value()) : Response::error("not found");
         }
-    case LogType::kLPopN:
+    case OperationType::kLPopN:
         if (args.size() < 2)
-            return Result::error("missing count");
-        return Result::success(l_pop_n(storage, key, std::stoll(args[1])));
-    case LogType::kRPopN:
+            return Response::error("missing count");
+        return Response::success(l_pop_n(storage, key, std::stoll(args[1])));
+    case OperationType::kRPopN:
         if (args.size() < 2)
-            return Result::error("missing count");
-        return Result::success(r_pop_n(storage, key, std::stoll(args[1])));
+            return Response::error("missing count");
+        return Response::success(r_pop_n(storage, key, std::stoll(args[1])));
     default:
-        return Result::error("unsupported type");
+        return Response::error("unsupported type");
     }
 }
 
 bool DequeProcessor::recover(Storage *storage, const uint8_t type, const std::string &key, const std::string &payload)
 {
     size_t offset = 0;
-    if (type == LogType::kLPush)
+    if (type == OperationType::kLPush)
     {
         std::vector<std::string> values;
         Serializer::deserializeVector(payload.data(), offset, values);
         l_push(storage, key, values, true);
     }
-    else if (type == LogType::kRPush)
+    else if (type == OperationType::kRPush)
     {
         std::vector<std::string> values;
         Serializer::deserializeVector(payload.data(), offset, values);
         r_push(storage, key, values, true);
     }
-    else if (type == LogType::kLPop)
+    else if (type == OperationType::kLPop)
     {
         l_pop(storage, key, true);
     }
-    else if (type == LogType::kRPop)
+    else if (type == OperationType::kRPop)
     {
         r_pop(storage, key, true);
     }
-    else if (type == LogType::kLPopN)
+    else if (type == OperationType::kLPopN)
     {
         std::string count_str = Serializer::deserializeString(payload.data(), offset);
         l_pop_n(storage, key, std::stoll(count_str), true);
     }
-    else if (type == LogType::kRPopN)
+    else if (type == OperationType::kRPopN)
     {
         std::string count_str = Serializer::deserializeString(payload.data(), offset);
         r_pop_n(storage, key, std::stoll(count_str), true);
@@ -832,7 +835,7 @@ size_t DequeProcessor::l_push(Storage *storage, const std::string &key, const st
 {
     if (storage->enable_wal_ && storage->wal_ && !is_recover)
     {
-        storage->wal_->append_log(LogType::kLPush, key, Serializer::serialize(values));
+        storage->wal_->append_log(OperationType::kLPush, key, Serializer::serialize(values));
     }
     size_t size = 0;
     try
@@ -867,7 +870,8 @@ size_t DequeProcessor::l_push(Storage *storage, const std::string &key, const st
                 throw std::runtime_error("value is not a list");
             }
             auto &dq = std::get<std::deque<std::string>>(val.value);
-            for(const auto& value : values) {
+            for (const auto &value : values)
+            {
                 dq.push_front(value);
             }
             size = dq.size();
@@ -877,7 +881,8 @@ size_t DequeProcessor::l_push(Storage *storage, const std::string &key, const st
         else
         {
             std::deque<std::string> dq;
-            for(const auto& value : values) {
+            for (const auto &value : values)
+            {
                 dq.push_front(value);
             }
             size = dq.size();
@@ -898,7 +903,7 @@ size_t DequeProcessor::r_push(Storage *storage, const std::string &key, const st
 {
     if (storage->enable_wal_ && storage->wal_ && !is_recover)
     {
-        storage->wal_->append_log(LogType::kRPush, key, Serializer::serialize(values));
+        storage->wal_->append_log(OperationType::kRPush, key, Serializer::serialize(values));
     }
     size_t size = 0;
     try
@@ -933,7 +938,8 @@ size_t DequeProcessor::r_push(Storage *storage, const std::string &key, const st
                 throw std::runtime_error("value is not a list");
             }
             auto &dq = std::get<std::deque<std::string>>(val.value);
-            for(const auto& value : values) {
+            for (const auto &value : values)
+            {
                 dq.push_back(value);
             }
             size = dq.size();
@@ -943,7 +949,8 @@ size_t DequeProcessor::r_push(Storage *storage, const std::string &key, const st
         else
         {
             std::deque<std::string> dq;
-            for(const auto& value : values) {
+            for (const auto &value : values)
+            {
                 dq.push_back(value);
             }
             size = dq.size();
@@ -964,7 +971,7 @@ std::optional<std::string> DequeProcessor::l_pop(Storage *storage, const std::st
 {
     if (storage->enable_wal_ && storage->wal_ && !is_recover)
     {
-        storage->wal_->append_log(LogType::kLPop, key, "");
+        storage->wal_->append_log(OperationType::kLPop, key, "");
     }
     std::optional<std::string> popped_val = std::nullopt;
     try
@@ -1021,7 +1028,7 @@ std::optional<std::string> DequeProcessor::r_pop(Storage *storage, const std::st
 {
     if (storage->enable_wal_ && storage->wal_ && !is_recover)
     {
-        storage->wal_->append_log(LogType::kRPop, key, "");
+        storage->wal_->append_log(OperationType::kRPop, key, "");
     }
     std::optional<std::string> popped_val = std::nullopt;
     try
@@ -1133,7 +1140,7 @@ std::vector<std::string> DequeProcessor::l_pop_n(Storage *storage, const std::st
 {
     if (storage->enable_wal_ && storage->wal_ && !is_recover)
     {
-        storage->wal_->append_log(LogType::kLPopN, key, Serializer::serialize(std::to_string(n)));
+        storage->wal_->append_log(OperationType::kLPopN, key, Serializer::serialize(std::to_string(n)));
     }
     std::vector<std::string> popped;
     try
@@ -1187,7 +1194,7 @@ std::vector<std::string> DequeProcessor::r_pop_n(Storage *storage, const std::st
 {
     if (storage->enable_wal_ && storage->wal_ && !is_recover)
     {
-        storage->wal_->append_log(LogType::kRPopN, key, Serializer::serialize(std::to_string(n)));
+        storage->wal_->append_log(OperationType::kRPopN, key, Serializer::serialize(std::to_string(n)));
     }
     std::vector<std::string> popped;
     try
@@ -1240,59 +1247,59 @@ std::vector<std::string> DequeProcessor::r_pop_n(Storage *storage, const std::st
 // HashProcessor
 std::vector<uint8_t> HashProcessor::get_supported_types() const
 {
-    return {LogType::kHSet, LogType::kHGet, LogType::kHDel, LogType::kHKeys, LogType::kHValues, LogType::kHEntries};
+    return {OperationType::kHSet, OperationType::kHGet, OperationType::kHDel, OperationType::kHKeys, OperationType::kHValues, OperationType::kHEntries};
 }
 
-Result HashProcessor::execute(Storage *storage, const uint8_t type, const std::vector<std::string> &args)
+Response HashProcessor::execute(Storage *storage, const uint8_t type, const std::vector<std::string> &args)
 {
     if (args.empty())
-        return Result::error("missing key");
+        return Response::error("missing key");
     std::string key = args[0];
 
     switch (type)
     {
-    case LogType::kHSet:
+    case OperationType::kHSet:
         if (args.size() < 3)
-            return Result::error("missing field/value");
-        return Result::success(h_set(storage, key, args[1], args[2]) ? "1" : "0");
-    case LogType::kHGet:
+            return Response::error("missing field/value");
+        return Response::success(h_set(storage, key, args[1], args[2]) ? "1" : "0");
+    case OperationType::kHGet:
         if (args.size() < 2)
-            return Result::error("missing field");
+            return Response::error("missing field");
         {
             auto v = h_get(storage, key, args[1]);
-            return v.has_value() ? Result::success(v.value()) : Result::error("not found");
+            return v.has_value() ? Response::success(v.value()) : Response::error("not found");
         }
-    case LogType::kHDel:
+    case OperationType::kHDel:
         if (args.size() < 2)
-            return Result::error("missing field");
-        return Result::success(h_del(storage, key, args[1]) ? "1" : "0");
-    case LogType::kHKeys:
-        return Result::success(h_keys(storage, key));
-    case LogType::kHValues:
-        return Result::success(h_values(storage, key));
-    case LogType::kHEntries:
+            return Response::error("missing field");
+        return Response::success(h_del(storage, key, args[1]) ? "1" : "0");
+    case OperationType::kHKeys:
+        return Response::success(h_keys(storage, key));
+    case OperationType::kHValues:
+        return Response::success(h_values(storage, key));
+    case OperationType::kHEntries:
     {
         auto m = h_entries(storage, key);
         std::vector<std::pair<std::string, EyaValue>> vec;
         for (auto &p : m)
             vec.push_back({p.first, p.second});
-        return Result::success(vec);
+        return Response::success(vec);
     }
     default:
-        return Result::error("unsupported type");
+        return Response::error("unsupported type");
     }
 }
 
 bool HashProcessor::recover(Storage *storage, const uint8_t type, const std::string &key, const std::string &payload)
 {
     size_t offset = 0;
-    if (type == LogType::kHSet)
+    if (type == OperationType::kHSet)
     {
         std::string field = Serializer::deserializeString(payload.data(), offset);
         std::string value = Serializer::deserializeString(payload.data(), offset);
         h_set(storage, key, field, value, true);
     }
-    else if (type == LogType::kHDel)
+    else if (type == OperationType::kHDel)
     {
         std::string field = Serializer::deserializeString(payload.data(), offset);
         h_del(storage, key, field, true);
@@ -1309,7 +1316,7 @@ bool HashProcessor::h_set(Storage *storage, const std::string &key, const std::s
     if (storage->enable_wal_ && storage->wal_ && !is_recover)
     {
         std::string payload = Serializer::serialize(field) + Serializer::serialize(value);
-        storage->wal_->append_log(LogType::kHSet, key, payload);
+        storage->wal_->append_log(OperationType::kHSet, key, payload);
     }
     bool is_new = false;
     try
@@ -1384,7 +1391,7 @@ bool HashProcessor::h_del(Storage *storage, const std::string &key, const std::s
 {
     if (storage->enable_wal_ && storage->wal_ && !is_recover)
     {
-        storage->wal_->append_log(LogType::kHDel, key, Serializer::serialize(field));
+        storage->wal_->append_log(OperationType::kHDel, key, Serializer::serialize(field));
     }
     bool deleted = false;
     try

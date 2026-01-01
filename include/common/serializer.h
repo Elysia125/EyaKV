@@ -276,4 +276,6 @@ namespace EyaKV
 
 } // namespace serialize
 
+typedef EyaKV::Serializer Serializer;
+
 #endif // TINYKV_INCLUDE_COMMON_SERIALIZE_H_
