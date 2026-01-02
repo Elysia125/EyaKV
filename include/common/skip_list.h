@@ -11,6 +11,12 @@
 #include <atomic>
 #include <optional>
 #include <functional>
+#ifdef _WIN32
+#include <winsock2.h>
+#pragma comment(lib, "ws2_32.lib")
+#else
+#include <arpa/inet.h>
+#endif
 #define DEFAULT_MAX_LEVEL 16
 #define DEFAULT_PROBABILITY 0.5
 #define DEFAULT_MAX_NODE_COUNT 1000000
@@ -742,12 +748,15 @@ public:
     std::string serialize(std::string (*serialize_key_func)(const K &key), std::string (*serialize_value_func)(const V &value)) const
     {
         std::string result;
-        result.append(reinterpret_cast<const char *>(current_level_), sizeof(current_level_));
-        result.append(reinterpret_cast<const char *>(size_), sizeof(size_));
+        int current_level = htonl(current_level_);
+        uint32_t size = htonl(static_cast<uint32_t>(size_));
+        result.append(reinterpret_cast<const char *>(current_level), sizeof(current_level));
+        result.append(reinterpret_cast<const char *>(size), sizeof(size));
         SkipListNode<K, V> *current = head_->next[0];
         while (current != nullptr)
         {
-            result.append(reinterpret_cast<const char *>(current->next.size()), sizeof(current->next.size()));
+            uint32_t next_size = htonl(static_cast<uint32_t>(current->next.size()));
+            result.append(reinterpret_cast<const char *>(&next_size), sizeof(next_size));
             result.append(serialize_key_func(current->key));
             result.append(serialize_value_func(current->value));
             current = current->next[0];
@@ -767,20 +776,25 @@ public:
                      std::string (*deserialize_key_func)(const char *data, size_t &offset),
                      std::string (*deserialize_value_func)(const char *data, size_t &offset))
     {
-        std::memcpy(&current_level_, data + offset, sizeof(current_level_));
+        int current_level;
+        std::memcpy(&current_level, data + offset, sizeof(current_level));
+        current_level_ = ntohl(current_level);
         if (current_level_ > MAX_LEVEL)
         {
             current_level_ = MAX_LEVEL;
         }
         SkipListNode<K, V> *level_nodes[current_level_] = {head_};
-        offset += sizeof(current_level_);
-        std::memcpy(&size_, data + offset, sizeof(size_));
-        offset += sizeof(size_);
+        offset += sizeof(current_level);
+        uint32_t size;
+        std::memcpy(&size, data + offset, sizeof(size));
+        offset += sizeof(size);
+        size_ = static_cast<size_t>(ntohl(size));
         for (size_t i = 0; i < size_; ++i)
         {
-            size_t next_size;
+            uint32_t next_size;
             std::memcpy(&next_size, data + offset, sizeof(next_size));
             offset += sizeof(next_size);
+            next_size = ntohl(next_size);
             K key = deserialize_key_func(data, offset);
             V value = deserialize_value_func(data, offset);
             SkipListNode<K, V> *node = new SkipListNode<K, V>(key, value, next_size);

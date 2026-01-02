@@ -75,7 +75,7 @@ enum class SSTableMergeStrategy
 #define MAX_WAITING_TIME_KEY "max_waiting_time"
 #define LOG_DIR_KEY "log_dir"
 #define DATA_DIR_KEY "data_dir"
-
+#define PASSWORD_KEY "password"
 class EyaKVConfig
 {
 private:
@@ -83,10 +83,11 @@ private:
     std::unordered_map<std::string, std::string> config_map_;
     EyaKVConfig()
     {
-        LoadDefaultConfig();
-        LoadConfig();
+        load_default_config();
+        load_config();
+        check_config();
     }
-    void LoadConfig()
+    void load_config()
     {
         if (!std::filesystem::exists(config_file_))
         {
@@ -123,7 +124,7 @@ private:
         }
     }
 
-    void LoadDefaultConfig()
+    void load_default_config()
     {
         config_map_[LOG_DIR_KEY] = PathUtils::GetTargetFilePath("logs");
         config_map_[LOG_LEVEL_KEY] = std::to_string(static_cast<int>(DEFAULT_LOG_LEVEL));
@@ -149,9 +150,10 @@ private:
         config_map_[WAITING_QUEUE_SIZE_KEY] = std::to_string(DEFAULT_WAITING_QUEUE_SIZE);
         config_map_[MAX_WAITING_TIME_KEY] = std::to_string(DEFAULT_MAX_WAITING_TIME);
         config_map_[DATA_DIR_KEY] = PathUtils::GetTargetFilePath("data");
+        config_map_[PASSWORD_KEY] = "";
     }
 
-    void CheckConfig()
+    void check_config()
     {
         if (config_map_.find(LOG_LEVEL_KEY) != config_map_.end())
         {
@@ -334,6 +336,7 @@ private:
             }
         }
     }
+
     std::string trim(const std::string &str)
     {
         size_t start = 0, end = str.size() - 1;
@@ -349,12 +352,12 @@ private:
     }
 
 public:
-    static EyaKVConfig &GetInstance()
+    static EyaKVConfig &get_instance()
     {
         static EyaKVConfig instance;
         return instance;
     }
-    std::optional<std::string> GetConfig(const std::string &key) const
+    std::optional<std::string> get_config(const std::string &key) const
     {
 
         if (config_map_.find(key) != config_map_.end())

@@ -1,6 +1,11 @@
 #ifndef TINYKV_INCLUDE_COMMON_SERIALIZE_H_
 #define TINYKV_INCLUDE_COMMON_SERIALIZE_H_
-
+#ifdef _WIN32
+#include <winsock2.h>
+#pragma comment(lib, "ws2_32.lib")
+#else
+#include <arpa/inet.h>
+#endif
 #include <string>
 #include <vector>
 #include <deque>
@@ -31,7 +36,7 @@ namespace EyaKV
     class Serializer
     {
     public:
-        // ==================== 序列化到字节流 ====================
+        // 序列化到字节流
 
         /**
          * @brief 序列化 string 到字节流
@@ -39,16 +44,9 @@ namespace EyaKV
         static std::string serialize(const std::string &str)
         {
             std::string result;
-            uint32_t len = static_cast<uint32_t>(str.size());
+            uint32_t len = htonl(static_cast<uint32_t>(str.size()));
             result.append(reinterpret_cast<const char *>(&len), sizeof(len));
             result.append(str);
-            return result;
-        }
-
-        static std::string serialize(const double &val)
-        {
-            std::string result;
-            result.append(reinterpret_cast<const char *>(&val), sizeof(val));
             return result;
         }
 
@@ -58,7 +56,7 @@ namespace EyaKV
         static std::string serialize(const std::vector<std::string> &vec)
         {
             std::string result;
-            uint32_t size = static_cast<uint32_t>(vec.size());
+            uint32_t size = htonl(static_cast<uint32_t>(vec.size()));
             result.append(reinterpret_cast<const char *>(&size), sizeof(size));
             for (const auto &str : vec)
             {
@@ -73,7 +71,7 @@ namespace EyaKV
         static std::string serialize(const std::vector<std::pair<std::string, std::string>> &vec)
         {
             std::string result;
-            uint32_t size = static_cast<uint32_t>(vec.size());
+            uint32_t size = htonl(static_cast<uint32_t>(vec.size()));
             result.append(reinterpret_cast<const char *>(&size), sizeof(size));
             for (const auto &[key, value] : vec)
             {
@@ -89,7 +87,7 @@ namespace EyaKV
         static std::string serialize(const std::deque<std::string> &deque)
         {
             std::string result;
-            uint32_t size = static_cast<uint32_t>(deque.size());
+            uint32_t size = htonl(static_cast<uint32_t>(deque.size()));
             result.append(reinterpret_cast<const char *>(&size), sizeof(size));
             for (const auto &str : deque)
             {
@@ -103,7 +101,7 @@ namespace EyaKV
         static std::string serialize(const std::unordered_set<std::string> &set)
         {
             std::string result;
-            uint32_t size = static_cast<uint32_t>(set.size());
+            uint32_t size = htonl(static_cast<uint32_t>(set.size()));
             result.append(reinterpret_cast<const char *>(&size), sizeof(size));
             for (const auto &str : set)
             {
@@ -118,7 +116,7 @@ namespace EyaKV
         static std::string serialize(const std::unordered_map<std::string, std::string> &map)
         {
             std::string result;
-            uint32_t size = static_cast<uint32_t>(map.size());
+            uint32_t size = htonl(static_cast<uint32_t>(map.size()));
             result.append(reinterpret_cast<const char *>(&size), sizeof(size));
             for (const auto &[key, value] : map)
             {
@@ -142,7 +140,7 @@ namespace EyaKV
         {
             return zset.serialize(serialize, serialize);
         }
-        // ==================== 从字节流反序列化 ====================
+        // 从字节流反序列化
 
         /**
          * @brief 从字节流反序列化 string
@@ -155,20 +153,10 @@ namespace EyaKV
             uint32_t len;
             std::memcpy(&len, data + offset, sizeof(len));
             offset += sizeof(len);
+            len = ntohl(len);
             std::string result(data + offset, len);
             offset += len;
             return result;
-        }
-
-        /**
-         * @brief 从字节流反序列化 double
-         */
-        static double deserializeDouble(const char *data, size_t &offset)
-        {
-            double val;
-            std::memcpy(&val, data + offset, sizeof(val));
-            offset += sizeof(val);
-            return val;
         }
 
         /**
@@ -179,7 +167,7 @@ namespace EyaKV
             uint32_t size;
             std::memcpy(&size, data + offset, sizeof(size));
             offset += sizeof(size);
-
+            size = ntohl(size);
             vec.clear();
             vec.reserve(size);
             for (uint32_t i = 0; i < size; ++i)
@@ -196,7 +184,7 @@ namespace EyaKV
             uint32_t size;
             std::memcpy(&size, data + offset, sizeof(size));
             offset += sizeof(size);
-
+            size = ntohl(size);
             vec.clear();
             vec.reserve(size);
             for (uint32_t i = 0; i < size; ++i)
@@ -215,6 +203,7 @@ namespace EyaKV
             uint32_t size;
             std::memcpy(&size, data + offset, sizeof(size));
             offset += sizeof(size);
+            size = ntohl(size);
             deque.clear();
             for (uint32_t i = 0; i < size; ++i)
             {
@@ -230,7 +219,7 @@ namespace EyaKV
             uint32_t size;
             std::memcpy(&size, data + offset, sizeof(size));
             offset += sizeof(size);
-
+            size = ntohl(size);
             set.clear();
             set.reserve(size);
             for (uint32_t i = 0; i < size; ++i)
@@ -247,6 +236,7 @@ namespace EyaKV
             uint32_t size;
             std::memcpy(&size, data + offset, sizeof(size));
             offset += sizeof(size);
+            size = ntohl(size);
             map.clear();
             map.reserve(size);
             for (uint32_t i = 0; i < size; ++i)

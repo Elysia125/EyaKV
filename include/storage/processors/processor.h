@@ -5,6 +5,7 @@
 #include <vector>
 #include <string>
 #include "common/common.h"
+#include "network/protocol/protocol.h"
 
 class Storage;
 

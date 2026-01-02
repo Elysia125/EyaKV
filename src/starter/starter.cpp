@@ -6,7 +6,7 @@
 #include "config/config.h"
 #include "logger/logger.h"
 
-EyaKVConfig &config = EyaKVConfig::GetInstance();
+EyaKVConfig &config = EyaKVConfig::get_instance();
 Storage *EyaKVStarter::storage = nullptr;
 void EyaKVStarter::print_banner()
 {
@@ -38,9 +38,9 @@ void EyaKVStarter::initialize()
 
 void EyaKVStarter::initialize_logger()
 {
-    std::optional<std::string> log_dir = config.GetConfig(LOG_DIR_KEY);
-    std::optional<std::string> log_level_str = config.GetConfig(LOG_LEVEL_KEY);
-    std::optional<std::string> log_rotate_size_str = config.GetConfig(LOG_ROTATE_SIZE_KEY);
+    std::optional<std::string> log_dir = config.get_config(LOG_DIR_KEY);
+    std::optional<std::string> log_level_str = config.get_config(LOG_LEVEL_KEY);
+    std::optional<std::string> log_rotate_size_str = config.get_config(LOG_ROTATE_SIZE_KEY);
     LogLevel log_level = LogLevel::INFO;
     if (log_level_str.has_value())
     {
@@ -73,49 +73,49 @@ void EyaKVStarter::initialize_logger()
 Storage *EyaKVStarter::initialize_storage()
 {
     std::cout << "Initializing storage..." << std::endl;
-    std::optional<std::string> data_dir = config.GetConfig(DATA_DIR_KEY);
+    std::optional<std::string> data_dir = config.get_config(DATA_DIR_KEY);
     if (!data_dir.has_value() || data_dir->empty())
     {
         throw std::runtime_error("Data directory not configured.");
     }
-    std::optional<std::string> wal_dir = config.GetConfig(WAL_DIR_KEY);
+    std::optional<std::string> wal_dir = config.get_config(WAL_DIR_KEY);
     if (!wal_dir.has_value() || wal_dir->empty())
     {
         throw std::runtime_error("WAL directory not configured.");
     }
-    std::optional<std::string> read_only_str = config.GetConfig(READ_ONLY_KEY);
+    std::optional<std::string> read_only_str = config.get_config(READ_ONLY_KEY);
     bool read_only = false;
     if (read_only_str.has_value())
     {
         read_only = (read_only_str.value() == "1" || read_only_str.value() == "true");
     }
-    std::optional<std::string> wal_enable_str = config.GetConfig(WAL_ENABLE_KEY);
+    std::optional<std::string> wal_enable_str = config.get_config(WAL_ENABLE_KEY);
     bool wal_enable = true;
     if (wal_enable_str.has_value())
     {
         wal_enable = (wal_enable_str.value() == "1" || wal_enable_str.value() == "true");
     }
-    size_t memtable_size = static_cast<size_t>(std::stoul(config.GetConfig(MEMTABLE_SIZE_KEY).value()));
-    size_t skiplist_max_level = static_cast<size_t>(std::stoul(config.GetConfig(SKIPLIST_MAX_LEVEL_KEY).value()));
-    double skiplist_probability = std::stod(config.GetConfig(SKIPLIST_PROBABILITY_KEY).value());
-    size_t skiplist_max_node_count = static_cast<size_t>(std::stoul(config.GetConfig(SKIPLIST_MAX_NODE_COUNT_KEY).value()));
-    unsigned int sstable_merge_threshold = static_cast<unsigned int>(std::stoul(config.GetConfig(SSTABLE_MERGE_THRESHOLD_KEY).value()));
-    std::optional<std::string> wal_flush_interval_str = config.GetConfig(WAL_FLUSH_INTERVAL_KEY);
+    size_t memtable_size = static_cast<size_t>(std::stoul(config.get_config(MEMTABLE_SIZE_KEY).value()));
+    size_t skiplist_max_level = static_cast<size_t>(std::stoul(config.get_config(SKIPLIST_MAX_LEVEL_KEY).value()));
+    double skiplist_probability = std::stod(config.get_config(SKIPLIST_PROBABILITY_KEY).value());
+    size_t skiplist_max_node_count = static_cast<size_t>(std::stoul(config.get_config(SKIPLIST_MAX_NODE_COUNT_KEY).value()));
+    unsigned int sstable_merge_threshold = static_cast<unsigned int>(std::stoul(config.get_config(SSTABLE_MERGE_THRESHOLD_KEY).value()));
+    std::optional<std::string> wal_flush_interval_str = config.get_config(WAL_FLUSH_INTERVAL_KEY);
     std::optional<unsigned int> wal_flush_interval = std::nullopt;
     if (wal_flush_interval_str.has_value())
     {
         wal_flush_interval = static_cast<unsigned int>(std::stoul(wal_flush_interval_str.value()));
     }
-    std::optional<std::string> wal_flush_strategy_str = config.GetConfig(WAL_FLUSH_STRATEGY_KEY);
+    std::optional<std::string> wal_flush_strategy_str = config.get_config(WAL_FLUSH_STRATEGY_KEY);
     WALFlushStrategy wal_flush_strategy = WALFlushStrategy::BACKGROUND_THREAD;
     if (wal_flush_strategy_str.has_value())
     {
         int strategy_int = std::stoi(wal_flush_strategy_str.value());
         wal_flush_strategy = static_cast<WALFlushStrategy>(strategy_int);
     }
-    SSTableMergeStrategy sstable_merge_strategy = static_cast<SSTableMergeStrategy>(std::stoi(config.GetConfig(SSTABLE_MERGE_STRATEGY_KEY).value()));
-    uint32_t sstable_zero_level_size = static_cast<uint32_t>(std::stoul(config.GetConfig(SSTABLE_ZERO_LEVEL_SIZE_KEY).value()));
-    uint32_t sstable_level_size_ratio = static_cast<uint32_t>(std::stoul(config.GetConfig(SSTABLE_LEVEL_SIZE_RATIO_KEY).value()));
+    SSTableMergeStrategy sstable_merge_strategy = static_cast<SSTableMergeStrategy>(std::stoi(config.get_config(SSTABLE_MERGE_STRATEGY_KEY).value()));
+    uint32_t sstable_zero_level_size = static_cast<uint32_t>(std::stoul(config.get_config(SSTABLE_ZERO_LEVEL_SIZE_KEY).value()));
+    uint32_t sstable_level_size_ratio = static_cast<uint32_t>(std::stoul(config.get_config(SSTABLE_LEVEL_SIZE_RATIO_KEY).value()));
     static Storage *st = new Storage(data_dir.value(),
                                      wal_dir.value(),
                                      read_only,
@@ -137,7 +137,7 @@ Storage *EyaKVStarter::initialize_storage()
 void EyaKVStarter::initialize_server()
 {
     std::cout << "Initializing network server..." << std::endl;
-    std::optional<std::string> port_str = config.GetConfig(PORT_KEY);
+    std::optional<std::string> port_str = config.get_config(PORT_KEY);
     if (!port_str.has_value())
     {
         throw std::runtime_error("Port not configured.");

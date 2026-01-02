@@ -22,7 +22,7 @@ target_include_directories(eyakv_lib PUBLIC ${CMAKE_CURRENT_BINARY_DIR})
 
 # Create the main executable
 add_executable(eyakv_server server.cpp)
-add_executable(eyakv client.cpp)
+# add_executable(eyakv client.cpp)
 # Link the executable to the core library
 target_link_libraries(eyakv_server PRIVATE eyakv_lib)
 

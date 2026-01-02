@@ -11,6 +11,7 @@
 #include <functional>
 #include "common/common.h"
 #include "config/config.h"
+#include "storage/node.h"
 /**
  * @brief SSTable 文件格式:
  *

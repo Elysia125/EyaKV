@@ -1,10 +1,18 @@
-#include "common/common.h"
+#ifndef TINYKV_STORAGE_NODE_H_
+#define TINYKV_STORAGE_NODE_H_
 
+#include "common/common.h"
+#ifdef _WIN32
+#include <winsock2.h>
+#pragma comment(lib, "ws2_32.lib")
+#else
+#include <arpa/inet.h>
+#endif
 struct EValue
 {
     EyaValue value;
     bool deleted;
-    size_t expire_time = 0; // 0代表不会过期
+    uint32_t expire_time = 0; // 0代表不会过期
     EValue() : value(), deleted(false) {}
     EValue(const EyaValue &value) : value(value), deleted(false) {}
     EValue(const EyaValue &value, bool deleted) : value(value), deleted(deleted) {}
@@ -23,7 +31,8 @@ inline std::string serialize(const EValue &value)
 {
     std::string result;
     result.append(reinterpret_cast<const char *>(&value.deleted), sizeof(value.deleted));
-    result.append(reinterpret_cast<const char *>(&value.expire_time), sizeof(value.expire_time));
+    uint32_t expire = htonl(value.expire_time);
+    result.append(reinterpret_cast<const char *>(&expire), sizeof(expire));
     result.append(serialize_eya_value(value.value));
     return result;
 }
@@ -33,8 +42,10 @@ inline EValue deserialize(const char *data, size_t &offset)
     EValue result;
     std::memcpy(&result.deleted, data + offset, sizeof(result.deleted));
     offset += sizeof(result.deleted);
-    std::memcpy(&result.expire_time, data + offset, sizeof(result.expire_time));
-    offset += sizeof(result.expire_time);
+    uint32_t expire_time;
+    std::memcpy(&expire_time, data + offset, sizeof(expire_time));
+    offset += sizeof(expire_time);
+    result.expire_time = ntohl(expire_time);
     result.value = deserialize_eya_value(data, offset);
     return result;
 }
@@ -43,3 +54,5 @@ inline size_t estimateEValueSize(const EValue &value)
 {
     return sizeof(EValue) + estimateEyaValueSize(value.value);
 }
+
+#endif // TINYKV_STORAGE_NODE_H_
