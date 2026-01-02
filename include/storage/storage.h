@@ -18,6 +18,7 @@
 #include "storage/processors/processor.h"
 #include "network/protocol/protocol.h"
 #include "storage/node.h"
+#include "common/export.h"
 
 // Forward declaration
 class ValueProcessor;
@@ -43,7 +44,7 @@ class ZSetProcessor;
  * 2. 查询 Immutable MemTables（如果有）
  * 3. 查询 SSTable（按时间顺序，新的优先）
  */
-class Storage
+class EYAKV_STORAGE_API Storage
 {
 public:
     /**

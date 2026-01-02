@@ -8,12 +8,14 @@
 #include <mutex>
 #include <stdlib.h>
 #include <filesystem>
+#include "common/export.h"
+
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #endif
 // 路径工具类：获取可执行文件目录，拼接目标文件绝对路径
-class PathUtils
+class EYAKV_COMMON_API PathUtils
 {
 private:
         PathUtils() = delete;

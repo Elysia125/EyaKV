@@ -1,8 +1,13 @@
+#ifndef STARTER_H
+#define STARTER_H
+
+#include "common/export.h"
+
 class Storage;
 /**
  * 启动器
  */
-class EyaKVStarter
+class EYAKV_STARTER_API EyaKVStarter
 {
 private:
     static Storage*storage;
@@ -25,3 +30,5 @@ public:
      */
     static void start();
 };
+
+#endif // STARTER_H

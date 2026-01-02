@@ -5,13 +5,14 @@
 #include <thread>
 #include <vector>
 #include "storage/storage.h"
+#include "common/export.h"
 
 class Connection; // Forward declaration
 
 /**
  * @brief Server 负责监听端口并接受连接
  */
-class Server
+class EYAKV_NETWORK_API Server
 {
 public:
     Server(Storage *storage, unsigned short port);

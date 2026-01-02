@@ -1,10 +1,11 @@
 #pragma once
 
 #include <string>
+#include "common/export.h"
 
 namespace eyakv::raft {
 
-class RaftNode {
+class EYAKV_RAFT_API RaftNode {
 public:
     RaftNode() = default;
     ~RaftNode() = default;

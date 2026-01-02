@@ -7,6 +7,8 @@
 #include <unordered_map>
 #include <mutex>
 #include <atomic>
+#include "common/export.h"
+
 inline int compare_double_strings(const std::string &a, const std::string &b)
 {
     std::string a_clean = a.substr(0, a.find('\0'));
@@ -28,7 +30,7 @@ inline size_t calculateStringSize(const std::string &str)
  * 每个元素由一个成员（字符串）和一个分值（双精度浮点数）组成。
  * 内部使用跳表按分值排序，同时使用哈希表实现成员到分值的快速映射。
  */
-class ZSet
+class EYAKV_COMMON_API ZSet
 {
 public:
     ZSet() : skiplist_(DEFAULT_MAX_LEVEL, DEFAULT_PROBABILITY, DEFAULT_MAX_NODE_COUNT, compare_double_strings, calculateStringSize, calculateStringSize), size_exclude_skiplist(0)

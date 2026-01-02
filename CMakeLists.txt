@@ -14,6 +14,9 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 include_directories(${PROJECT_SOURCE_DIR}/include)
 add_definitions(-DPROJECT_ROOT_DIR="${CMAKE_CURRENT_BINARY_DIR}")
 
+# Define include directory variable for subdirectories
+set(EYAKV_INCLUDE_DIR ${PROJECT_SOURCE_DIR}/include)
+
 # ------------------------------------------------------------------------------
 # Dependencies
 # ------------------------------------------------------------------------------
