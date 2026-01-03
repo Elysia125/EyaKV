@@ -14,6 +14,19 @@ if(WIN32)
     target_compile_definitions(eyakv_logger PRIVATE EYAKV_LOGGER_EXPORTS)
 endif()
 
+# Platform-specific settings
+if(WIN32)
+    # Windows specific settings
+    add_definitions(-D_WIN32_WINNT=0x0601)
+    set(PLATFORM_LIBS ws2_32 mswsock)
+elseif(APPLE)
+    # macOS specific settings
+    set(PLATFORM_LIBS "")
+elseif(UNIX)
+    # Linux/Unix specific settings
+    set(PLATFORM_LIBS pthread)
+endif()
+
 # Module 1: Common - 基础工具库
 add_library(eyakv_common SHARED
     common/path_utils.cpp
@@ -22,9 +35,10 @@ add_library(eyakv_common SHARED
 )
 
 if(WIN32)
-    add_definitions(-D_WIN32_WINNT=0x0601)
     target_compile_definitions(eyakv_common PRIVATE EYAKV_COMMON_EXPORTS)
-    target_link_libraries(eyakv_common PRIVATE ws2_32 Threads::Threads)
+    target_link_libraries(eyakv_common PRIVATE ${PLATFORM_LIBS} Threads::Threads)
+else()
+    target_link_libraries(eyakv_common PRIVATE ${PLATFORM_LIBS} Threads::Threads)
 endif()
 
 target_include_directories(eyakv_common PUBLIC
@@ -44,7 +58,9 @@ add_library(eyakv_storage SHARED
 
 if(WIN32)
     target_compile_definitions(eyakv_storage PRIVATE EYAKV_STORAGE_EXPORTS)
-    target_link_libraries(eyakv_storage PRIVATE ws2_32)
+    target_link_libraries(eyakv_storage PRIVATE ${PLATFORM_LIBS})
+else()
+    target_link_libraries(eyakv_storage PRIVATE ${PLATFORM_LIBS})
 endif()
 
 target_include_directories(eyakv_storage PUBLIC
@@ -64,7 +80,9 @@ add_library(eyakv_network SHARED
 
 if(WIN32)
     target_compile_definitions(eyakv_network PRIVATE EYAKV_NETWORK_EXPORTS)
-    target_link_libraries(eyakv_network PUBLIC ws2_32 mswsock)
+    target_link_libraries(eyakv_network PUBLIC ${PLATFORM_LIBS})
+else()
+    target_link_libraries(eyakv_network PUBLIC ${PLATFORM_LIBS})
 endif()
 
 target_include_directories(eyakv_network PUBLIC
@@ -134,11 +152,11 @@ target_link_libraries(eyakv_server PRIVATE
     eyakv_raft
     eyakv_starter
     eyakv_common
+    ${PLATFORM_LIBS}
 )
 
 add_executable(eyakv client.cpp)
-
-
+target_link_libraries(eyakv PRIVATE eyakv_common ${PLATFORM_LIBS})
 
 # Install Rules - 安装规则
 install(TARGETS eyakv_server eyakv DESTINATION bin)

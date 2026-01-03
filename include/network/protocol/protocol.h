@@ -58,14 +58,11 @@ struct Header
     }
 };
 
-class Response
+struct Response
 {
-private:
     int code_;
     ResponseData data_;
     std::string error_msg_;
-
-public:
     Response(int code, ResponseData data, const std::string &error_msg)
         : code_(code), data_(data), error_msg_(error_msg) {}
     static Response success(ResponseData data, const std::string error_msg = "")
@@ -236,13 +233,10 @@ enum RequestType
     AUTH,   // 权限认证
     COMMAND // 命令
 };
-class Request
+struct Request
 {
-private:
     RequestType type;
     std::string command;
-
-public:
     Request(RequestType t, const std::string &cmd) : type(t), command(cmd) {}
     static Request auth(const std::string &password)
     {
@@ -275,4 +269,20 @@ public:
         return ss.str();
     }
 };
+
+inline std::string serialize_request(RequestType t, const std::string &cmd)
+{
+    Request req(t, cmd);
+    std::string body = req.serialize();
+    Header header(HeaderType::REQUEST, static_cast<uint32_t>(body.size()));
+    return header.serialize() + body;
+}
+
+inline std::string serialize_response(const Response &resp)
+{
+    std::string body = resp.serialize();
+    Header header(HeaderType::RESPONSE, static_cast<uint32_t>(body.size()));
+    return header.serialize() + body;
+}
+
 #endif
