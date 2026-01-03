@@ -58,7 +58,9 @@ public:
     /**
      * @brief 打开wal文件
      */
-    std::string open_wal_file(std::optional<std::string> filename = std::nullopt);
+    void open_wal_file(std::string &filename);
+
+    std::string open_wal_file();
 
 private:
     const std::string wal_dir_;

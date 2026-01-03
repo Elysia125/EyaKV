@@ -94,6 +94,13 @@ bool Wal::recover(std::function<void(std::string, uint8_t, std::string, std::str
     for (const auto &filepath : wal_files)
     {
         LOG_INFO("Recovering from WAL file: %s", filepath.c_str());
+        // 判断wal文件是否为空
+        if (std::filesystem::file_size(filepath) == 0)
+        {
+            LOG_INFO("Wal::Recover: WAL file is empty, deleting it: %s", filepath.c_str());
+            std::filesystem::remove(filepath);
+            continue;
+        }
         std::ifstream reader(filepath, std::ios::binary);
         if (!reader.is_open())
         {
@@ -139,7 +146,7 @@ bool Wal::recover(std::function<void(std::string, uint8_t, std::string, std::str
         reader.close();
         // 删除已恢复的日志文件
         // std::filesystem::remove(filepath);
-        LOG_INFO("Completed recovery from WAL file: %s", filepath);
+        LOG_INFO("Completed recovery from WAL file: %s", filepath.c_str());
     }
     // Reopen for appending
     // open_wal_file();
@@ -206,7 +213,7 @@ bool Wal::sync()
     return false;
 }
 
-std::string Wal::open_wal_file(std::optional<std::string> filename)
+void Wal::open_wal_file(std::string &filename)
 {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (wal_file_ != nullptr)
@@ -214,21 +221,27 @@ std::string Wal::open_wal_file(std::optional<std::string> filename)
         sync();
         fclose(wal_file_);
     }
-    if (filename == std::nullopt || filename.value().empty())
+    if (filename.empty())
     {
         filename = generate_unique_filename();
     }
-    std::string filepath = PathUtils::CombinePath(wal_dir_, filename.value());
+    std::string filepath = PathUtils::CombinePath(wal_dir_, filename);
     wal_file_ = fopen(filepath.c_str(), "ab+");
     if (wal_file_ == nullptr)
     {
         LOG_ERROR("Wal: Failed to open WAL file at %s, error:%s", filepath.c_str(), strerror(errno));
         throw std::runtime_error("cannot open or create WAL file at " + filepath);
     }
-    wal_file_name_ = filename.value();
-    return filename.value();
+    wal_file_name_ = filename;
+    LOG_INFO("Wal: Opened WAL file at %s", filepath.c_str());
 }
 
+std::string Wal::open_wal_file()
+{
+    std::string filename = generate_unique_filename();
+    open_wal_file(filename);
+    return filename;
+}
 std::string Wal::generate_unique_filename()
 {
     return "eya_" + std::to_string(std::chrono::system_clock::now().time_since_epoch().count()) + ".wal";

@@ -14,8 +14,7 @@
 #include "common/export.h"
 
 // 日志工具类（单例 + 按级别分类存储）
-// 使用 EYAKV_COMMON_API 导出类，确保跨 DLL 单例唯一
-class EYAKV_COMMON_API Logger
+class EYAKV_LOGGER_API Logger
 {
 public:
     // 禁用拷贝构造和赋值运算符
