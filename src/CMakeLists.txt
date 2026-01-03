@@ -7,12 +7,14 @@ if(MINGW)
     set(THREADS_PREFER_PTHREAD_FLAG ON)
 endif()
 
-# ============================================
+
 # Module 1: Common - 基础工具库
-# ============================================
+
 add_library(eyakv_common SHARED
     common/path_utils.cpp
     common/zset.cpp
+    common/bloom_filter.cpp
+    logger/logger.cpp
 )
 
 if(WIN32)
@@ -26,9 +28,9 @@ target_include_directories(eyakv_common PUBLIC
     ${CMAKE_CURRENT_BINARY_DIR}
 )
 
-# ============================================
+
 # Module 2: Storage - 存储引擎库
-# ============================================
+
 add_library(eyakv_storage SHARED
     storage/memtable.cpp
     storage/wal.cpp
@@ -50,10 +52,10 @@ target_include_directories(eyakv_storage PUBLIC
 # Storage 依赖 Common
 target_link_libraries(eyakv_storage PRIVATE eyakv_common Threads::Threads)
 
-# ============================================
+
 
 # Module 3: Network - 网络库
-# ============================================
+
 add_library(eyakv_network SHARED
     network/server.cpp
 )
@@ -74,9 +76,9 @@ target_link_libraries(eyakv_network PRIVATE
     eyakv_common
     Threads::Threads
 )
-# ============================================
+
 # Module 4: Raft - 共识算法库
-# ============================================
+
 add_library(eyakv_raft SHARED
     raft/raft.cpp
 )
@@ -96,9 +98,9 @@ target_link_libraries(eyakv_raft PRIVATE
     eyakv_common
 )
 
-# ============================================
+
 # Module 5: Starter - 启动器库
-# ============================================
+
 add_library(eyakv_starter SHARED
     starter/starter.cpp
 )
@@ -119,9 +121,9 @@ target_link_libraries(eyakv_starter PRIVATE
     eyakv_common
     eyakv_storage
 )
-# ============================================
+
 # Executables - 可执行文件
-# ============================================
+
 add_executable(eyakv_server server.cpp)
 target_link_libraries(eyakv_server PRIVATE
     eyakv_storage
@@ -132,13 +134,11 @@ target_link_libraries(eyakv_server PRIVATE
 )
 
 add_executable(eyakv client.cpp)
-target_link_libraries(eyakv PRIVATE
-    eyakv_network
-)
 
-# ============================================
+
+
 # Install Rules - 安装规则
-# ============================================
+
 install(TARGETS eyakv_server eyakv DESTINATION bin)
 install(TARGETS eyakv_common eyakv_storage eyakv_network eyakv_raft eyakv_starter DESTINATION lib)
 install(DIRECTORY ${EYAKV_INCLUDE_DIR} DESTINATION include)

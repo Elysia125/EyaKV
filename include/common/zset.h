@@ -8,22 +8,7 @@
 #include <mutex>
 #include <atomic>
 #include "common/export.h"
-
-inline int compare_double_strings(const std::string &a, const std::string &b)
-{
-    std::string a_clean = a.substr(0, a.find('\0'));
-    std::string b_clean = b.substr(0, b.find('\0'));
-    double da = std::stod(a_clean);
-    double db = std::stod(b_clean);
-    return (da < db) ? -1 : ((da > db) ? 1 : 0);
-}
-/**
- * @brief 计算 std::string 的实际大小
- */
-inline size_t calculateStringSize(const std::string &str)
-{
-    return str.size() + sizeof(std::string);
-}
+#include "common/utils.h"
 /**
  * @brief ZSet 类实现了一个基于跳表的有序集合数据结构。
  *
@@ -33,7 +18,7 @@ inline size_t calculateStringSize(const std::string &str)
 class EYAKV_COMMON_API ZSet
 {
 public:
-    ZSet() : skiplist_(DEFAULT_MAX_LEVEL, DEFAULT_PROBABILITY, DEFAULT_MAX_NODE_COUNT, compare_double_strings, calculateStringSize, calculateStringSize), size_exclude_skiplist(0)
+    ZSet() : skiplist_(DEFAULT_MAX_LEVEL, DEFAULT_PROBABILITY, compare_double_strings, calculateStringSize, calculateStringSize), size_exclude_skiplist(0)
     {
         size_exclude_skiplist.fetch_add(sizeof(ZSet), std::memory_order_relaxed);
     }
@@ -145,14 +130,16 @@ public:
      * @brief 增加分数
      */
     std::optional<std::string> z_incrby(const std::string &member, const std::string &increment);
-    
+
     /**
      * @brief 清空
      */
-    void z_clear(){
+    void z_clear()
+    {
         skiplist_.clear();
         member_score_map_.clear();
     }
+
 private:
     SkipList<std::string, std::string> skiplist_;                   // 按分值排序的跳表
     std::unordered_map<std::string, std::string> member_score_map_; // 成员到分值的映射

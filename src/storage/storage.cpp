@@ -20,7 +20,6 @@ Storage::Storage(const std::string &data_dir,
                  const size_t &memtable_size,
                  const size_t &skiplist_max_level,
                  const double &skiplist_probability,
-                 const size_t &skiplist_max_node_count,
                  const SSTableMergeStrategy &sstable_merge_strategy,
                  const unsigned int &sstable_merge_threshold,
                  const unsigned int &sstable_zero_level_size,
@@ -30,7 +29,6 @@ Storage::Storage(const std::string &data_dir,
                                                            memtable_size_(memtable_size),
                                                            skiplist_max_level_(skiplist_max_level),
                                                            skiplist_probability_(skiplist_probability),
-                                                           skiplist_max_node_count_(skiplist_max_node_count),
                                                            wal_flush_interval_(wal_flush_interval),
                                                            wal_flush_strategy_(wal_flush_strategy)
 {
@@ -119,30 +117,21 @@ void Storage::close()
     LOG_INFO("Storage engine closed.");
 }
 
-std::unique_ptr<MemTable<std::string, EValue>> Storage::create_new_memtable()
+std::unique_ptr<MemTable> Storage::create_new_memtable()
 {
-    return std::make_unique<MemTable<std::string, EValue>>(
+    return std::make_unique<MemTable>(
         memtable_size_,
         skiplist_max_level_,
-        skiplist_probability_,
-        skiplist_max_node_count_,
-        std::nullopt,
-        calculateStringSize,
-        estimateEValueSize);
+        skiplist_probability_);
 }
 
 void Storage::recover()
 {
     if (wal_)
     {
-        // 记录下当前的memtable_size和skiplist_max_node_count
-        size_t current_memtable_size = memtable_size_;
-        size_t current_skiplist_max_node_count = skiplist_max_node_count_;
-        // 设置这两个为0(无限)，避免恢复过程中大小不足
-        memtable_size_ = 0;
-        skiplist_max_node_count_ = 0;
         // 初始化memtable_
         memtable_ = create_new_memtable();
+        memtable_->cancel_size_limit();
         current_wal_filename_ = "";
         std::unique_lock<std::shared_mutex> lock(immutable_mutex_);
         bool success = wal_->recover([this](std::string filename, uint8_t type, std::string key, std::string payload)
@@ -151,6 +140,7 @@ void Storage::recover()
                 if(current_wal_filename_!=""){
                     immutable_memtables_[current_wal_filename_] = std::move(memtable_);
                     memtable_ = create_new_memtable();
+                    memtable_->cancel_size_limit();
                 }
                 current_wal_filename_ = filename;
             }
@@ -175,10 +165,6 @@ void Storage::recover()
             }catch(std::exception& e){
                 LOG_WARN("Occur exception when recover wal for type %d key %s payload %s, exception: %s", type, key.c_str(), payload.c_str(), e.what());
             } });
-        // 恢复完成，恢复memtable_size和skiplist_max_node_count
-        memtable_size_ = current_memtable_size;
-        skiplist_max_node_count_ = current_skiplist_max_node_count;
-
         if (!success)
         {
             LOG_ERROR("Storage: WAL recovery failed.");
@@ -186,8 +172,7 @@ void Storage::recover()
         else
         {
             LOG_INFO("Storage: WAL recovery completed.");
-            memtable_->set_memory_limit(memtable_size_);
-            memtable_->set_skiplist_max_node_count(skiplist_max_node_count_);
+            memtable_->set_size_limit(memtable_size_);
             if (memtable_->should_flush() || !enable_wal_)
             {
                 immutable_memtables_[current_wal_filename_] = std::move(memtable_);
@@ -588,7 +573,7 @@ Storage::Stats Storage::get_stats() const
         stats.sstable_count = 0;
         stats.total_sstable_size = 0;
     }
-    
+
     return stats;
 }
 

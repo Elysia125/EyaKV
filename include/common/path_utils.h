@@ -113,7 +113,26 @@ public:
                         return "./"; // 无分隔符，返回当前目录
                 }
 
-                exe_dir_ = exe_path.substr(0, sep_pos + 1); // 保留最后一个分隔符（比如/opt/kvdb/bin/）
+                std::string exe_dir = exe_path.substr(0, sep_pos);
+                // 找到倒数第二个目录分隔符（Linux:/  Windows:\）
+#ifdef _WIN32
+                sep_pos = exe_dir.find_last_of('\\');
+#else
+                sep_pos = exe_dir.find_last_of('/');
+#endif
+                if (sep_pos != std::string::npos)
+                {
+                        exe_dir = exe_dir.substr(0, sep_pos + 1); // 保留最后一个分隔符
+                }
+                else
+                {
+#ifdef _WIN32
+                        exe_dir += "\\";
+#else
+                        exe_dir += "/";
+#endif
+                }
+                exe_dir_ = exe_dir;
                 return exe_dir_.value();
         }
 

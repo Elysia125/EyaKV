@@ -98,7 +98,6 @@ Storage *EyaKVStarter::initialize_storage()
     size_t memtable_size = static_cast<size_t>(std::stoul(config.get_config(MEMTABLE_SIZE_KEY).value()));
     size_t skiplist_max_level = static_cast<size_t>(std::stoul(config.get_config(SKIPLIST_MAX_LEVEL_KEY).value()));
     double skiplist_probability = std::stod(config.get_config(SKIPLIST_PROBABILITY_KEY).value());
-    size_t skiplist_max_node_count = static_cast<size_t>(std::stoul(config.get_config(SKIPLIST_MAX_NODE_COUNT_KEY).value()));
     unsigned int sstable_merge_threshold = static_cast<unsigned int>(std::stoul(config.get_config(SSTABLE_MERGE_THRESHOLD_KEY).value()));
     std::optional<std::string> wal_flush_interval_str = config.get_config(WAL_FLUSH_INTERVAL_KEY);
     std::optional<unsigned int> wal_flush_interval = std::nullopt;
@@ -125,7 +124,6 @@ Storage *EyaKVStarter::initialize_storage()
                                      memtable_size,
                                      skiplist_max_level,
                                      skiplist_probability,
-                                     skiplist_max_node_count,
                                      sstable_merge_strategy,
                                      sstable_merge_threshold,
                                      sstable_zero_level_size,

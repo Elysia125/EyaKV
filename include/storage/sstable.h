@@ -12,6 +12,8 @@
 #include "common/common.h"
 #include "config/config.h"
 #include "storage/node.h"
+#include "common/bloom_filter.h"
+
 /**
  * @brief SSTable 文件格式:
  *
@@ -34,7 +36,6 @@
 
 // SSTable 常量定义
 constexpr size_t SSTABLE_BLOCK_SIZE = 4 * 1024;         // 数据块大小 4KB
-constexpr size_t SSTABLE_BLOOM_BITS_PER_KEY = 10;       // 布隆过滤器每个key使用的位数
 constexpr uint64_t SSTABLE_MAGIC_NUMBER = 0x4579614B56; // SSTable 魔数
 
 /**
@@ -76,38 +77,6 @@ struct IndexEntry
     std::string serialize() const;
     // 从字节流反序列化
     static IndexEntry deserialize(const char *data, size_t &offset);
-};
-
-/**
- * @brief 简单的布隆过滤器实现
- */
-class BloomFilter
-{
-public:
-    BloomFilter();
-    explicit BloomFilter(size_t expected_elements, size_t bits_per_key = SSTABLE_BLOOM_BITS_PER_KEY);
-
-    // 添加一个key到布隆过滤器
-    void add(const std::string &key);
-
-    // 检查key是否可能存在（可能有假阳性，但无假阴性）
-    bool may_contain(const std::string &key) const;
-
-    // 序列化到字节流
-    std::string serialize() const;
-
-    // 从字节流反序列化
-    static BloomFilter deserialize(const char *data, size_t &offset);
-
-    // 获取位数组大小
-    size_t size() const { return bits_.size(); }
-
-private:
-    std::vector<uint8_t> bits_;
-    size_t num_hash_functions_;
-
-    // 计算多个hash值
-    std::vector<uint32_t> get_hashes(const std::string &key) const;
 };
 
 /**

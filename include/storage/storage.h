@@ -60,7 +60,6 @@ public:
                      const size_t &memtable_size = 1024 * 1024 * 1024,
                      const size_t &skiplist_max_level = 16,
                      const double &skiplist_probability = 0.5,
-                     const size_t &skiplist_max_node_count = 10000000,
                      const SSTableMergeStrategy &sstable_merge_strategy = SSTableMergeStrategy::SIZE_TIERED_COMPACTION,
                      const unsigned int &sstable_merge_threshold = 5,
                      const unsigned int &sstable_zero_level_size = 10,
@@ -119,10 +118,10 @@ private:
     std::string sstable_dir_;
     std::string current_wal_filename_;
     // 活跃的 MemTable（接受新写入）
-    std::unique_ptr<MemTable<std::string, EValue>> memtable_;
+    std::unique_ptr<MemTable> memtable_;
 
     // Immutable MemTables（等待 Flush 到 SSTable）
-    std::map<std::string, std::unique_ptr<MemTable<std::string, EValue>>> immutable_memtables_;
+    std::map<std::string, std::unique_ptr<MemTable>> immutable_memtables_;
     mutable std::shared_mutex immutable_mutex_; // 保护 immutable_memtables_
 
     // SSTable 管理器
@@ -138,7 +137,6 @@ private:
     size_t memtable_size_;
     size_t skiplist_max_level_;
     double skiplist_probability_;
-    size_t skiplist_max_node_count_;
     WALFlushStrategy wal_flush_strategy_;
     std::optional<unsigned int> wal_flush_interval_;
 
@@ -192,7 +190,7 @@ private:
     /**
      * @brief 工厂方法：创建一个配置好的新 MemTable 实例。
      */
-    std::unique_ptr<MemTable<std::string, EValue>> create_new_memtable();
+    std::unique_ptr<MemTable> create_new_memtable();
 
     /**
      * @brief 内部写入实现，处理 WAL 和 MemTable 的写入。

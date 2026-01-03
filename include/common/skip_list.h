@@ -4,13 +4,14 @@
 #include <iostream>
 #include <string>
 #include <vector>
-#include <mutex>
+#include <shared_mutex>
 #include <random>
 #include <ctime>
 #include <cstring>
 #include <atomic>
 #include <optional>
 #include <functional>
+#include <mutex>
 #ifdef _WIN32
 #include <winsock2.h>
 #pragma comment(lib, "ws2_32.lib")
@@ -19,7 +20,6 @@
 #endif
 #define DEFAULT_MAX_LEVEL 16
 #define DEFAULT_PROBABILITY 0.5
-#define DEFAULT_MAX_NODE_COUNT 1000000
 
 template <typename K, typename V>
 struct SkipListNode
@@ -62,10 +62,6 @@ private:
      */
     const double PROBABILITY;
     /**
-     * @brief 跳表的最大节点数（0表示无限制）
-     */
-    size_t MAX_NODE_COUNT;
-    /**
      * @brief 当前跳表的最大层数
      */
     int current_level_;
@@ -73,10 +69,11 @@ private:
      * @brief 头节点（哨兵节点，不存储实际数据）
      */
     SkipListNode<K, V> *head_;
+
     /**
      * @brief 互斥锁，保证并发安全
      */
-    std::mutex mutex_;
+    mutable std::shared_mutex mutex_;
     /**
      * @brief 当前跳表的元素数量
      */
@@ -165,22 +162,19 @@ public:
      * @brief Constructs a SkipList with customizable parameters
      * @param skiplist_max_level The maximum number of levels in the skip list (default: 16)
      * @param skiplist_probability The probability factor for determining node level (default: 0.5)
-     * @param skiplist_max_node_count Maximum number of nodes allowed (0 for unlimited, default: 1000000)
      * @param compare_func Optional custom comparison function for keys
      * @param calculate_key_size_func Optional custom function to calculate key memory size
      * @param calculate_value_size_func Optional custom function to calculate value memory size
      */
     SkipList(const size_t &skiplist_max_level = DEFAULT_MAX_LEVEL,
              const double &skiplist_probability = DEFAULT_PROBABILITY,
-             const size_t &skiplist_max_node_count = DEFAULT_MAX_NODE_COUNT,
              std::optional<int (*)(const K &, const K &)> compare_func = std::nullopt,
              std::optional<size_t (*)(const K &)> calculate_key_size_func = std::nullopt,
              std::optional<size_t (*)(const V &)> calculate_value_size_func = std::nullopt) : current_level_(1),
                                                                                               size_(0),
                                                                                               current_size_(0),
                                                                                               MAX_LEVEL(skiplist_max_level),
-                                                                                              PROBABILITY(skiplist_probability),
-                                                                                              MAX_NODE_COUNT(skiplist_max_node_count)
+                                                                                              PROBABILITY(skiplist_probability)
     {
         if (compare_func.has_value())
         {
@@ -245,7 +239,6 @@ public:
           size_(other.size_),
           MAX_LEVEL(other.MAX_LEVEL),
           PROBABILITY(other.PROBABILITY),
-          MAX_NODE_COUNT(other.MAX_NODE_COUNT),
           compare_func_(other.compare_func_),
           calculate_key_size_func_(other.calculate_key_size_func_),
           calculate_value_size_func_(other.calculate_value_size_func_)
@@ -285,7 +278,6 @@ public:
           current_size_(other.current_size_),
           MAX_LEVEL(other.MAX_LEVEL),
           PROBABILITY(other.PROBABILITY),
-          MAX_NODE_COUNT(other.MAX_NODE_COUNT),
           compare_func_(other.compare_func_),
           calculate_key_size_func_(other.calculate_key_size_func_),
           calculate_value_size_func_(other.calculate_value_size_func_)
@@ -337,7 +329,7 @@ public:
      */
     void insert(const K &key, const V &value)
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock<std::shared_mutex> lock(mutex_);
         size_t new_key_size = calculate_key_size_func_(key);
         size_t new_value_size = calculate_value_size_func_(value);
 
@@ -361,10 +353,6 @@ public:
             current->value = value;
             current_size_.fetch_add(new_value_size - old_value_size, std::memory_order_relaxed);
             return;
-        }
-        if (MAX_NODE_COUNT > 0 && size_ >= MAX_NODE_COUNT)
-        {
-            throw std::overflow_error("SkipList has reached its maximum node count");
         }
         // 生成新节点
         int level = random_level();
@@ -403,6 +391,7 @@ public:
      */
     V get(const K &key) const
     {
+        std::shared_lock<std::shared_mutex> lock(mutex_);
         SkipListNode<K, V> *current = head_;
         for (int i = current_level_ - 1; i >= 0; i--)
         {
@@ -429,7 +418,7 @@ public:
      */
     V handle_value(const K &key, std::function<V &(V &)> value_handle)
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock<std::shared_mutex> lock(mutex_);
         SkipListNode<K, V> *current = head_;
         for (int i = current_level_ - 1; i >= 0; i--)
         {
@@ -458,7 +447,7 @@ public:
      */
     bool remove(const K &key)
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock<std::shared_mutex> lock(mutex_);
         SkipListNode<K, V> *current = head_;
         SkipListNode<K, V> *update[MAX_LEVEL] = {nullptr};
         for (int i = current_level_ - 1; i >= 0; i--)
@@ -520,7 +509,7 @@ public:
      */
     void clear()
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock<std::shared_mutex> lock(mutex_);
         SkipListNode<K, V> *current = head_;
         while (current != nullptr)
         {
@@ -543,6 +532,7 @@ public:
      */
     std::vector<std::pair<K, V>> range_by_rank(size_t start_rank, size_t end_rank) const
     {
+        std::shared_lock<std::shared_mutex> lock(mutex_);
         if (start_rank > end_rank)
         {
             return {};
@@ -571,6 +561,7 @@ public:
      */
     std::vector<std::pair<K, V>> range_by_key(const K &min_key, const K &max_key) const
     {
+        std::shared_lock<std::shared_mutex> lock(mutex_);
         if (min_key > max_key)
         {
             return {};
@@ -602,7 +593,7 @@ public:
      */
     size_t remove_range_by_key(const K &min_key, const K &max_key)
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock<std::shared_mutex> lock(mutex_);
         if (min_key > max_key)
         {
             return 0;
@@ -692,6 +683,7 @@ public:
      */
     std::optional<size_t> rank(const K &key) const
     {
+        std::shared_lock<std::shared_mutex> lock(mutex_);
         size_t rank = 0;
         SkipListNode<K, V> *current = head_->next[0];
         while (current != nullptr && compare_func_(current->key, key) < 0)
@@ -713,6 +705,7 @@ public:
      */
     void for_each(std::function<void(const K &key, const V &value)> callback) const
     {
+        std::shared_lock<std::shared_mutex> lock(mutex_);
         SkipListNode<K, V> *current = head_->next[0];
         while (current != nullptr)
         {
@@ -728,6 +721,7 @@ public:
      */
     std::vector<std::pair<K, V>> get_all_entries() const
     {
+        std::shared_lock<std::shared_mutex> lock(mutex_);
         std::vector<std::pair<K, V>> result;
         SkipListNode<K, V> *current = head_->next[0];
         while (current != nullptr)
@@ -747,6 +741,7 @@ public:
      */
     std::string serialize(std::string (*serialize_key_func)(const K &key), std::string (*serialize_value_func)(const V &value)) const
     {
+        std::shared_lock<std::shared_mutex> lock(mutex_);
         std::string result;
         int current_level = htonl(current_level_);
         uint32_t size = htonl(static_cast<uint32_t>(size_));
@@ -826,12 +821,6 @@ public:
             }
             std::cout << std::endl;
         }
-    }
-
-    void set_max_node_count(const size_t &max_node_count)
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        MAX_NODE_COUNT = max_node_count;
     }
 };
 #endif

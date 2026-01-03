@@ -76,7 +76,7 @@ bool Wal::write_record(uint8_t type, const std::string &key, const std::string &
 bool Wal::recover(std::function<void(std::string, uint8_t, std::string, std::string)> callback)
 {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
-    LOG_INFO("Starting WAL recovery from directory: %s", wal_dir_);
+    LOG_INFO("Starting WAL recovery from directory: %s", wal_dir_.c_str());
     if (wal_file_ != nullptr)
     {
         fclose(wal_file_);
@@ -97,7 +97,7 @@ bool Wal::recover(std::function<void(std::string, uint8_t, std::string, std::str
         std::ifstream reader(filepath, std::ios::binary);
         if (!reader.is_open())
         {
-            LOG_ERROR("Wal::Recover: Failed to open WAL file at %s", filepath);
+            LOG_ERROR("Wal::Recover: Failed to open WAL file at %s", filepath.c_str());
             continue;
         }
 
@@ -214,7 +214,7 @@ std::string Wal::open_wal_file(std::optional<std::string> filename)
         sync();
         fclose(wal_file_);
     }
-    if (!filename.has_value())
+    if (filename == std::nullopt || filename.value().empty())
     {
         filename = generate_unique_filename();
     }
@@ -222,7 +222,7 @@ std::string Wal::open_wal_file(std::optional<std::string> filename)
     wal_file_ = fopen(filepath.c_str(), "ab+");
     if (wal_file_ == nullptr)
     {
-        LOG_ERROR("Wal: Failed to open WAL file at %s,error:%s", filepath, strerror(errno));
+        LOG_ERROR("Wal: Failed to open WAL file at %s, error:%s", filepath.c_str(), strerror(errno));
         throw std::runtime_error("cannot open or create WAL file at " + filepath);
     }
     wal_file_name_ = filename.value();

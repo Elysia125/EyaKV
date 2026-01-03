@@ -1,57 +1,79 @@
-#include "storage/memtable.h"
-#include <mutex>
+#include <shared_mutex>
+#include <algorithm>
+#include <numeric>
+#include <queue>
 #include "logger/logger.h"
-#include "common/common.h"
-#include "storage/node.h"
+#include "storage/memtable.h"
+
 // MemTable 实现
-template <typename K, typename V>
-MemTable<K, V>::MemTable(const size_t &memtable_size,
-                         const size_t &skiplist_max_level,
-                         const double &skiplist_probability,
-                         const size_t &skiplist_max_node_count,
-                         std::optional<int (*)(const K &, const K &)> compare_func,
-                         std::optional<size_t (*)(const K &)> calculate_key_size_func,
-                         std::optional<size_t (*)(const V &)> calculate_value_size_func) : memtable_size_(memtable_size * 1024),
-                                                                                           table_(skiplist_max_level,
-                                                                                                  skiplist_probability,
-                                                                                                  skiplist_max_node_count,
-                                                                                                  compare_func,
-                                                                                                  calculate_key_size_func,
-                                                                                                  calculate_value_size_func)
+MemTable::MemTable(const size_t &memtable_size,
+                   const size_t &skiplist_max_level,
+                   const double &skiplist_probability) : memtable_size_(memtable_size * 1024),
+                                                         size_(0)
 {
+    for (size_t i = 0; i < k_num_shards_; ++i)
+    {
+        tables_.push_back(std::make_unique<SkipList<std::string, EValue>>(
+            skiplist_max_level,
+            skiplist_probability,
+            std::nullopt,
+            calculateStringSize,
+            estimateEValueSize));
+
+        // 假设原本 1000000 是总期望元素数量，分片后每个分片期望数量为 total / shards
+        bloom_filters_.push_back(std::make_unique<BloomFilter>(1000000 / k_num_shards_));
+        bloom_locks_.push_back(std::make_unique<std::shared_mutex>());
+    }
 }
 
-template <typename K, typename V>
-void MemTable<K, V>::put(const K &key, const V &value)
+size_t MemTable::get_shard_index(const std::string &key) const
 {
-    // 获取写锁 (独占锁)
-    std::unique_lock<std::shared_mutex> lock(mutex_);
+    // 使用位与操作替代取模，效率更高（要求 k_num_shards_ 为 2 的幂次）
+    return std::hash<std::string>{}(key)&(k_num_shards_ - 1);
+}
+
+void MemTable::put(const std::string &key, const EValue &value)
+{
     if (should_flush())
     {
         throw std::overflow_error("MemTable size exceeds limit");
     }
-    table_.insert(key, value);
+
+    size_t idx = get_shard_index(key);
+    // 获取插入前的分片大小
+    size_t old_shard_size = tables_[idx]->size();
+
+    // 插入跳表 (SkipList 内部有锁)
+    tables_[idx]->insert(key, value);
+
+    // 获取插入后的分片大小，判断是否为新增
+    size_t new_shard_size = tables_[idx]->size();
+    if (new_shard_size > old_shard_size)
+    {
+        // 新增元素，更新总数
+        size_.fetch_add(1, std::memory_order_relaxed);
+        // 更新 BloomFilter
+        std::unique_lock<std::shared_mutex> lock(*bloom_locks_[idx]);
+        bloom_filters_[idx]->add(key);
+    }
 }
 
-/**
- * @brief 从MemTable中获取指定键对应的值
- *
- * @tparam K 键类型
- * @tparam V 值类型
- * @param key 要查找的键
- * @return std::optional<V> 如果找到则返回对应的值，否则返回std::nullopt
- * @throws 无显式抛出异常，内部异常会被捕获并返回std::nullopt
- *
- * @note 此操作是线程安全的，使用共享锁保护
- */
-template <typename K, typename V>
-std::optional<V> MemTable<K, V>::get(const K &key) const
+std::optional<EValue> MemTable::get(const std::string &key) const
 {
-    // 获取读锁 (共享锁)
-    std::shared_lock<std::shared_mutex> lock(mutex_);
+    size_t idx = get_shard_index(key);
+
+    // 检查 BloomFilter
+    {
+        std::shared_lock<std::shared_mutex> lock(*bloom_locks_[idx]);
+        if (!bloom_filters_[idx]->may_contain(key))
+        {
+            return std::nullopt;
+        }
+    }
+
     try
     {
-        return table_.get(key);
+        return tables_[idx]->get(key);
     }
     catch (const std::exception &e)
     {
@@ -59,78 +81,150 @@ std::optional<V> MemTable<K, V>::get(const K &key) const
     }
 }
 
-template <typename K, typename V>
-bool MemTable<K, V>::remove(const K &key)
+bool MemTable::remove(const std::string &key)
 {
-    // 获取写锁 (独占锁)
-    std::unique_lock<std::shared_mutex> lock(mutex_);
-    return table_.remove(key);
-}
-template <typename K, typename V>
-size_t MemTable<K, V>::size() const
-{
-    // 获取读锁
-    std::shared_lock<std::shared_mutex> lock(mutex_);
-    return table_.size();
+    size_t idx = get_shard_index(key);
+    {
+        std::shared_lock<std::shared_mutex> lock(*bloom_locks_[idx]);
+        if (!bloom_filters_[idx]->may_contain(key))
+        {
+            return false;
+        }
+    }
+    bool removed = tables_[idx]->remove(key);
+    if (removed)
+    {
+        // 删除成功，更新总数
+        size_.fetch_sub(1, std::memory_order_relaxed);
+    }
+    return removed;
 }
 
-template <typename K, typename V>
-size_t MemTable<K, V>::memory_usage() const
+size_t MemTable::size() const
 {
-    // 获取读锁以保证线程安全
-    std::shared_lock<std::shared_mutex> lock(mutex_);
-    return sizeof(MemTable<K, V>) + table_.memory_usage();
+    // 直接返回缓存的大小，O(1) 复杂度
+    return size_.load(std::memory_order_relaxed);
 }
-template <typename K, typename V>
-size_t MemTable<K, V>::memory_limit() const
+
+size_t MemTable::memory_usage() const
+{
+    size_t usage = sizeof(MemTable);
+    for (size_t i = 0; i < k_num_shards_; ++i)
+    {
+        usage += tables_[i]->memory_usage();
+        {
+            std::shared_lock<std::shared_mutex> lock(*bloom_locks_[i]);
+            usage += bloom_filters_[i]->size();
+        }
+    }
+    return usage;
+}
+
+size_t MemTable::memory_limit() const
 {
     return memtable_size_;
 }
 
-template <typename K, typename V>
-bool MemTable<K, V>::should_flush() const
+bool MemTable::should_flush() const
 {
-    return memtable_size_!=0&&memory_usage() >= memtable_size_;
+    return memtable_size_ != 0 && memory_usage() >= memtable_size_;
 }
 
-template <typename K, typename V>
-void MemTable<K, V>::clear()
+void MemTable::clear()
 {
-    // 获取写锁
-    std::unique_lock<std::shared_mutex> lock(mutex_);
-    table_.clear();
+    for (size_t i = 0; i < k_num_shards_; ++i)
+    {
+        tables_[i]->clear();
+
+        std::unique_lock<std::shared_mutex> lock(*bloom_locks_[i]);
+        // 重置 BloomFilter
+        bloom_filters_[i] = std::make_unique<BloomFilter>(1000000 / k_num_shards_);
+    }
+    // 重置总数
+    size_.store(0, std::memory_order_relaxed);
 }
 
-template <typename K, typename V>
-std::vector<std::pair<K, V>> MemTable<K, V>::get_all_entries() const
+std::vector<std::pair<std::string, EValue>> MemTable::get_all_entries() const
 {
-    std::shared_lock<std::shared_mutex> lock(mutex_);
-    return table_.get_all_entries();
-}
-template <typename K, typename V>
-void MemTable<K, V>::for_each(const std::function<void(const K &, const V &)> &callback) const
-{
-    std::shared_lock<std::shared_mutex> lock(mutex_);
-    table_.for_each(callback);
+    // 获取所有分片的有序数据
+    std::vector<std::vector<std::pair<std::string, EValue>>> shard_entries(k_num_shards_);
+    size_t total_elements = 0;
+
+    for (size_t i = 0; i < k_num_shards_; ++i)
+    {
+        shard_entries[i] = tables_[i]->get_all_entries();
+        total_elements += shard_entries[i].size();
+    }
+
+    // 使用 K 路归并排序（因为每个分片内部已有序）
+    std::vector<std::pair<std::string, EValue>> result;
+    result.reserve(total_elements);
+
+    // 使用最小堆进行 K 路归并
+    // 堆元素: (key, shard_index, element_index)
+    using HeapEntry = std::tuple<std::string, size_t, size_t>;
+    auto cmp = [](const HeapEntry &a, const HeapEntry &b)
+    {
+        return std::get<0>(a) > std::get<0>(b); // 最小堆
+    };
+    std::priority_queue<HeapEntry, std::vector<HeapEntry>, decltype(cmp)> min_heap(cmp);
+
+    // 初始化堆：每个分片的第一个元素入堆
+    for (size_t i = 0; i < k_num_shards_; ++i)
+    {
+        if (!shard_entries[i].empty())
+        {
+            min_heap.emplace(shard_entries[i][0].first, i, 0);
+        }
+    }
+
+    // K 路归并
+    while (!min_heap.empty())
+    {
+        auto [key, shard_idx, elem_idx] = min_heap.top();
+        min_heap.pop();
+
+        result.push_back(std::move(shard_entries[shard_idx][elem_idx]));
+
+        // 将该分片的下一个元素入堆
+        if (elem_idx + 1 < shard_entries[shard_idx].size())
+        {
+            min_heap.emplace(shard_entries[shard_idx][elem_idx + 1].first, shard_idx, elem_idx + 1);
+        }
+    }
+
+    return result;
 }
 
-template <typename K, typename V>
-V MemTable<K, V>::handle_value(const K &key, std::function<V &(V &)> value_handle)
+void MemTable::for_each(const std::function<void(const std::string &, const EValue &)> &callback) const
 {
-    std::unique_lock<std::shared_mutex> lock(mutex_);
-    return table_.handle_value(key, value_handle);
+    // 为了保证 Key 有序调用，必须先获取所有并排序
+    auto entries = get_all_entries();
+    for (const auto &entry : entries)
+    {
+        callback(entry.first, entry.second);
+    }
 }
 
-template <typename K, typename V>
-void MemTable<K, V>::set_memory_limit(const size_t &memtable_size)
+EValue MemTable::handle_value(const std::string &key, std::function<EValue &(EValue &)> value_handle)
 {
-    memtable_size_ = memtable_size * 1024;
-}
-template <typename K, typename V>
-void MemTable<K, V>::set_skiplist_max_node_count(const size_t &skiplist_max_node_count)
-{
-    std::unique_lock<std::shared_mutex> lock(mutex_);
-    table_.set_max_node_count(skiplist_max_node_count);
+    size_t idx = get_shard_index(key);
+    {
+        std::shared_lock<std::shared_mutex> lock(*bloom_locks_[idx]);
+        if (!bloom_filters_[idx]->may_contain(key))
+        {
+            throw std::out_of_range("Key not found");
+        }
+    }
+    return tables_[idx]->handle_value(key, value_handle);
 }
 
-template class MemTable<std::string, EValue>;
+void MemTable::cancel_size_limit()
+{
+    memtable_size_ = 0;
+}
+
+void MemTable::set_size_limit(size_t size)
+{
+    memtable_size_ = size;
+}
