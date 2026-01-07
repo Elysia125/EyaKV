@@ -4,7 +4,7 @@
 #include "logger/logger.h"
 #include "storage/processors/structure_processors.h"
 #include "storage/storage.h"
-#include "common/operation_type.h"
+#include "common/types/operation_type.h"
 
 const auto remove_evalue = [](EValue &value) -> EValue &
 {
@@ -702,6 +702,9 @@ uint32_t Storage::remove(std::vector<std::string> &keys)
 }
 Response Storage::execute(uint8_t type, std::vector<std::string> &args)
 {
+    std::string args_str;
+    for (const auto &arg : args) args_str += arg + " ";
+    LOG_DEBUG("Storage::execute: type=%d, args=[%s]", type, args_str.c_str());
     try
     {
         if (type == OperationType::kRemove)

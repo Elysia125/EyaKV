@@ -11,8 +11,8 @@
 #include <unordered_set>
 #include <condition_variable>
 #include <optional>
-#include "common/export.h"
-#include "common/threadpool.h"
+#include "common/base/export.h"
+#include "common/concurrency/threadpool.h"
 #include "network/protocol/protocol.h"
 
 // 平台差异化宏定义与头文件包含

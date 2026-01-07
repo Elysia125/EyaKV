@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
-#include "common/export.h"
+#include "common/base/export.h"
 
 constexpr size_t SSTABLE_BLOOM_BITS_PER_KEY = 10; // 布隆过滤器每个key使用的位数
 /**

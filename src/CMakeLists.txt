@@ -7,9 +7,6 @@ if(MINGW)
     set(THREADS_PREFER_PTHREAD_FLAG ON)
 endif()
 
-# Global definition for Static Build
-add_definitions(-DEYAKV_STATIC)
-
 # Module 0: Logger
 add_library(eyakv_logger STATIC
     logger/logger.cpp
@@ -30,10 +27,10 @@ endif()
 
 # Module 1: Common - 基础工具库
 add_library(eyakv_common STATIC
-    common/path_utils.cpp
-    common/zset.cpp
-    common/bloom_filter.cpp
-    common/threadpool.cpp
+    common/util/path_utils.cpp
+    common/ds/zset.cpp
+    common/ds/bloom_filter.cpp
+    common/concurrency/threadpool.cpp
 )
 
 if(WIN32)
@@ -75,7 +72,7 @@ target_link_libraries(eyakv_storage PRIVATE eyakv_logger eyakv_common Threads::T
 
 # Module 3: Network - 网络库
 add_library(eyakv_network STATIC
-    network/server.cpp
+    network/tcp_server.cpp
 )
 
 if(WIN32)
@@ -132,22 +129,9 @@ target_link_libraries(eyakv_starter PRIVATE
     eyakv_storage
 )
 
-# Executables - 可执行文件
-add_executable(eyakv_server server.cpp)
-target_link_libraries(eyakv_server PRIVATE
-    eyakv_logger
-    eyakv_storage
-    eyakv_network
-    eyakv_raft
-    eyakv_starter
-    eyakv_common
-    ${PLATFORM_LIBS}
-)
+# Executables have been moved to apps/ directory.
 
-add_executable(eyakv client.cpp)
-target_link_libraries(eyakv PRIVATE eyakv_common ${PLATFORM_LIBS})
 
 # Install Rules - 安装规则
-install(TARGETS eyakv_server eyakv DESTINATION bin)
 install(TARGETS eyakv_logger eyakv_common eyakv_storage eyakv_network eyakv_raft eyakv_starter DESTINATION lib)
 install(DIRECTORY ${EYAKV_INCLUDE_DIR} DESTINATION include)

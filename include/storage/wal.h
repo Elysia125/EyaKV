@@ -6,7 +6,7 @@
 #include <mutex>
 #include <vector>
 #include "storage/memtable.h"
-#include "common/common.h"
+#include "common/types/value.h"
 /**
  * @brief Write-Ahead Log (WAL) 负责将操作持久化到磁盘。
  *

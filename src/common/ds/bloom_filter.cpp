@@ -1,4 +1,4 @@
-#include "common/bloom_filter.h"
+#include "common/ds/bloom_filter.h"
 #include <cstring>
 
 BloomFilter::BloomFilter() : num_hash_functions_(0) {}

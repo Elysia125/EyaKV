@@ -15,9 +15,8 @@
 #include <stdexcept>
 #include <cstdint>
 #include <cstring>
-#include "skip_list.h"
-#include "zset.h"
-
+#include "common/ds/skip_list.h"
+#include "common/ds/zset.h"
 namespace EyaKV
 {
 

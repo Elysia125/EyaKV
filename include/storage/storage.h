@@ -14,11 +14,11 @@
 #include <thread>
 #include <condition_variable>
 #include <condition_variable>
-#include "common/common.h"
+#include "common/types/value.h"
 #include "storage/processors/processor.h"
 #include "network/protocol/protocol.h"
 #include "storage/node.h"
-#include "common/export.h"
+#include "common/base/export.h"
 
 // Forward declaration
 class ValueProcessor;

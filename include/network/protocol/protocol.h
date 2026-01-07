@@ -1,6 +1,6 @@
 #ifndef PROTOCOL_H_
 #define PROTOCOL_H_
-#include "common/common.h"
+#include "common/types/value.h"
 #ifdef _WIN32
 #include <winsock2.h>
 #pragma comment(lib, "ws2_32.lib")

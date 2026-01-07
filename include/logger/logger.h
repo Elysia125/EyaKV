@@ -11,7 +11,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include "config/config.h"
-#include "common/export.h"
+#include "common/base/export.h"
 
 // 日志工具类（单例 + 按级别分类存储）
 class EYAKV_LOGGER_API Logger

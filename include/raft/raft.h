@@ -1,7 +1,7 @@
 #pragma once
 
 #include <string>
-#include "common/export.h"
+#include "common/base/export.h"
 
 namespace eyakv::raft {
 

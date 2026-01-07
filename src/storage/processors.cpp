@@ -1,8 +1,8 @@
 #include "storage/processors/structure_processors.h"
 #include "logger/logger.h"
 #include "storage/storage.h"
-#include "common/serializer.h"
-#include "common/operation_type.h"
+#include "common/serialization/serializer.h"
+#include "common/types/operation_type.h"
 #include <limits>
 
 // StringProcessor

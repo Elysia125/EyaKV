@@ -1,10 +1,10 @@
-#include "network/server.h"
+#include "network/tcp_server.h"
 #include "logger/logger.h"
 #include <iostream>
 #include <cstring>
 #include "storage/storage.h"
-#include "common/utils.h"
-#include "common/operation_type.h"
+#include "common/util/utils.h"
+#include "common/types/operation_type.h"
 #define HEADER_SIZE Header::PROTOCOL_HEADER_SIZE
 #define HEADER_SIZE_LIMIT 1024 * 1024
 #ifdef __linux__
@@ -973,7 +973,7 @@ void EyaServer::handle_request(const Request &request, socket_t client_sock)
 void EyaServer::send_response(const Response &response, socket_t client_sock)
 {
     std::string response_data = serialize_response(response);
-    std::cout << "the response data: " << response_data << std::endl;
+    LOG_DEBUG("Sending response to fd %d: code=%d, size=%zu", client_sock, response.code_, response_data.size());
     // 发送响应
     int sent_bytes = send(client_sock, response_data.data(),
                           static_cast<int>(response_data.size()), 0);

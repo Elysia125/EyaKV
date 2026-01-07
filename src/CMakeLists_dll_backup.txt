@@ -144,21 +144,21 @@ target_link_libraries(eyakv_starter PRIVATE
 )
 
 # Executables - 可执行文件
-add_executable(eyakv_server server.cpp)
-target_link_libraries(eyakv_server PRIVATE
-    eyakv_logger
-    eyakv_storage
-    eyakv_network
-    eyakv_raft
-    eyakv_starter
-    eyakv_common
-    ${PLATFORM_LIBS}
-)
+#add_executable(eyakv_server server.cpp)
+#target_link_libraries(eyakv_server PRIVATE
+#    eyakv_logger
+#    eyakv_storage
+#    eyakv_network
+#    eyakv_raft
+#    eyakv_starter
+#    eyakv_common
+#    ${PLATFORM_LIBS}
+#)
 
-add_executable(eyakv client.cpp)
-target_link_libraries(eyakv PRIVATE eyakv_common ${PLATFORM_LIBS})
+#add_executable(eyakv client.cpp)
+#target_link_libraries(eyakv PRIVATE eyakv_common ${PLATFORM_LIBS})
 
 # Install Rules - 安装规则
-install(TARGETS eyakv_server eyakv DESTINATION bin)
+# install(TARGETS eyakv_server eyakv DESTINATION bin)
 install(TARGETS eyakv_logger eyakv_common eyakv_storage eyakv_network eyakv_raft eyakv_starter DESTINATION lib)
 install(DIRECTORY ${EYAKV_INCLUDE_DIR} DESTINATION include)

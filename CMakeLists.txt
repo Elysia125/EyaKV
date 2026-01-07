@@ -13,6 +13,7 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 # Include headers globally
 include_directories(${PROJECT_SOURCE_DIR}/include)
 add_definitions(-DPROJECT_ROOT_DIR="${CMAKE_CURRENT_BINARY_DIR}")
+add_definitions(-DEYAKV_STATIC)
 
 # Define include directory variable for subdirectories
 set(EYAKV_INCLUDE_DIR ${PROJECT_SOURCE_DIR}/include)
@@ -54,4 +55,5 @@ endif()
 # Subdirectories
 # ------------------------------------------------------------------------------
 add_subdirectory(src)
+add_subdirectory(apps)
 add_subdirectory(tests)

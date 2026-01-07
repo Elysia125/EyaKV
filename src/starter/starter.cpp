@@ -3,7 +3,7 @@
 #include <atomic>
 #include "starter/starter.h"
 #include "storage/storage.h"
-#include "network/server.h"
+#include "network/tcp_server.h"
 #include "config/config.h"
 #include "logger/logger.h"
 
@@ -172,15 +172,15 @@ void EyaKVStarter::initialize_server()
     uint32_t worker_wait_timeout = worker_wait_timeout_str.has_value() ? static_cast<uint32_t>(std::stoul(worker_wait_timeout_str.value())) : DEFAULT_WORKER_WAIT_TIMEOUT;
 
     server = new EyaServer(storage,
-                          ip_str.value(),
-                          port,
-                          password,
-                          max_connections,
-                          wait_queue_size,
-                          max_waiting_time,
-                          worker_thread_count,
-                          worker_queue_size,
-                          worker_wait_timeout);
+                           ip_str.value(),
+                           port,
+                           password,
+                           max_connections,
+                           wait_queue_size,
+                           max_waiting_time,
+                           worker_thread_count,
+                           worker_queue_size,
+                           worker_wait_timeout);
     server->start();
     std::cout << "EyaServer initialized. Listening on " << ip_str.value() << ":" << port << std::endl;
     server->run();

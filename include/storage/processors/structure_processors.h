@@ -2,8 +2,8 @@
 #define TINYKV_STORAGE_STRUCTURE_PROCESSORS_H_
 
 #include "storage/processors/processor.h"
-#include "common/serializer.h"
-#include "common/common.h"
+#include "common/serialization/serializer.h"
+#include "common/types/value.h"
 // String Processor
 class StringProcessor : public ValueProcessor
 {

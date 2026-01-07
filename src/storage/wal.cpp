@@ -4,7 +4,7 @@
 #include <cstring>
 #include <cerrno>
 #include <set>
-#include "common/path_utils.h"
+#include "common/util/path_utils.h"
 #include "logger/logger.h"
 
 #ifdef _WIN32
@@ -39,7 +39,7 @@ Wal::~Wal()
 
 bool Wal::append_log(uint8_t type, const std::string &key, const std::string &payload)
 {
-    LOG_DEBUG("Wal: Appending log to WAL file.");
+    LOG_DEBUG("Wal: Appending log type=%d key=%s", type, key.c_str());
     return write_record(type, key, payload);
 }
 

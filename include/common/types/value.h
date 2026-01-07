@@ -2,8 +2,8 @@
 #define COMMON_H
 
 #include <string>
-#include "zset.h"
-#include "serializer.h"
+#include "common/ds/zset.h"
+#include "common/serialization/serializer.h"
 #include <variant>
 #include <unordered_map>
 #include <unordered_set>

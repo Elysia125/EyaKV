@@ -4,7 +4,7 @@
 #include "storage/memtable.h"
 #include <vector>
 #include <string>
-#include "common/common.h"
+#include "common/types/value.h"
 #include "network/protocol/protocol.h"
 
 class Storage;
