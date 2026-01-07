@@ -141,8 +141,8 @@ void EyaKVStarter::initialize_server()
         throw std::runtime_error("Port not configured.");
     }
     unsigned short port = static_cast<unsigned short>(std::stoi(port_str.value()));
-    static Server server(storage, port);
-    std::cout << "Server initialized. Listening on port: " << port << std::endl;
+    static EyaServer server(storage, port);
+    std::cout << "EyaServer initialized. Listening on port: " << port << std::endl;
     server.Run();
 }
 

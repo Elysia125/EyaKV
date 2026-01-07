@@ -180,7 +180,7 @@ struct Response
         return Response(code, rdata, error_msg);
     }
 
-    std::string to_string()
+    std::string to_string() const
     {
         std::stringstream ss;
         if (code_ != 1)
@@ -262,7 +262,7 @@ struct Request
         std::string command = Serializer::deserializeString(data, offset);
         return Request(static_cast<RequestType>(type), command);
     }
-    std::string to_string()
+    std::string to_string() const
     {
         std::stringstream ss;
         ss << "RequestType: " << type << ", Command: " << command;

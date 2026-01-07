@@ -76,6 +76,7 @@ target_link_libraries(eyakv_storage PRIVATE eyakv_logger eyakv_common Threads::T
 # Module 3: Network - 网络库
 add_library(eyakv_network SHARED
     network/server.cpp
+    network/threadpool.cpp
 )
 
 if(WIN32)

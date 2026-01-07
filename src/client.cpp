@@ -133,8 +133,8 @@ void print_usage(const char *prog_name)
             "Usage: %s [OPTIONS]\n"
             "Options:\n"
             "  -p, --password <PASSWORD>  User password (required)\n"
-            "  -h, --host <IP>            Server IP address (default: 127.0.0.1)\n"
-            "  -o, --port <NUM>           Server port number (default: 5120)\n"
+            "  -h, --host <IP>            EyaServer IP address (default: 127.0.0.1)\n"
+            "  -o, --port <NUM>           EyaServer port number (default: 5120)\n"
             "  -?, --help                 Show this help message\n",
             prog_name);
 }
