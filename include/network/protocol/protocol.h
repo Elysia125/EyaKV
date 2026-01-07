@@ -18,6 +18,7 @@ enum HeaderType
     REQUEST = 0,
     RESPONSE = 1
 };
+
 struct Header
 {
     uint32_t magic_number = htonl(0xEA1314);
@@ -287,5 +288,12 @@ inline std::string serialize_response(const Response &resp)
     Header header(HeaderType::RESPONSE, static_cast<uint32_t>(body.size()));
     return header.serialize() + body;
 }
+
+enum class ConnectionState
+{
+    WAITING, // 等待
+    READY    // 就绪
+};
+
 
 #endif

@@ -12,6 +12,8 @@
 #include <condition_variable>
 #include "common/export.h"
 #include "common/threadpool.h"
+#include "network/protocol/protocol.h"
+
 // 平台差异化宏定义与头文件包含
 #ifdef _WIN32
 #include <winsock2.h>
@@ -50,6 +52,23 @@ typedef int socket_t;
 
 class Storage;
 
+struct Connection
+{
+    socket_t socket;                                  // socket描述符
+    std::chrono::steady_clock::time_point start_time; // 等待开始时间/就绪开始时间
+    sockaddr_in client_addr;                          // 客户端地址信息
+    bool operator==(const Connection &other) const
+    {
+        return socket == other.socket;
+    }
+};
+struct ConnectionHash
+{
+    size_t operator()(const Connection &conn) const
+    {
+        return std::hash<socket_t>()(conn.socket);
+    }
+};
 class EYAKV_NETWORK_API EyaServer
 {
 public:
@@ -97,22 +116,32 @@ private:
     void handle_request(const Request &request, socket_t client_sock);
     void send_response(const Response &response, socket_t client_sock);
 
+    void send_connection_state(ConnectionState state, socket_t client_sock);
+
 private:
     const std::string ip_;
     const u_short port_;
     const std::string password_;
     const uint32_t max_connections_;
+    socket_t listen_socket_;
+    bool is_running_;
+    std::atomic<uint32_t> current_connections_; // 当前连接数统计
     const uint32_t connect_wait_queue_size_;
     const uint32_t connect_wait_timeout_; // 连接等待超时时间（秒）
     const uint32_t worker_thread_count_;
     const uint32_t worker_queue_size_;
     const uint32_t worker_wait_timeout_;
-    std::string auth_key_;
-    std::queue<socket_t> wait_queue_;
-    std::shared_mutex wait_queue_mutex_;
-    socket_t listen_socket_;
-    bool is_running_;
-    std::atomic<uint32_t> current_connections_; // 当前连接数统计
+    std::string auth_key_ = "";
+    std::deque<Connection> wait_queue_; // 双端队列方便超时检查
+    std::mutex wait_queue_mutex_;
+    std::condition_variable_any wait_queue_cv_;                               // 条件变量用于通知
+    std::thread queue_monitor_thread_;                                        // 专门用于检查超时的线程
+    std::atomic<bool> stop_monitor_;                                          // 监控线程停止标志
+    std::unordered_set<Connection, ConnectionHash> connections_without_auth_; // 未认证连接集合
+    std::mutex auth_mutex_;                                                   // 认证等待的互斥锁
+    std::condition_variable auth_cv_;                                         // 用于认证等待的条件变量
+    std::thread auth_monitor_thread_;                                         // 专门用于检查认证超时的线程
+    std::atomic<bool> stop_auth_monitor_;                                     // 认证监控线程停止标志
 
     // 线程池相关成员
     std::unique_ptr<ThreadPool> thread_pool_; // 线程池指针

@@ -191,7 +191,12 @@ Response receive_server_response(socket_t client_socket)
     // Receive header
     char head_buffer[HEADER_SIZE];
     int recv_len = recv(client_socket, head_buffer, HEADER_SIZE, 0);
-    if (recv_len == SOCKET_ERROR_VALUE)
+    if (recv_len == 0)
+    {
+        std::cout << "server closed connection" << std::endl;
+        exit(0);
+    }
+    else if (recv_len == SOCKET_ERROR_VALUE)
     {
         throw std::runtime_error("recv header failed: " + socket_error_to_string(GET_SOCKET_ERROR()));
     }
@@ -302,6 +307,16 @@ int client_main(const std::string &host, int port, const std::string &password)
     {
         std::cerr << "Connect failed: " << socket_error_to_string(GET_SOCKET_ERROR()) << std::endl;
         return 1;
+    }
+
+    Response resp = receive_server_response(socket_guard.get());
+    ConnectionState state = static_cast<ConnectionState>(stoi(std::get<std::string>(resp.data_)));
+    if (state == ConnectionState::WAITING)
+    {
+        std::cout << "Waiting ..." << std::endl;
+        // 阻塞等待下一次响应
+        receive_server_response(socket_guard.get());
+        // 不用在乎响应值，要么是进入就绪态，要么断开连接
     }
     std::string auth_key = "";
     // Authenticate
