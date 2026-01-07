@@ -7,13 +7,12 @@ if(MINGW)
     set(THREADS_PREFER_PTHREAD_FLAG ON)
 endif()
 
-# Global definition for Static Build
-add_definitions(-DEYAKV_STATIC)
-
-# Module 0: Logger
-add_library(eyakv_logger STATIC
+add_library(eyakv_logger SHARED
     logger/logger.cpp
 )
+if(WIN32)
+    target_compile_definitions(eyakv_logger PRIVATE EYAKV_LOGGER_EXPORTS)
+endif()
 
 # Platform-specific settings
 if(WIN32)
@@ -29,14 +28,14 @@ elseif(UNIX)
 endif()
 
 # Module 1: Common - 基础工具库
-add_library(eyakv_common STATIC
+add_library(eyakv_common SHARED
     common/path_utils.cpp
     common/zset.cpp
     common/bloom_filter.cpp
     common/threadpool.cpp
 )
-
 if(WIN32)
+    target_compile_definitions(eyakv_common PRIVATE EYAKV_COMMON_EXPORTS)
     target_link_libraries(eyakv_common PRIVATE eyakv_logger ${PLATFORM_LIBS} Threads::Threads)
 else()
     target_link_libraries(eyakv_common PRIVATE eyakv_logger ${PLATFORM_LIBS} Threads::Threads)
@@ -49,7 +48,7 @@ target_include_directories(eyakv_common PUBLIC
 
 
 # Module 2: Storage - 存储引擎库
-add_library(eyakv_storage STATIC
+add_library(eyakv_storage SHARED
     storage/memtable.cpp
     storage/wal.cpp
     storage/storage.cpp
@@ -58,6 +57,7 @@ add_library(eyakv_storage STATIC
 )
 
 if(WIN32)
+    target_compile_definitions(eyakv_storage PRIVATE EYAKV_STORAGE_EXPORTS)
     target_link_libraries(eyakv_storage PRIVATE ${PLATFORM_LIBS})
 else()
     target_link_libraries(eyakv_storage PRIVATE ${PLATFORM_LIBS})
@@ -74,11 +74,12 @@ target_link_libraries(eyakv_storage PRIVATE eyakv_logger eyakv_common Threads::T
 
 
 # Module 3: Network - 网络库
-add_library(eyakv_network STATIC
+add_library(eyakv_network SHARED
     network/server.cpp
 )
 
 if(WIN32)
+    target_compile_definitions(eyakv_network PRIVATE EYAKV_NETWORK_EXPORTS)
     target_link_libraries(eyakv_network PUBLIC ${PLATFORM_LIBS})
 else()
     target_link_libraries(eyakv_network PUBLIC ${PLATFORM_LIBS})
@@ -98,9 +99,14 @@ target_link_libraries(eyakv_network PRIVATE
 )
 
 # Module 4: Raft - 共识算法库
-add_library(eyakv_raft STATIC
+add_library(eyakv_raft SHARED
     raft/raft.cpp
 )
+
+if(WIN32)
+    target_compile_definitions(eyakv_raft PRIVATE EYAKV_RAFT_EXPORTS)
+    # target_link_libraries(eyakv_raft PUBLIC ws2_32 mswsock)
+endif()
 
 target_include_directories(eyakv_raft PUBLIC
     ${EYAKV_INCLUDE_DIR}
@@ -115,9 +121,14 @@ target_link_libraries(eyakv_raft PRIVATE
 
 
 # Module 5: Starter - 启动器库
-add_library(eyakv_starter STATIC
+add_library(eyakv_starter SHARED
     starter/starter.cpp
 )
+
+if(WIN32)
+    target_compile_definitions(eyakv_starter PRIVATE EYAKV_STARTER_EXPORTS)
+    # target_link_libraries(eyakv_starter PUBLIC ws2_32 mswsock)
+endif()
 
 target_include_directories(eyakv_starter PUBLIC
     ${EYAKV_INCLUDE_DIR}

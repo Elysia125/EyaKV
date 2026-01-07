@@ -1,5 +1,6 @@
 #include <csignal>
 #include <cstdlib>
+#include <atomic>
 #include "starter/starter.h"
 #include "storage/storage.h"
 #include "network/server.h"
@@ -8,6 +9,8 @@
 
 EyaKVConfig &config = EyaKVConfig::get_instance();
 Storage *EyaKVStarter::storage = nullptr;
+EyaServer *EyaKVStarter::server = nullptr;
+std::atomic<bool> EyaKVStarter::should_shutdown(false);
 void EyaKVStarter::print_banner()
 {
     // 定义颜色（粉色/洋红色）
@@ -168,19 +171,19 @@ void EyaKVStarter::initialize_server()
     std::optional<std::string> worker_wait_timeout_str = config.get_config(WORKER_WAIT_TIMEOUT_KEY);
     uint32_t worker_wait_timeout = worker_wait_timeout_str.has_value() ? static_cast<uint32_t>(std::stoul(worker_wait_timeout_str.value())) : DEFAULT_WORKER_WAIT_TIMEOUT;
 
-    static EyaServer server(storage,
-                            ip_str.value(),
-                            port,
-                            password,
-                            max_connections,
-                            wait_queue_size,
-                            max_waiting_time,
-                            worker_thread_count,
-                            worker_queue_size,
-                            worker_wait_timeout);
-    server.start();
+    server = new EyaServer(storage,
+                          ip_str.value(),
+                          port,
+                          password,
+                          max_connections,
+                          wait_queue_size,
+                          max_waiting_time,
+                          worker_thread_count,
+                          worker_queue_size,
+                          worker_wait_timeout);
+    server->start();
     std::cout << "EyaServer initialized. Listening on " << ip_str.value() << ":" << port << std::endl;
-    server.run();
+    server->run();
 }
 
 void EyaKVStarter::register_signal_handlers()
@@ -192,26 +195,59 @@ void EyaKVStarter::register_signal_handlers()
         if (ctrlType == CTRL_C_EVENT || ctrlType == CTRL_CLOSE_EVENT)
         {
             LOG_INFO("Received termination signal, shutting down...");
-            exit(EXIT_SUCCESS);
+            shutdown();
         }
-        return FALSE; }, TRUE);
+        return TRUE; }, TRUE);
 #else
     if (std::signal(SIGINT, [](int signum)
                     {
         LOG_INFO("Received SIGINT, shutting down...");
-        exit(EXIT_SUCCESS); }) == SIG_ERR)
+        shutdown(); }) == SIG_ERR)
     {
         LOG_ERROR("Failed to register SIGINT handler");
     }
     if (std::signal(SIGTERM, [](int signum)
                     {
-        LOG_INFO("Received SIGTERM, shutting down...");
-        exit(EXIT_SUCCESS); }))== SIG_ERR)
-        {
-            LOG_ERROR("Failed to register SIGTERM handler");
-        }
+                        LOG_INFO("Received SIGTERM, shutting down...");
+                        shutdown(); }) == SIG_ERR)
+    {
+        LOG_ERROR("Failed to register SIGTERM handler");
+    }
 #endif
 }
+void EyaKVStarter::shutdown()
+{
+    if (should_shutdown.load())
+    {
+        return; // 避免重复关闭
+    }
+
+    should_shutdown.store(true);
+    LOG_INFO("Initiating graceful shutdown...");
+
+    // 停止服务器
+    if (server != nullptr)
+    {
+        LOG_INFO("Stopping server...");
+        server->stop();
+        delete server;
+        server = nullptr;
+        LOG_INFO("Server stopped");
+    }
+
+    // 清理存储资源
+    if (storage != nullptr)
+    {
+        LOG_INFO("Cleaning up storage...");
+        delete storage;
+        storage = nullptr;
+        LOG_INFO("Storage cleaned up");
+    }
+
+    LOG_INFO("Graceful shutdown completed");
+    exit(EXIT_SUCCESS);
+}
+
 void EyaKVStarter::start()
 {
     try
@@ -221,6 +257,6 @@ void EyaKVStarter::start()
     catch (const std::exception &e)
     {
         LOG_ERROR("Fatal error: %s", e.what());
-        exit(EXIT_FAILURE);
+        shutdown();
     }
 }

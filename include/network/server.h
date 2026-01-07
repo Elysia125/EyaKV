@@ -196,6 +196,16 @@ public:
      */
     void run();
 
+    /**
+     * @brief 停止服务器
+     *
+     * 设置停止标志，优雅关闭服务器：
+     * 1. 设置 is_running_ = false，使 run() 循环退出
+     * 2. 通知等待队列和认证监控线程停止
+     * 3. 线程池和连接资源会在析构函数中清理
+     */
+    void stop();
+
 private:
     /**
      * @brief 设置 socket 为非阻塞模式

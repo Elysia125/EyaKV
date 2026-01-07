@@ -5,7 +5,7 @@
 #include "storage/storage.h"
 #include "common/utils.h"
 #include "common/operation_type.h"
-#define HEADER_SIZE sizeof(Header)
+#define HEADER_SIZE Header::PROTOCOL_HEADER_SIZE
 #define HEADER_SIZE_LIMIT 1024 * 1024
 #ifdef __linux__
 #define INITIAL_BUFFER_SIZE 8096
@@ -261,19 +261,27 @@ bool EyaServer::start()
                 {
                     break;
                 }
+                
+                std::vector<socket_t> sockets_to_close;
                 auto now = std::chrono::steady_clock::now();
                 for (auto it = connections_without_auth_.begin(); it != connections_without_auth_.end();)
                 {
                     if (now - it->start_time > std::chrono::seconds(2))
                     {
                         LOG_WARN("Connection without auth timeout, closing socket");
-                        close_socket(it->socket);
+                        sockets_to_close.push_back(it->socket);
                         it = connections_without_auth_.erase(it);
                     }
                     else
                     {
                         ++it;
                     }
+                }
+                lock.unlock(); // Explicitly unlock before calling close_socket
+
+                for (auto sock : sockets_to_close)
+                {
+                    close_socket(sock);
                 }
             } });
     }
@@ -364,6 +372,22 @@ void EyaServer::run()
         }
 #endif
     }
+}
+
+void EyaServer::stop()
+{
+    LOG_INFO("Stopping EyaServer...");
+    is_running_ = false;
+
+    // 通知等待队列监控线程停止
+    stop_monitor_ = true;
+    wait_queue_cv_.notify_all();
+
+    // 通知认证监控线程停止
+    stop_auth_monitor_ = true;
+    auth_cv_.notify_all();
+
+    LOG_INFO("EyaServer stop signal sent");
 }
 
 void EyaServer::handle_accept()
@@ -617,7 +641,7 @@ void EyaServer::handle_client(socket_t client_sock)
                 // 将请求处理任务提交到线程池
                 // 捕获client_sock副本以供线程池使用
                 bool submitted = thread_pool_->submit(
-                    [this, &request, client_sock]()
+                    [this, request, client_sock]()
                     {
                         this->handle_request(request, client_sock);
                     });
@@ -785,7 +809,7 @@ cleanup:
         // 将请求处理任务提交到线程池
         // 捕获client_sock副本以供线程池使用
         bool submitted = thread_pool_->submit(
-            [this, &request, client_sock]()
+            [this, request, client_sock]()
             {
                 this->handle_request(request, client_sock);
             });
@@ -828,6 +852,7 @@ void EyaServer::close_socket(socket_t sock)
 
     // 从未认证集合中移除
     {
+        std::lock_guard<std::mutex> lock(auth_mutex_);
         connections_without_auth_.erase({sock});
     }
 
@@ -948,7 +973,7 @@ void EyaServer::handle_request(const Request &request, socket_t client_sock)
 void EyaServer::send_response(const Response &response, socket_t client_sock)
 {
     std::string response_data = serialize_response(response);
-
+    std::cout << "the response data: " << response_data << std::endl;
     // 发送响应
     int sent_bytes = send(client_sock, response_data.data(),
                           static_cast<int>(response_data.size()), 0);

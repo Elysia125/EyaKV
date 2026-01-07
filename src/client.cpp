@@ -20,9 +20,9 @@
 
 #include "network/protocol/protocol.h"
 
-#define DEFAULT_PORT 5120
+#define DEFAULT_PORT 5210
 #define DEFAULT_HOST "127.0.0.1"
-const size_t HEADER_SIZE = sizeof(Header);
+const size_t HEADER_SIZE = Header::PROTOCOL_HEADER_SIZE;
 
 // 统一平台的一些变量
 #ifdef _WIN32
@@ -175,13 +175,6 @@ void parse_arguments(int argc, char *argv[], std::string &host, int &port, std::
             print_usage(argv[0]);
             exit(1);
         }
-    }
-
-    if (password.empty())
-    {
-        std::cerr << "Error: Password is required. Use -p or --password option." << std::endl;
-        print_usage(argv[0]);
-        exit(1);
     }
 }
 
@@ -386,6 +379,13 @@ int main(int argc, char *argv[])
     }
 #endif
 
-    // Run client
-    return client_main(host, port, password);
+    try
+    { // Run client
+        return client_main(host, port, password);
+    }
+    catch (const std::exception &e)
+    {
+        std::cerr << "Client error: " << e.what() << std::endl;
+        return 1;
+    }
 }

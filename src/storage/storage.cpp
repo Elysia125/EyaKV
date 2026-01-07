@@ -129,15 +129,22 @@ void Storage::recover()
 {
     if (wal_)
     {
+        LOG_INFO("Storage::Recover: Starting WAL recovery...");
         // 初始化memtable_
         memtable_ = create_new_memtable();
         memtable_->cancel_size_limit();
         current_wal_filename_ = "";
+        LOG_INFO("Storage::Recover: Locking immutable_mutex_...");
         std::unique_lock<std::shared_mutex> lock(immutable_mutex_);
+        LOG_INFO("Storage::Recover: Calling wal_->recover()...");
         bool success = wal_->recover([this](std::string filename, uint8_t type, std::string key, std::string payload)
                                      {
+            LOG_DEBUG("Storage::Recover callback: Processing record - filename: %s, type: %d, key: %s",
+                      filename.c_str(), type, key.c_str());
             if(filename != current_wal_filename_){
                 if(current_wal_filename_!=""){
+                    LOG_DEBUG("Storage::Recover callback: Moving memtable to immutable, current: %s, new: %s",
+                              current_wal_filename_.c_str(), filename.c_str());
                     immutable_memtables_[current_wal_filename_] = std::move(memtable_);
                     memtable_ = create_new_memtable();
                     memtable_->cancel_size_limit();
@@ -147,34 +154,41 @@ void Storage::recover()
             try{
                 if(type == OperationType::kRemove){
                     std::vector<std::string> keys{key};
+                    LOG_DEBUG("Storage::Recover callback: Processing REMOVE for key: %s", key.c_str());
                     remove(keys);
                 }else if(type == OperationType::kExpire){
                     uint64_t expire_time = std::stoull(payload);
+                    LOG_DEBUG("Storage::Recover callback: Processing EXPIRE for key: %s, expire_time: %llu",
+                              key.c_str(), expire_time);
                     set_key_expire(key, expire_time);
                 }
                 else if (processors_.find(type) != processors_.end())
                 {
+                    LOG_DEBUG("Storage::Recover callback: Processing custom type: %d for key: %s", type, key.c_str());
                     if(!processors_[type]->recover(this, type, key, payload)){
                         LOG_ERROR("Storage: WAL recovery failed for type: %d, key: %s, payload: %s", type, key.c_str(), payload.c_str());
                     }
                 }
                 else
                 {
-                    LOG_ERROR("Unknown log type: %d", type);
+                    LOG_ERROR("Storage::Recover callback: Unknown log type: %d", type);
                 }
             }catch(std::exception& e){
-                LOG_WARN("Occur exception when recover wal for type %d key %s payload %s, exception: %s", type, key.c_str(), payload.c_str(), e.what());
+                LOG_WARN("Storage::Recover callback: Exception occurred for type %d key %s payload %s, exception: %s",
+                         type, key.c_str(), payload.c_str(), e.what());
             } });
+        LOG_INFO("Storage::Recover: WAL recover() returned, success: %d", success);
         if (!success)
         {
             LOG_ERROR("Storage: WAL recovery failed.");
         }
         else
         {
-            LOG_INFO("Storage: WAL recovery completed.");
+            LOG_INFO("Storage: WAL recovery completed successfully.");
             memtable_->set_size_limit(memtable_size_);
             if (memtable_->should_flush() || !enable_wal_)
             {
+                LOG_INFO("Storage::Recover: Flushing memtable to immutable...");
                 immutable_memtables_[current_wal_filename_] = std::move(memtable_);
                 memtable_ = create_new_memtable();
                 if (enable_wal_)
@@ -188,17 +202,21 @@ void Storage::recover()
             }
             else
             {
+                LOG_INFO("Storage::Recover: Opening WAL file: %s", current_wal_filename_.c_str());
                 wal_->open_wal_file(current_wal_filename_);
             }
             if (immutable_memtables_.empty())
             {
+                LOG_INFO("Storage::Recover: No immutable memtables to flush, returning.");
                 return;
             }
             // 通知后台线程进行 Flush
+            LOG_INFO("Storage::Recover: Notifying background flush thread...");
             {
                 std::lock_guard<std::mutex> lock(flush_mutex_);
                 flush_cv_.notify_one();
             }
+            LOG_INFO("Storage::Recover: Recovery process completed.");
         }
     }
 }

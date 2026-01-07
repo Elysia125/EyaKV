@@ -1,7 +1,14 @@
 #ifndef EYAKV_EXPORT_H_
 #define EYAKV_EXPORT_H_
 
-#ifdef _WIN32
+#if defined(EYAKV_STATIC)
+#define EYAKV_LOGGER_API
+#define EYAKV_COMMON_API
+#define EYAKV_STORAGE_API
+#define EYAKV_NETWORK_API
+#define EYAKV_RAFT_API
+#define EYAKV_STARTER_API
+#elif defined(_WIN32)
 #ifdef EYAKV_LOGGER_EXPORTS
 #define EYAKV_LOGGER_API __declspec(dllexport)
 #else

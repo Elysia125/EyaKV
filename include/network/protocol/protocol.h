@@ -25,15 +25,17 @@ struct Header
     uint8_t version = 1;
     HeaderType type;
     uint32_t length;
-    Header(HeaderType type, uint32_t length, uint8_t version = 1) : type(type), length(htonl(length)), version(version) {}
+    static constexpr size_t PROTOCOL_HEADER_SIZE = 10;
+    Header(HeaderType type, uint32_t length, uint8_t version = 1) : type(type), length(length), version(version) {}
     std::string serialize() const
     {
         uint8_t header_type = static_cast<uint8_t>(type);
         std::string result;
+        uint32_t len = htonl(this->length);
         result.append(reinterpret_cast<const char *>(&magic_number), sizeof(magic_number));
         result.append(reinterpret_cast<const char *>(&version), sizeof(version));
         result.append(reinterpret_cast<const char *>(&header_type), sizeof(header_type));
-        result.append(reinterpret_cast<const char *>(&length), sizeof(length));
+        result.append(reinterpret_cast<const char *>(&len), sizeof(len));
         return result;
     }
 
@@ -184,7 +186,7 @@ struct Response
     std::string to_string() const
     {
         std::stringstream ss;
-        if (code_ != 1)
+        if (code_ == 1)
         {
             if (!std::holds_alternative<std::monostate>(data_))
             {
@@ -294,6 +296,5 @@ enum class ConnectionState
     WAITING, // 等待
     READY    // 就绪
 };
-
 
 #endif
