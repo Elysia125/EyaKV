@@ -241,7 +241,7 @@ bool send_data(socket_t client_socket, const std::string &data)
 }
 
 // Authenticate with server
-bool authenticate(SocketGuard &socket_guard, const std::string &password)
+bool authenticate(SocketGuard &socket_guard, const std::string &password, std::string &auth_key)
 {
     std::string data = serialize_request(RequestType::AUTH, password);
     if (!send_data(socket_guard.get(), data))
@@ -257,6 +257,10 @@ bool authenticate(SocketGuard &socket_guard, const std::string &password)
         {
             std::cerr << "Authentication failed: " << response.error_msg_ << std::endl;
             return false;
+        }
+        if (std::holds_alternative<std::string>(response.data_))
+        {
+            auth_key = std::get<std::string>(response.data_);
         }
         return true;
     }
@@ -299,15 +303,15 @@ int client_main(const std::string &host, int port, const std::string &password)
         std::cerr << "Connect failed: " << socket_error_to_string(GET_SOCKET_ERROR()) << std::endl;
         return 1;
     }
-
+    std::string auth_key = "";
     // Authenticate
-    if (!authenticate(socket_guard, password))
+    if (!authenticate(socket_guard, password, auth_key))
     {
         return 1;
     }
 
     std::cout << "Connected to " << host << ":" << port << std::endl;
-    std::cout << "Type 'exit' to quit" << std::endl;
+    std::cout << "Type 'exit' or 'quit' to quit" << std::endl;
 
     // Command loop
     while (true)
@@ -326,7 +330,7 @@ int client_main(const std::string &host, int port, const std::string &password)
             break;
         }
 
-        std::string req_data = serialize_request(RequestType::COMMAND, command);
+        std::string req_data = serialize_request(RequestType::COMMAND, command, auth_key);
         if (!send_data(socket_guard.get(), req_data))
         {
             std::cerr << "Send command failed: " << socket_error_to_string(GET_SOCKET_ERROR()) << std::endl;

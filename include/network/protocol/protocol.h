@@ -237,14 +237,15 @@ struct Request
 {
     RequestType type;
     std::string command;
-    Request(RequestType t, const std::string &cmd) : type(t), command(cmd) {}
+    std::string auth_key;
+    Request(RequestType t, const std::string &cmd, const std::string key = "") : type(t), command(cmd), auth_key(key) {}
     static Request auth(const std::string &password)
     {
         return Request(RequestType::AUTH, password);
     }
-    static Request createCommand(const std::string &cmd)
+    static Request createCommand(const std::string &cmd, const std::string &key)
     {
-        return Request(RequestType::COMMAND, cmd);
+        return Request(RequestType::COMMAND, cmd, key);
     }
     std::string serialize() const
     {
@@ -252,6 +253,7 @@ struct Request
         uint8_t request_type = static_cast<uint8_t>(this->type);
         s.append(reinterpret_cast<const char *>(&request_type), sizeof(request_type));
         s.append(Serializer::serialize(command));
+        s.append(Serializer::serialize(auth_key));
         return s;
     }
     static Request deserializeRequest(const char *data, size_t &offset)
@@ -260,19 +262,20 @@ struct Request
         std::memcpy(&type, data + offset, sizeof(type));
         offset += sizeof(type);
         std::string command = Serializer::deserializeString(data, offset);
-        return Request(static_cast<RequestType>(type), command);
+        std::string auth_key = Serializer::deserializeString(data, offset);
+        return Request(static_cast<RequestType>(type), command, auth_key);
     }
     std::string to_string() const
     {
         std::stringstream ss;
-        ss << "RequestType: " << type << ", Command: " << command;
+        ss << "RequestType: " << type << ", Command: " << command << ", AuthKey: " << auth_key;
         return ss.str();
     }
 };
 
-inline std::string serialize_request(RequestType t, const std::string &cmd)
+inline std::string serialize_request(RequestType t, const std::string &cmd, const std::string &key = "")
 {
-    Request req(t, cmd);
+    Request req(t, cmd, key);
     std::string body = req.serialize();
     Header header(HeaderType::REQUEST, static_cast<uint32_t>(body.size()));
     return header.serialize() + body;

@@ -2,7 +2,7 @@
 #define OPERATION_TYPE_H_
 
 #include <cstdint>
-
+#include <unordered_map>
 // OperationType constants
 namespace OperationType
 {
@@ -46,6 +46,52 @@ namespace OperationType
     constexpr uint8_t kHKeys = kHDel + 1;
     constexpr uint8_t kHValues = kHKeys + 1;
     constexpr uint8_t kHEntries = kHValues + 1;
+}
+static std::unordered_map<std::string, uint8_t> operationTypeMap = {
+    {"exists", OperationType::kExists},
+    {"remove", OperationType::kRemove},
+    {"range", OperationType::kRange},
+    {"expire", OperationType::kExpire},
+    {"get", OperationType::kGet},
+    {"set", OperationType::kSet},
+    {"sadd", OperationType::kSAdd},
+    {"srem", OperationType::kSRem},
+    {"smembers", OperationType::kSMembers},
+    {"zadd", OperationType::kZAdd},
+    {"zrem", OperationType::kZRem},
+    {"zscore", OperationType::kZScore},
+    {"zrank", OperationType::kZRank},
+    {"zcard", OperationType::kZCard},
+    {"zincr_by", OperationType::kZIncrBy},
+    {"zrange_by_rank", OperationType::kZRangeByRank},
+    {"zrange_by_score", OperationType::kZRangeByScore},
+    {"zrem_by_rank", OperationType::kZRemByRank},
+    {"zrem_by_score", OperationType::kZRemByScore},
+    {"lpush", OperationType::kLPush},
+    {"lpop", OperationType::kLPop},
+    {"rpush", OperationType::kRPush},
+    {"rpop", OperationType::kRPop},
+    {"lrange", OperationType::kLRange},
+    {"lget", OperationType::kLGet},
+    {"lsize", OperationType::kLSize},
+    {"lpopp_n", OperationType::kLPopN},
+    {"rpopp_n", OperationType::kRPopN},
+    {"hset", OperationType::kHSet},
+    {"hget", OperationType::kHGet},
+    {"hdel", OperationType::kHDel},
+    {"hkeys", OperationType::kHKeys},
+    {"hvalues", OperationType::kHValues},
+    {"hentries", OperationType::kHEntries}};
+inline uint8_t stringToOperationType(const std::string &cmd)
+{
+    std::string lower_cmd = cmd;
+    std::transform(lower_cmd.begin(), lower_cmd.end(), lower_cmd.begin(), ::tolower);
+    auto it = operationTypeMap.find(lower_cmd);
+    if (it != operationTypeMap.end())
+    {
+        return it->second;
+    }
+    throw std::runtime_error("unknown operation type: " + cmd);
 }
 
 #endif

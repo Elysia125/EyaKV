@@ -4,6 +4,8 @@
 #include <iostream>
 #include <cstring>
 #include "storage/storage.h"
+#include "common/utils.h"
+#include "common/operation_type.h"
 #define HEADER_SIZE sizeof(Header)
 #define HEADER_SIZE_LIMIT 1024 * 1024
 #ifdef __linux__
@@ -41,6 +43,7 @@ EyaServer::EyaServer(Storage *storage, const std::string &ip,
 #elif defined(__APPLE__)
     event_list_ = new kevent[max_connections_];
 #endif
+    auth_key_ = generate_general_key(32);
 }
 
 EyaServer::~EyaServer()
@@ -480,10 +483,7 @@ cleanup:
         LOG_WARN("Unprocessed data left on fd %d: %zu bytes", client_sock, total_received);
     }
 
-    epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, client_sock, NULL);
-    CLOSE_SOCKET(client_sock);
-    if (current_connections_ > 0)
-        current_connections_--;
+    close_socket(client_sock);
 
 #else
     // 非Linux平台(macOS、Windows)
@@ -523,14 +523,7 @@ cleanup:
 #endif
         }
 
-#ifdef __APPLE__
-        // kqueue 会在 close 时自动移除
-#else // Windows
-        FD_CLR(client_sock, &master_set_);
-#endif
-        CLOSE_SOCKET(client_sock);
-        if (current_connections_ > 0)
-            current_connections_--;
+        close_socket(client_sock);
         return;
     }
 
@@ -552,14 +545,7 @@ cleanup:
         {
             LOG_ERROR("Invalid body length on fd %d: %zu (max: %d)",
                       client_sock, header.length, HEADER_SIZE_LIMIT);
-            CLOSE_SOCKET(client_sock);
-#ifdef __APPLE__
-            // kqueue 会自动移除
-#else
-            FD_CLR(client_sock, &master_set_);
-#endif
-            if (current_connections_ > 0)
-                current_connections_--;
+            close_socket(client_sock);
             return;
         }
 
@@ -600,14 +586,7 @@ cleanup:
             }
 
             delete[] body_buffer;
-            CLOSE_SOCKET(client_sock);
-#ifdef __APPLE__
-            // kqueue 会自动移除
-#else
-            FD_CLR(client_sock, &master_set_);
-#endif
-            if (current_connections_ > 0)
-                current_connections_--;
+            close_socket(client_sock);
             return;
         }
 
@@ -647,31 +626,23 @@ cleanup:
     catch (const std::exception &e)
     {
         LOG_ERROR("Error processing request on fd %d: %s", client_sock, e.what());
-        CLOSE_SOCKET(client_sock);
-#ifdef __APPLE__
-        // kqueue 会自动移除
-#else
-        FD_CLR(client_sock, &master_set_);
-#endif
-        if (current_connections_ > 0)
-            current_connections_--;
+        close_socket(client_sock);
     }
 #endif
 }
 
-/**
- * @brief 处理客户端请求（在线程池中执行）
- *
- * 该方法在工作线程中被调用，处理从客户端接收到的请求。
- * 主要功能：
- * 1. 根据请求类型进行认证或命令处理
- * 2. 调用存储引擎执行相应操作
- * 3. 构造响应并通过socket发送回客户端
- * 4. 处理各种异常情况并关闭连接
- *
- * @param request 客户端请求对象
- * @param client_sock 客户端socket描述符
- */
+void EyaServer::close_socket(socket_t sock)
+{
+    CLOSE_SOCKET(sock);
+#ifdef __APPLE__
+#elif _WIN32
+    FD_CLR(sock, &master_set_);
+#elif __linux__
+    epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, sock, NULL);
+#endif
+    if (current_connections_ > 0)
+        current_connections_--;
+}
 void EyaServer::handle_request(const Request &request, socket_t client_sock)
 {
     LOG_DEBUG("Processing request from fd %d: %s",
@@ -683,28 +654,42 @@ void EyaServer::handle_request(const Request &request, socket_t client_sock)
         {
             // 处理认证请求
             LOG_DEBUG("Processing AUTH request on fd %d", client_sock);
-            // TODO: 实现密码认证逻辑
-            response = Response::success("Authenticated");
+            if (request.command == password_)
+            {
+                response = Response::success(auth_key_);
+            }
+            else
+            {
+                response = Response::error("Authentication failed");
+            }
         }
         else if (request.type == RequestType::COMMAND)
         {
             // 处理命令请求
             LOG_DEBUG("Processing COMMAND request on fd %d: %s",
                       client_sock, request.command.c_str());
-
-            // TODO: 调用存储引擎执行命令
-            // 示例代码（需要根据实际存储引擎接口调整）:
-            // if (storage_)
-            // {
-            //     response = storage_->execute(request.command);
-            // }
-            // else
-            // {
-            //     response = Response::error("Storage engine not initialized");
-            // }
-
-            // 临时返回成功响应
-            response = Response::success(std::string("Command executed: ") + request.command);
+            if (request.auth_key != auth_key_)
+            {
+                response = Response::error("Authentication required");
+                send_response(response, client_sock);
+                close_socket(client_sock);
+                return;
+            }
+            else
+            {
+                // 解析命令并执行
+                std::vector<std::string> command_parts = split(request.command, ' ');
+                if (command_parts.empty())
+                {
+                    response = Response::error("Invalid command");
+                }
+                else
+                {
+                    uint8_t operation = stringToOperationType(command_parts[0]);
+                    command_parts.erase(command_parts.begin());
+                    response = storage_->execute(operation, command_parts);
+                }
+            }
         }
         else
         {
@@ -715,17 +700,13 @@ void EyaServer::handle_request(const Request &request, socket_t client_sock)
     {
         LOG_ERROR("Exception while processing request on fd %d: %s",
                   client_sock, e.what());
-        response = Response::error(std::string("Server error: ") + e.what());
+        response = Response::error(e.what());
     }
     catch (...)
     {
         LOG_ERROR("Unknown exception while processing request on fd %d", client_sock);
         response = Response::error("Unknown server error");
     }
-
-    // 序列化响应
-    std::string response_data = serialize_response(response);
-
     // 发送响应
     send_response(response, client_sock);
 }

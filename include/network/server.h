@@ -7,6 +7,9 @@
 #include <mutex>
 #include <queue>
 #include <memory>
+#include <atomic>
+#include <unordered_set>
+#include <condition_variable>
 #include "common/export.h"
 #include "common/threadpool.h"
 // 平台差异化宏定义与头文件包含
@@ -44,6 +47,7 @@ typedef int socket_t;
 #define DEFAULT_WORKER_THREAD_COUNT std::thread::hardware_concurrency() + 1
 #define DEFAULT_WORKER_QUEUE_SIZE 1000
 #define DEFAULT_WORKER_WAIT_TIMEOUT 30
+
 class Storage;
 
 class EYAKV_NETWORK_API EyaServer
@@ -75,8 +79,21 @@ private:
     // 处理新连接
     void handle_accept();
     // 处理客户端消息
-    void handle_client(socket_t clientSock);
-    // 处理客户端请求（在线程池中执行）
+    void handle_client(socket_t client_sock);
+    void close_socket(socket_t sock);
+    /**
+     * @brief 处理客户端请求（在线程池中执行）
+     *
+     * 该方法在工作线程中被调用，处理从客户端接收到的请求。
+     * 主要功能：
+     * 1. 根据请求类型进行认证或命令处理
+     * 2. 调用存储引擎执行相应操作
+     * 3. 构造响应并通过socket发送回客户端
+     * 4. 处理各种异常情况并关闭连接
+     *
+     * @param request 客户端请求对象
+     * @param client_sock 客户端socket描述符
+     */
     void handle_request(const Request &request, socket_t client_sock);
     void send_response(const Response &response, socket_t client_sock);
 
@@ -90,11 +107,12 @@ private:
     const uint32_t worker_thread_count_;
     const uint32_t worker_queue_size_;
     const uint32_t worker_wait_timeout_;
+    std::string auth_key_;
     std::queue<socket_t> wait_queue_;
     std::shared_mutex wait_queue_mutex_;
     socket_t listen_socket_;
     bool is_running_;
-    uint32_t current_connections_; // 当前连接数统计
+    std::atomic<uint32_t> current_connections_; // 当前连接数统计
 
     // 线程池相关成员
     std::unique_ptr<ThreadPool> thread_pool_; // 线程池指针

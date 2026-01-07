@@ -5,6 +5,7 @@
 #include <fstream>
 #include <algorithm>
 #include <optional>
+#include <thread>
 #include "common/path_utils.h"
 
 #undef ERROR // 避免与 LogLevel 枚举冲突
@@ -50,6 +51,9 @@ enum class SSTableMergeStrategy
 #define DEFAULT_MEMORY_POOL_SIZE 1024 * 3                                           // 内存池大小
 #define DEFAULT_WAITING_QUEUE_SIZE 100                                              //  等待队列大小
 #define DEFAULT_MAX_WAITING_TIME 30                                                 // 最大等待时间 s
+#define DEFAULT_WORKER_THREAD_COUNT std::thread::hardware_concurrency() + 1
+#define DEFAULT_WORKER_QUEUE_SIZE 1000
+#define DEFAULT_WORKER_WAIT_TIMEOUT 30
 
 #define PORT_KEY "port"
 #define READ_ONLY_KEY "read_only"
@@ -76,6 +80,10 @@ enum class SSTableMergeStrategy
 #define LOG_DIR_KEY "log_dir"
 #define DATA_DIR_KEY "data_dir"
 #define PASSWORD_KEY "password"
+#define WORKER_THREAD_COUNT_KEY "worker_thread_count"
+#define WORKER_QUEUE_SIZE_KEY "worker_queue_size"
+#define WORKER_WAIT_TIMEOUT_KEY "worker_wait_timeout"
+
 class EyaKVConfig
 {
 private:
@@ -151,6 +159,9 @@ private:
         config_map_[MAX_WAITING_TIME_KEY] = std::to_string(DEFAULT_MAX_WAITING_TIME);
         config_map_[DATA_DIR_KEY] = PathUtils::GetTargetFilePath("data");
         config_map_[PASSWORD_KEY] = "";
+        config_map_[WORKER_THREAD_COUNT_KEY] = std::to_string(DEFAULT_WORKER_THREAD_COUNT);
+        config_map_[WORKER_QUEUE_SIZE_KEY] = std::to_string(DEFAULT_WORKER_QUEUE_SIZE);
+        config_map_[WORKER_WAIT_TIMEOUT_KEY] = std::to_string(DEFAULT_WORKER_WAIT_TIMEOUT);
     }
 
     void check_config()
@@ -333,6 +344,31 @@ private:
             if (max_waiting_time <= 0)
             {
                 throw std::runtime_error("Invalid max_waiting_time: " + config_map_[MAX_WAITING_TIME_KEY]);
+            }
+        }
+        // 工作线程配置校验
+        if (config_map_.find(WORKER_THREAD_NUM_KEY) != config_map_.end())
+        {
+            int worker_thread_num = std::stoi(config_map_[WORKER_THREAD_NUM_KEY]);
+            if (worker_thread_num <= 0)
+            {
+                throw std::runtime_error("Invalid worker_thread_num: " + config_map_[WORKER_THREAD_NUM_KEY]);
+            }
+        }
+        if (config_map_.find(WORKER_QUEUE_SIZE_KEY) != config_map_.end())
+        {
+            int worker_queue_size = std::stoi(config_map_[WORKER_QUEUE_SIZE_KEY]);
+            if (worker_queue_size <= 0)
+            {
+                throw std::runtime_error("Invalid worker_queue_size: " + config_map_[WORKER_QUEUE_SIZE_KEY]);
+            }
+        }
+        if (config_map_.find(WORKER_WAIT_TIMEOUT_KEY) != config_map_.end())
+        {
+            int worker_wait_timeout = std::stoi(config_map_[WORKER_WAIT_TIMEOUT_KEY]);
+            if (worker_wait_timeout <= 0)
+            {
+                throw std::runtime_error("Invalid worker_wait_timeout: " + config_map_[WORKER_WAIT_TIMEOUT_KEY]);
             }
         }
     }

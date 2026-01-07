@@ -32,8 +32,8 @@ add_library(eyakv_common SHARED
     common/path_utils.cpp
     common/zset.cpp
     common/bloom_filter.cpp
+    common/threadpool.cpp
 )
-
 if(WIN32)
     target_compile_definitions(eyakv_common PRIVATE EYAKV_COMMON_EXPORTS)
     target_link_libraries(eyakv_common PRIVATE ${PLATFORM_LIBS} Threads::Threads)
@@ -76,7 +76,6 @@ target_link_libraries(eyakv_storage PRIVATE eyakv_logger eyakv_common Threads::T
 # Module 3: Network - 网络库
 add_library(eyakv_network SHARED
     network/server.cpp
-    network/threadpool.cpp
 )
 
 if(WIN32)
