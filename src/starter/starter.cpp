@@ -135,15 +135,52 @@ Storage *EyaKVStarter::initialize_storage()
 void EyaKVStarter::initialize_server()
 {
     std::cout << "Initializing network server..." << std::endl;
+    std::optional<std::string> ip_str = config.get_config(IP_KEY);
+    if (!ip_str.has_value() || ip_str->empty())
+    {
+        throw std::runtime_error("IP not configured.");
+    }
     std::optional<std::string> port_str = config.get_config(PORT_KEY);
     if (!port_str.has_value())
     {
         throw std::runtime_error("Port not configured.");
     }
     unsigned short port = static_cast<unsigned short>(std::stoi(port_str.value()));
-    static EyaServer server(storage, port);
-    std::cout << "EyaServer initialized. Listening on port: " << port << std::endl;
-    server.Run();
+
+    std::optional<std::string> password_str = config.get_config(PASSWORD_KEY);
+    std::string password = password_str.has_value() ? password_str.value() : "";
+
+    std::optional<std::string> max_connections_str = config.get_config(MAX_CONNECTIONS_KEY);
+    uint32_t max_connections = max_connections_str.has_value() ? static_cast<uint32_t>(std::stoul(max_connections_str.value())) : DEFAULT_MAX_CONNECTIONS;
+
+    std::optional<std::string> wait_queue_size_str = config.get_config(WAITING_QUEUE_SIZE_KEY);
+    uint32_t wait_queue_size = wait_queue_size_str.has_value() ? static_cast<uint32_t>(std::stoul(wait_queue_size_str.value())) : DEFAULT_WAITING_QUEUE_SIZE;
+
+    std::optional<std::string> max_waiting_time_str = config.get_config(MAX_WAITING_TIME_KEY);
+    uint32_t max_waiting_time = max_waiting_time_str.has_value() ? static_cast<uint32_t>(std::stoul(max_waiting_time_str.value())) : DEFAULT_MAX_WAITING_TIME;
+
+    std::optional<std::string> worker_thread_count_str = config.get_config(WORKER_THREAD_COUNT_KEY);
+    uint32_t worker_thread_count = worker_thread_count_str.has_value() ? static_cast<uint32_t>(std::stoul(worker_thread_count_str.value())) : DEFAULT_WORKER_THREAD_COUNT;
+
+    std::optional<std::string> worker_queue_size_str = config.get_config(WORKER_QUEUE_SIZE_KEY);
+    uint32_t worker_queue_size = worker_queue_size_str.has_value() ? static_cast<uint32_t>(std::stoul(worker_queue_size_str.value())) : DEFAULT_WORKER_QUEUE_SIZE;
+
+    std::optional<std::string> worker_wait_timeout_str = config.get_config(WORKER_WAIT_TIMEOUT_KEY);
+    uint32_t worker_wait_timeout = worker_wait_timeout_str.has_value() ? static_cast<uint32_t>(std::stoul(worker_wait_timeout_str.value())) : DEFAULT_WORKER_WAIT_TIMEOUT;
+
+    static EyaServer server(storage,
+                            ip_str.value(),
+                            port,
+                            password,
+                            max_connections,
+                            wait_queue_size,
+                            max_waiting_time,
+                            worker_thread_count,
+                            worker_queue_size,
+                            worker_wait_timeout);
+    server.start();
+    std::cout << "EyaServer initialized. Listening on " << ip_str.value() << ":" << port << std::endl;
+    server.run();
 }
 
 void EyaKVStarter::register_signal_handlers()

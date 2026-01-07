@@ -56,7 +56,7 @@ inline std::string generate_general_key(size_t key_length)
  * @param delimiter 分隔符（单个字符）
  * @return 分割后的字符串集合
  */
-std::vector<std::string> split(const std::string &str, char delimiter)
+inline std::vector<std::string> split(const std::string &str, char delimiter)
 {
     std::vector<std::string> result;
     std::string current_substr; // 存储当前截取的子串

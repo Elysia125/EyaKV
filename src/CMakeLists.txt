@@ -36,9 +36,9 @@ add_library(eyakv_common SHARED
 )
 if(WIN32)
     target_compile_definitions(eyakv_common PRIVATE EYAKV_COMMON_EXPORTS)
-    target_link_libraries(eyakv_common PRIVATE ${PLATFORM_LIBS} Threads::Threads)
+    target_link_libraries(eyakv_common PRIVATE eyakv_logger ${PLATFORM_LIBS} Threads::Threads)
 else()
-    target_link_libraries(eyakv_common PRIVATE ${PLATFORM_LIBS} Threads::Threads)
+    target_link_libraries(eyakv_common PRIVATE eyakv_logger ${PLATFORM_LIBS} Threads::Threads)
 endif()
 
 target_include_directories(eyakv_common PUBLIC

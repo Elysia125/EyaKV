@@ -104,7 +104,7 @@ private:
 private:
     std::vector<std::thread> workers_;        // 工作线程容器
     std::queue<Task> task_queue_;             // 任务队列（等待队列）
-    mutable std::mutex queue_mutex_;                  // 队列互斥锁
+    mutable std::mutex queue_mutex_;          // 队列互斥锁
     std::condition_variable queue_not_empty_; // 队列非空条件变量（用于唤醒工作线程）
     std::condition_variable queue_not_full_;  // 队列未满条件变量（用于唤醒提交任务的线程）
     std::atomic<bool> stop_;                  // 停止标志

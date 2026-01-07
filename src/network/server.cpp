@@ -52,10 +52,19 @@ EyaServer::EyaServer(Storage *storage, const std::string &ip,
 
 EyaServer::~EyaServer()
 {
+    // 停止所有监控线程
     stop_monitor_ = true;
+    stop_auth_monitor_ = true;
+    wait_queue_cv_.notify_all();
+    auth_cv_.notify_all();
+
     if (queue_monitor_thread_.joinable())
     {
         queue_monitor_thread_.join();
+    }
+    if (auth_monitor_thread_.joinable())
+    {
+        auth_monitor_thread_.join();
     }
 
     // 清理等待队列中的所有连接
@@ -66,6 +75,7 @@ EyaServer::~EyaServer()
         wait_queue_.pop_front();
     }
     lock.unlock();
+
     if (listen_socket_ != INVALID_SOCKET_VALUE)
     {
         CLOSE_SOCKET(listen_socket_);
@@ -194,32 +204,30 @@ bool EyaServer::start()
                                         {
     while (!stop_monitor_) {
         std::unique_lock<std::mutex> lock(wait_queue_mutex_);
-        
-        // 计算最近连接的超时剩余时间
+
+        // 计算最早连接的超时剩余时间
         std::chrono::milliseconds wait_time = std::chrono::seconds(1);
         if (!wait_queue_.empty()) {
             auto now = std::chrono::steady_clock::now();
             auto& front = wait_queue_.front();
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - front.start_time);
             auto timeout = std::chrono::milliseconds(connect_wait_timeout_ * 1000) - elapsed;
-            if (timeout > std::chrono::milliseconds(0)) {
-                wait_time = timeout;
-            }
+            wait_time = std::min(wait_time, std::max(timeout, std::chrono::milliseconds(0)));
         }
-        
-        // 等待直到超时、有新连接加入或停止信号
+
+        // 只等待停止信号或超时
         wait_queue_cv_.wait_for(lock, wait_time, [this]() {
-            return stop_monitor_.load()||!wait_queue_.empty();
+            return stop_monitor_.load();
         });
-        
+
         if (stop_monitor_) {
             break;
         }
-        
-        // 检查是否有超时的连接
+
+        // 检查并移除超时的连接
         auto now = std::chrono::steady_clock::now();
         auto timeout_duration = std::chrono::seconds(connect_wait_timeout_);
-        
+
         while (!wait_queue_.empty()) {
             auto& waiting = wait_queue_.front();
             if (now - waiting.start_time >= timeout_duration) {
@@ -234,7 +242,7 @@ bool EyaServer::start()
                 break;  // 后续连接未超时
             }
         }
-        
+
         lock.unlock();
     } });
     // 8.启动认证线程
@@ -245,9 +253,11 @@ bool EyaServer::start()
             while (!stop_monitor_)
             {
                 std::unique_lock<std::mutex> lock(auth_mutex_);
+
+                // 只等待停止信号或超时
                 auth_cv_.wait_for(lock, std::chrono::seconds(2), [this]()
-                              { return stop_monitor_.load() || !connections_without_auth_.empty(); });
-                if (stop_monitor_)
+                              { return stop_auth_monitor_.load(); });
+                if (stop_auth_monitor_)
                 {
                     break;
                 }
@@ -377,7 +387,7 @@ void EyaServer::handle_accept()
         }
 
         // 检查连接数限制和等待队列
-        std::unique_lock<std::shared_mutex> lock(wait_queue_mutex_);
+        std::unique_lock<std::mutex> lock(wait_queue_mutex_);
 
         if (current_connections_ < max_connections_)
         {
@@ -399,13 +409,19 @@ void EyaServer::handle_accept()
             }
             current_connections_++;
             lock.unlock();
-            connections_without_auth_.insert({client_sock, std::chrono::steady_clock::now()});
+
+            // 在锁外处理认证和发送状态
+            {
+                std::lock_guard<std::mutex> auth_lock(auth_mutex_);
+                connections_without_auth_.insert({client_sock, std::chrono::steady_clock::now()});
+            }
             auth_cv_.notify_one();
             send_connection_state(ConnectionState::READY, client_sock);
         }
         else if (wait_queue_.size() < connect_wait_queue_size_)
         {
             // 连接数已满，加入等待队列
+            bool was_empty = wait_queue_.empty();
             set_non_blocking(client_sock);
             char clientIp[INET_ADDRSTRLEN];
             inet_ntop(AF_INET, &client_addr.sin_addr, clientIp, INET_ADDRSTRLEN);
@@ -415,9 +431,13 @@ void EyaServer::handle_accept()
             wait_queue_.push_back({client_sock,
                                    std::chrono::steady_clock::now(),
                                    client_addr});
-            // 通知监控线程有新连接加入
+
+            // 只在队列从空变非空时通知
             lock.unlock();
-            wait_queue_cv_.notify_one();
+            if (was_empty)
+            {
+                wait_queue_cv_.notify_one();
+            }
             send_connection_state(ConnectionState::WAITING, client_sock);
         }
         else
@@ -478,24 +498,33 @@ void EyaServer::handle_accept()
 
         current_connections_++;
         lock.unlock();
-        connections_without_auth_.insert({client_sock, std::chrono::steady_clock::now()});
+
+        // 在锁外处理认证和发送状态
+        {
+            std::lock_guard<std::mutex> auth_lock(auth_mutex_);
+            connections_without_auth_.insert({client_sock, std::chrono::steady_clock::now()});
+        }
         auth_cv_.notify_one();
         send_connection_state(ConnectionState::READY, client_sock);
     }
     else if (wait_queue_.size() < connect_wait_queue_size_)
     {
         // 连接数已满，加入等待队列
+        bool was_empty = wait_queue_.empty();
         set_non_blocking(client_sock);
         LOG_INFO("Connection added to wait queue (current: %d, waiting: %zu)",
-                 current_connections_, wait_queue_.size() + 1);
+                 current_connections_.load(), wait_queue_.size() + 1);
 
         wait_queue_.push_back({client_sock,
                                std::chrono::steady_clock::now(),
                                client_addr});
 
-        // 通知监控线程有新连接加入
+        // 只在队列从空变非空时通知
         lock.unlock();
-        wait_queue_cv_.notify_one();
+        if (was_empty)
+        {
+            wait_queue_cv_.notify_one();
+        }
         send_connection_state(ConnectionState::WAITING, client_sock);
     }
     else
@@ -791,44 +820,59 @@ void EyaServer::close_socket(socket_t sock)
 #elif __linux__
     epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, sock, NULL);
 #endif
+
     if (current_connections_ > 0)
     {
         current_connections_--;
     }
-    // 检查等待队列，激活等待的连接
-    std::unique_lock<std::mutex> lock(wait_queue_mutex_);
-    if (!wait_queue_.empty())
+
+    // 从未认证集合中移除
     {
-        auto waiting = wait_queue_.front();
-        wait_queue_.pop_front();
+        connections_without_auth_.erase({sock});
+    }
 
-        // 将等待的连接加入活跃连接池
-        current_connections_++;
+    // 检查等待队列，激活等待的连接
+    std::optional<Connection>
+        to_activate;
+    {
+        std::lock_guard<std::mutex> lock(wait_queue_mutex_);
+        if (!wait_queue_.empty())
+        {
+            to_activate = wait_queue_.front();
+            wait_queue_.pop_front();
+            current_connections_++;
+        }
+    }
 
-        set_non_blocking(waiting.socket);
+    if (to_activate)
+    {
+        // 在锁外执行耗时操作
+        set_non_blocking(to_activate->socket);
         char clientIp[INET_ADDRSTRLEN];
-        inet_ntop(AF_INET, &waiting.client_addr.sin_addr, clientIp, INET_ADDRSTRLEN);
-        LOG_INFO("Waiting connection activated: %s:%d", clientIp, ntohs(waiting.client_addr.sin_port));
+        inet_ntop(AF_INET, &to_activate->client_addr.sin_addr, clientIp, INET_ADDRSTRLEN);
+        LOG_INFO("Waiting connection activated: %s:%d", clientIp, ntohs(to_activate->client_addr.sin_port));
 
         // 添加到IO复用
 #ifdef __linux__
         struct epoll_event ev;
         ev.events = EPOLLIN | EPOLLET;
-        ev.data.fd = waiting.socket;
-        epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, waiting.socket, &ev);
+        ev.data.fd = to_activate->socket;
+        epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, to_activate->socket, &ev);
 #elif defined(__APPLE__)
         struct kevent change;
-        EV_SET(&change, waiting.socket, EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, NULL);
+        EV_SET(&change, to_activate->socket, EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, NULL);
         kevent(kqueue_fd_, &change, 1, NULL, 0, NULL);
 #else // Windows
-        FD_SET(waiting.socket, &master_set_);
+        FD_SET(to_activate->socket, &master_set_);
 #endif
 
-        lock.unlock();
-        wait_queue_cv_.notify_one();
-        connections_without_auth_.insert({waiting.socket, std::chrono::steady_clock::now()});
+        // 添加到未认证集合并通知
+        {
+            std::lock_guard<std::mutex> auth_lock(auth_mutex_);
+            connections_without_auth_.insert({to_activate->socket, std::chrono::steady_clock::now()});
+        }
         auth_cv_.notify_one();
-        send_connection_state(ConnectionState::READY, waiting.socket);
+        send_connection_state(ConnectionState::READY, to_activate->socket);
     }
 }
 void EyaServer::handle_request(const Request &request, socket_t client_sock)
@@ -845,7 +889,9 @@ void EyaServer::handle_request(const Request &request, socket_t client_sock)
             if (request.command == password_)
             {
                 response = Response::success(auth_key_);
-                connections_without_auth_.erase({client_sock, std::chrono::steady_clock::now()});
+                // 从未认证集合中移除
+                std::lock_guard<std::mutex> auth_lock(auth_mutex_);
+                connections_without_auth_.erase({client_sock});
             }
             else
             {

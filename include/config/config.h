@@ -31,6 +31,7 @@ enum class SSTableMergeStrategy
     LEVEL_COMPACTION,           // 分层合并
 };
 #define DEFAULT_PORT 5210
+#define DEFAULT_IP "0.0.0.0"
 #define DEFAULT_READ_ONLY false
 #define DEFAULT_LOG_LEVEL LogLevel::INFO
 #define DEFAULT_LOG_ROTATE_SIZE 1024 * 5 // 日志轮转阈值，避免日志文件过大
@@ -56,6 +57,7 @@ enum class SSTableMergeStrategy
 #define DEFAULT_WORKER_WAIT_TIMEOUT 30
 
 #define PORT_KEY "port"
+#define IP_KEY "ip"
 #define READ_ONLY_KEY "read_only"
 #define LOG_LEVEL_KEY "log_level"
 #define LOG_ROTATE_SIZE_KEY "log_rotate_size"
@@ -137,6 +139,7 @@ private:
         config_map_[LOG_DIR_KEY] = PathUtils::GetTargetFilePath("logs");
         config_map_[LOG_LEVEL_KEY] = std::to_string(static_cast<int>(DEFAULT_LOG_LEVEL));
         config_map_[LOG_ROTATE_SIZE_KEY] = std::to_string(DEFAULT_LOG_ROTATE_SIZE);
+        config_map_[IP_KEY] = DEFAULT_IP;
         config_map_[PORT_KEY] = std::to_string(DEFAULT_PORT);
         config_map_[READ_ONLY_KEY] = std::to_string(DEFAULT_READ_ONLY);
         config_map_[SKIPLIST_MAX_LEVEL_KEY] = std::to_string(DEFAULT_SKIPLIST_MAX_LEVEL);
@@ -347,12 +350,12 @@ private:
             }
         }
         // 工作线程配置校验
-        if (config_map_.find(WORKER_THREAD_NUM_KEY) != config_map_.end())
+        if (config_map_.find(WORKER_THREAD_COUNT_KEY) != config_map_.end())
         {
-            int worker_thread_num = std::stoi(config_map_[WORKER_THREAD_NUM_KEY]);
+            int worker_thread_num = std::stoi(config_map_[WORKER_THREAD_COUNT_KEY]);
             if (worker_thread_num <= 0)
             {
-                throw std::runtime_error("Invalid worker_thread_num: " + config_map_[WORKER_THREAD_NUM_KEY]);
+                throw std::runtime_error("Invalid worker_thread_num: " + config_map_[WORKER_THREAD_COUNT_KEY]);
             }
         }
         if (config_map_.find(WORKER_QUEUE_SIZE_KEY) != config_map_.end())
