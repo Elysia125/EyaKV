@@ -227,6 +227,11 @@ bool send_data(socket_t client_socket, const std::string &data)
     while (remaining > 0)
     {
         int sent = send(client_socket, data.c_str() + total_sent, remaining, 0);
+        if (sent == 0)
+        {
+            std::cout << "server closed connection" << std::endl;
+            exit(0);
+        }
         if (sent == SOCKET_ERROR_VALUE)
         {
             return false;
@@ -332,7 +337,7 @@ int client_main(const std::string &host, int port, const std::string &password)
         {
             continue;
         }
-
+        command = trim(command);
         if (command == "exit" || command == "quit")
         {
             break;

@@ -54,7 +54,7 @@ private:
      * @param member 成员
      * @return true 添加成功 (之前不存在), false 成员已存在
      */
-    bool s_add(Storage *storage, const std::string &key, const std::string &member, const bool is_recover = false);
+    size_t s_add(Storage *storage, const std::string &key, const std::vector<std::string> &members, const bool is_recover = false);
 
     /**
      * @brief 从集合移除元素
@@ -63,7 +63,7 @@ private:
      * @param member 成员
      * @return true 移除成功, false 成员不存在
      */
-    bool s_rem(Storage *storage, const std::string &key, const std::string &member, const bool is_recover = false);
+    size_t s_rem(Storage *storage, const std::string &key, const std::vector<std::string> &members, const bool is_recover = false);
 
     /**
      * @brief 获取集合所有成员
@@ -105,8 +105,8 @@ public:
 
 private:
     // Helper methods for ZSet operations
-    bool z_add(Storage *storage, const std::string &key, const std::string &score, const std::string &member, const bool is_recover = false);
-    bool z_rem(Storage *storage, const std::string &key, const std::string &member, const bool is_recover = false);
+    size_t z_add(Storage *storage, const std::string &key, const std::vector<std::pair<std::string, std::string>> &score_members, const bool is_recover = false);
+    size_t z_rem(Storage *storage, const std::string &key, const std::vector<std::string> &members, const bool is_recover = false);
     std::optional<std::string> z_score(Storage *storage, const std::string &key, const std::string &member);
     std::optional<size_t> z_rank(Storage *storage, const std::string &key, const std::string &member);
     size_t z_card(Storage *storage, const std::string &key);
@@ -188,9 +188,9 @@ public:
     bool recover(Storage *storage, const uint8_t type, const std::string &key, const std::string &payload) override;
 
 private:
-    bool h_set(Storage *storage, const std::string &key, const std::string &field, const std::string &value, const bool is_recover = false);
+    size_t h_set(Storage *storage, const std::string &key, const std::vector<std::pair<std::string, std::string>> &field_values, const bool is_recover = false);
     std::optional<std::string> h_get(Storage *storage, const std::string &key, const std::string &field);
-    bool h_del(Storage *storage, const std::string &key, const std::string &field, const bool is_recover = false);
+    size_t h_del(Storage *storage, const std::string &key, const std::vector<std::string> &fields, const bool is_recover = false);
     std::vector<std::string> h_keys(Storage *storage, const std::string &key);
     std::vector<std::string> h_values(Storage *storage, const std::string &key);
     std::unordered_map<std::string, std::string> h_entries(Storage *storage, const std::string &key);

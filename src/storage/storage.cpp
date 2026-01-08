@@ -135,7 +135,7 @@ void Storage::recover()
         memtable_->cancel_size_limit();
         current_wal_filename_ = "";
         LOG_INFO("Storage::Recover: Locking immutable_mutex_...");
-        std::unique_lock<std::shared_mutex> lock(immutable_mutex_);
+        // std::unique_lock<std::shared_mutex> lock(immutable_mutex_);
         LOG_INFO("Storage::Recover: Calling wal_->recover()...");
         bool success = wal_->recover([this](std::string filename, uint8_t type, std::string key, std::string payload)
                                      {
@@ -703,7 +703,8 @@ uint32_t Storage::remove(std::vector<std::string> &keys)
 Response Storage::execute(uint8_t type, std::vector<std::string> &args)
 {
     std::string args_str;
-    for (const auto &arg : args) args_str += arg + " ";
+    for (const auto &arg : args)
+        args_str += arg + " ";
     LOG_DEBUG("Storage::execute: type=%d, args=[%s]", type, args_str.c_str());
     try
     {

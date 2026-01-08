@@ -229,45 +229,50 @@ public:
     }
 
     /**
-     * @brief Copy constructor (deleted due to deep copy complexity)
+     * @brief Copy constructor
      * @param sl The SkipList to copy from
      * @note This constructor actually moves resources instead of copying
      */
-    SkipList(const SkipList &other) noexcept
-        : current_level_(other.current_level_),
-          head_(other.head_),
-          size_(other.size_),
+    SkipList(const SkipList &other)
+        : current_level_(1),
           MAX_LEVEL(other.MAX_LEVEL),
           PROBABILITY(other.PROBABILITY),
           compare_func_(other.compare_func_),
           calculate_key_size_func_(other.calculate_key_size_func_),
           calculate_value_size_func_(other.calculate_value_size_func_)
     {
-        current_size_.store(other.current_size_.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        head_ = new SkipListNode<K, V>(K(), V(), MAX_LEVEL);
+        size_ = 0;
+        init_current_size();
+
+        SkipListNode<K, V> *current = other.head_->next[0];
+        while (current != nullptr)
+        {
+            insert(current->key, current->value);
+            current = current->next[0];
+        }
     }
-    SkipList &operator=(const SkipList &other) noexcept
+
+    SkipList &operator=(const SkipList &other)
     {
         if (&other == this)
         {
             return *this;
         }
-        // 清理当前资源
-        SkipListNode<K, V> *current = head_;
-        while (current != nullptr)
-        {
-            SkipListNode<K, V> *next = current->next[0];
-            delete current;
-            current = next;
-        }
 
-        // 移动资源
-        current_level_ = other.current_level_;
-        head_ = other.head_;
-        size_ = other.size_;
-        current_size_.store(other.current_size_.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        clear();
+
         compare_func_ = other.compare_func_;
         calculate_key_size_func_ = other.calculate_key_size_func_;
         calculate_value_size_func_ = other.calculate_value_size_func_;
+
+        SkipListNode<K, V> *current = other.head_->next[0];
+        while (current != nullptr)
+        {
+            insert(current->key, current->value);
+            current = current->next[0];
+        }
+
         return *this;
     }
 

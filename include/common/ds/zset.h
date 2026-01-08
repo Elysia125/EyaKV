@@ -9,6 +9,15 @@
 #include <atomic>
 #include "common/base/export.h"
 #include "common/util/utils.h"
+
+inline int compare_double_strings(const std::string &a, const std::string &b)
+{
+    std::string a_clean = a.substr(0, a.find(" "));
+    std::string b_clean = b.substr(0, b.find(" "));
+    double da = std::stod(a_clean);
+    double db = std::stod(b_clean);
+    return (da < db) ? -1 : ((da > db) ? 1 : 0);
+}
 /**
  * @brief ZSet 类实现了一个基于跳表的有序集合数据结构。
  *

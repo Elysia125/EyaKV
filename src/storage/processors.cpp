@@ -68,29 +68,23 @@ Response SetProcessor::execute(Storage *storage, const uint8_t type, const std::
     {
         if (args.size() < 2)
             return Response::error("missing member");
-        size_t added = 0;
+        std::vector<std::string> members;
         for (size_t i = 1; i < args.size(); ++i)
         {
-            if (s_add(storage, key, args[i]))
-            {
-                added++;
-            }
+            members.push_back(args[i]);
         }
-        return Response::success(added);
+        return Response::success(s_add(storage, key, members));
     }
     case OperationType::kSRem:
     {
         if (args.size() < 2)
             return Response::error("missing member");
-        size_t removed = 0;
+        std::vector<std::string> members;
         for (size_t i = 1; i < args.size(); ++i)
         {
-            if (s_rem(storage, key, args[i]))
-            {
-                removed++;
-            }
+            members.push_back(args[i]);
         }
-        return Response::success(removed);
+        return Response::success(s_rem(storage, key, members));
     }
     case OperationType::kSMembers:
     {
@@ -104,28 +98,44 @@ Response SetProcessor::execute(Storage *storage, const uint8_t type, const std::
 bool SetProcessor::recover(Storage *storage, const uint8_t type, const std::string &key, const std::string &payload)
 {
     size_t offset = 0;
-    std::string member = Serializer::deserializeString(payload.data(), offset);
-
     if (type == OperationType::kSAdd)
     {
-        return s_add(storage, key, member, true);
+        std::vector<std::string> members;
+        while (offset < payload.size())
+        {
+            members.push_back(Serializer::deserializeString(payload.data(), offset));
+        }
+        s_add(storage, key, members, true);
+        return true;
     }
     else if (type == OperationType::kSRem)
     {
-        return s_rem(storage, key, member, true);
+        std::vector<std::string> members;
+        while (offset < payload.size())
+        {
+            members.push_back(Serializer::deserializeString(payload.data(), offset));
+        }
+        s_rem(storage, key, members, true);
+        return true;
     }
     return false;
 }
 
-bool SetProcessor::s_add(Storage *storage, const std::string &key, const std::string &member, const bool is_recover)
+size_t SetProcessor::s_add(Storage *storage, const std::string &key, const std::vector<std::string> &members, const bool is_recover)
 {
     if (storage->enable_wal_ && storage->wal_ && !is_recover)
     {
-        storage->wal_->append_log(OperationType::kSAdd, key, Serializer::serialize(member));
+        std::string payload;
+        for (const auto &m : members)
+        {
+            payload += Serializer::serialize(m);
+        }
+        storage->wal_->append_log(OperationType::kSAdd, key, payload);
     }
+    size_t added = 0;
     try
     {
-        storage->memtable_->handle_value(key, [&member](EValue &val) -> EValue &
+        storage->memtable_->handle_value(key, [&members, &added](EValue &val) -> EValue &
                                          {
                                             if (!std::holds_alternative<std::unordered_set<std::string>>(val.value))
                                             {
@@ -138,9 +148,11 @@ bool SetProcessor::s_add(Storage *storage, const std::string &key, const std::st
                                                 val.expire_time = 0;
                                                 set.clear();
                                             }
-                                            set.insert(member);
+                                            for(const auto& m : members) {
+                                                if(set.insert(m).second) added++;
+                                            }
                                             return val; });
-        return true;
+        return added;
     }
     catch (const std::out_of_range &e)
     {
@@ -153,34 +165,48 @@ bool SetProcessor::s_add(Storage *storage, const std::string &key, const std::st
                 throw std::runtime_error("value is not a set");
             }
             auto &set = std::get<std::unordered_set<std::string>>(val.value);
-            set.insert(member);
+            for (const auto &m : members)
+            {
+                if (set.insert(m).second)
+                    added++;
+            }
             storage->write_memtable(key, val);
         }
         else
         {
             std::unordered_set<std::string> set;
-            set.insert(member);
+            for (const auto &m : members)
+            {
+                if (set.insert(m).second)
+                    added++;
+            }
             EValue val(set);
             storage->write_memtable(key, val);
         }
-        return true;
+        return added;
     }
     catch (const std::exception &e)
     {
-        LOG_ERROR("s_add key: %s, member: %s, error: %s", key, member, e.what());
+        LOG_ERROR("s_add key: %s, error: %s", key, e.what());
         throw e;
     }
 }
 
-bool SetProcessor::s_rem(Storage *storage, const std::string &key, const std::string &member, const bool is_recover)
+size_t SetProcessor::s_rem(Storage *storage, const std::string &key, const std::vector<std::string> &members, const bool is_recover)
 {
     if (storage->enable_wal_ && storage->wal_ && !is_recover)
     {
-        storage->wal_->append_log(OperationType::kSRem, key, Serializer::serialize(member));
+        std::string payload;
+        for (const auto &m : members)
+        {
+            payload += Serializer::serialize(m);
+        }
+        storage->wal_->append_log(OperationType::kSRem, key, payload);
     }
+    size_t removed = 0;
     try
     {
-        storage->memtable_->handle_value(key, [&member](EValue &val) -> EValue &
+        storage->memtable_->handle_value(key, [&members, &removed](EValue &val) -> EValue &
                                          {
                                             if(val.is_deleted()||val.is_expired()){
                                                 return val;
@@ -192,10 +218,12 @@ bool SetProcessor::s_rem(Storage *storage, const std::string &key, const std::st
                                             else
                                             {
                                                 auto &set = std::get<std::unordered_set<std::string>>(val.value);
-                                                set.erase(member);
+                                                for(const auto& m : members) {
+                                                    if(set.erase(m)) removed++;
+                                                }
                                                 return val;
                                             } });
-        return true;
+        return removed;
     }
     catch (const std::out_of_range &e)
     {
@@ -208,14 +236,18 @@ bool SetProcessor::s_rem(Storage *storage, const std::string &key, const std::st
                 throw std::runtime_error("value is not a set");
             }
             auto &set = std::get<std::unordered_set<std::string>>(val.value);
-            set.erase(member);
+            for (const auto &m : members)
+            {
+                if (set.erase(m))
+                    removed++;
+            }
             storage->write_memtable(key, val);
         }
-        return true;
+        return removed;
     }
     catch (const std::exception &e)
     {
-        LOG_ERROR("s_add key: %s, member: %s, error: %s", key, member, e.what());
+        LOG_ERROR("s_rem key: %s, error: %s", key, e.what());
         throw e;
     }
 }
@@ -251,13 +283,29 @@ Response ZSetProcessor::execute(Storage *storage, const uint8_t type, const std:
     switch (type)
     {
     case OperationType::kZAdd:
-        if (args.size() < 3)
-            return Response::error("missing score or member");
-        return Response::success(z_add(storage, key, args[1], args[2]));
+        if (args.size() < 3 || (args.size() - 1) % 2 != 0)
+            return Response::error("wrong number of arguments for 'zadd' command");
+        {
+            std::vector<std::pair<std::string, std::string>> score_members;
+            score_members.reserve((args.size() - 1) / 2);
+            for (size_t i = 1; i < args.size(); i += 2)
+            {
+                score_members.emplace_back(args[i], args[i + 1]);
+            }
+            return Response::success(z_add(storage, key, score_members));
+        }
     case OperationType::kZRem:
         if (args.size() < 2)
             return Response::error("missing member");
-        return Response::success(z_rem(storage, key, args[1]));
+        {
+            std::vector<std::string> members;
+            members.reserve(args.size() - 1);
+            for (size_t i = 1; i < args.size(); ++i)
+            {
+                members.push_back(args[i]);
+            }
+            return Response::success(z_rem(storage, key, members));
+        }
     case OperationType::kZScore:
         if (args.size() < 2)
             return Response::error("missing member");
@@ -307,15 +355,25 @@ bool ZSetProcessor::recover(Storage *storage, const uint8_t type, const std::str
     {
     case OperationType::kZAdd:
     {
-        auto score = Serializer::deserializeString(payload.data(), offset);
-        auto member = Serializer::deserializeString(payload.data(), offset);
-        z_add(storage, key, score, member, true);
+        std::vector<std::pair<std::string, std::string>> score_members;
+        while (offset < payload.size())
+        {
+            auto score = Serializer::deserializeString(payload.data(), offset);
+            auto member = Serializer::deserializeString(payload.data(), offset);
+            score_members.emplace_back(score, member);
+        }
+        z_add(storage, key, score_members, true);
         break;
     }
     case OperationType::kZRem:
     {
-        auto member = Serializer::deserializeString(payload.data(), offset);
-        z_rem(storage, key, member, true);
+        std::vector<std::string> members;
+        while (offset < payload.size())
+        {
+            auto member = Serializer::deserializeString(payload.data(), offset);
+            members.push_back(member);
+        }
+        z_rem(storage, key, members, true);
         break;
     }
     case OperationType::kZIncrBy:
@@ -346,16 +404,21 @@ bool ZSetProcessor::recover(Storage *storage, const uint8_t type, const std::str
 }
 
 // ZSet Helpers
-bool ZSetProcessor::z_add(Storage *storage, const std::string &key, const std::string &score, const std::string &member, const bool is_recover)
+size_t ZSetProcessor::z_add(Storage *storage, const std::string &key, const std::vector<std::pair<std::string, std::string>> &score_members, const bool is_recover)
 {
     if (storage->enable_wal_ && storage->wal_ && !is_recover)
     {
-        std::string payload = Serializer::serialize(score) + Serializer::serialize(member);
+        std::string payload;
+        for (const auto &p : score_members)
+        {
+            payload += Serializer::serialize(p.first) + Serializer::serialize(p.second);
+        }
         storage->wal_->append_log(OperationType::kZAdd, key, payload);
     }
+    size_t added_count = 0;
     try
     {
-        storage->memtable_->handle_value(key, [&score, &member](EValue &val) -> EValue &
+        storage->memtable_->handle_value(key, [&score_members, &added_count](EValue &val) -> EValue &
                                          {
                                             if (!std::holds_alternative<ZSet>(val.value))
                                             {
@@ -367,9 +430,12 @@ bool ZSetProcessor::z_add(Storage *storage, const std::string &key, const std::s
                                                 val.expire_time = 0;
                                                 zset.z_clear();
                                             }
-                                            zset.zadd(member, score);
-                                                return val; });
-        return true;
+                                            for(const auto& p : score_members) {
+                                                zset.zadd(p.second, p.first);
+                                                added_count++; 
+                                            }
+                                            return val; });
+        return added_count;
     }
     catch (const std::out_of_range &e)
     {
@@ -382,38 +448,51 @@ bool ZSetProcessor::z_add(Storage *storage, const std::string &key, const std::s
                 throw std::runtime_error("value is not a zset");
             }
             auto &zset = std::get<ZSet>(val.value);
-            zset.zadd(member, score);
+            for (const auto &p : score_members)
+            {
+                zset.zadd(p.second, p.first);
+                added_count++;
+            }
             storage->write_memtable(key, val);
-            return true;
+            return added_count;
         }
         else
         {
             ZSet zset;
-            zset.zadd(member, score);
+            for (const auto &p : score_members)
+            {
+                zset.zadd(p.second, p.first);
+                added_count++;
+            }
             EValue val;
             val.value = zset;
             storage->write_memtable(key, val);
-            return true;
+            return added_count;
         }
     }
     catch (const std::exception &e)
     {
-        LOG_ERROR("z_add key: %s, score: %s, member: %s, error: %s", key, score, member, e.what());
+        LOG_ERROR("z_add key: %s, error: %s", key.c_str(), e.what());
         throw e;
     }
-    return false;
+    return 0;
 }
 
-bool ZSetProcessor::z_rem(Storage *storage, const std::string &key, const std::string &member, const bool is_recover)
+size_t ZSetProcessor::z_rem(Storage *storage, const std::string &key, const std::vector<std::string> &members, const bool is_recover)
 {
     if (storage->enable_wal_ && storage->wal_ && !is_recover)
     {
-        std::string payload = Serializer::serialize(member);
+        std::string payload;
+        for (const auto &m : members)
+        {
+            payload += Serializer::serialize(m);
+        }
         storage->wal_->append_log(OperationType::kZRem, key, payload);
     }
+    size_t rem_count = 0;
     try
     {
-        storage->memtable_->handle_value(key, [&member](EValue &val) -> EValue &
+        storage->memtable_->handle_value(key, [&members, &rem_count](EValue &val) -> EValue &
                                          {
                                             if(val.is_deleted()||val.is_expired()){
                                                 return val;
@@ -423,9 +502,12 @@ bool ZSetProcessor::z_rem(Storage *storage, const std::string &key, const std::s
                                                 throw std::runtime_error("value is not a zset");
                                             }
                                             auto &zset = std::get<ZSet>(val.value);
-                                            zset.zrem(member);
+                                            for(const auto& m : members) {
+                                                zset.zrem(m);
+                                                rem_count++;
+                                            }
                                             return val; });
-        return true;
+        return rem_count;
     }
     catch (const std::out_of_range &e)
     {
@@ -438,17 +520,21 @@ bool ZSetProcessor::z_rem(Storage *storage, const std::string &key, const std::s
                 throw std::runtime_error("value is not a zset");
             }
             auto &zset = std::get<ZSet>(val.value);
-            zset.zrem(member);
+            for (const auto &m : members)
+            {
+                zset.zrem(m);
+                rem_count++;
+            }
             storage->write_memtable(key, val);
         }
-        return true;
+        return rem_count;
     }
     catch (const std::exception &e)
     {
-        LOG_ERROR("z_rem key: %s, member: %s, error: %s", key, member, e.what());
+        LOG_ERROR("z_rem key: %s, error: %s", key.c_str(), e.what());
         throw e;
     }
-    return false;
+    return 0;
 }
 
 std::optional<std::string> ZSetProcessor::z_score(Storage *storage, const std::string &key, const std::string &member)
@@ -1259,9 +1345,17 @@ Response HashProcessor::execute(Storage *storage, const uint8_t type, const std:
     switch (type)
     {
     case OperationType::kHSet:
-        if (args.size() < 3)
-            return Response::error("missing field/value");
-        return Response::success(h_set(storage, key, args[1], args[2]) ? "1" : "0");
+        if (args.size() < 3 || (args.size() - 1) % 2 != 0)
+            return Response::error("wrong number of arguments for 'hset' command");
+        {
+            std::vector<std::pair<std::string, std::string>> field_values;
+            field_values.reserve((args.size() - 1) / 2);
+            for (size_t i = 1; i < args.size(); i += 2)
+            {
+                field_values.emplace_back(args[i], args[i + 1]);
+            }
+            return Response::success(std::to_string(h_set(storage, key, field_values)));
+        }
     case OperationType::kHGet:
         if (args.size() < 2)
             return Response::error("missing field");
@@ -1272,7 +1366,13 @@ Response HashProcessor::execute(Storage *storage, const uint8_t type, const std:
     case OperationType::kHDel:
         if (args.size() < 2)
             return Response::error("missing field");
-        return Response::success(h_del(storage, key, args[1]) ? "1" : "0");
+        {
+            std::vector<std::string> fields;
+            fields.reserve(args.size() - 1);
+            for (size_t i = 1; i < args.size(); ++i)
+                fields.push_back(args[i]);
+            return Response::success(std::to_string(h_del(storage, key, fields)));
+        }
     case OperationType::kHKeys:
         return Response::success(h_keys(storage, key));
     case OperationType::kHValues:
@@ -1295,14 +1395,23 @@ bool HashProcessor::recover(Storage *storage, const uint8_t type, const std::str
     size_t offset = 0;
     if (type == OperationType::kHSet)
     {
-        std::string field = Serializer::deserializeString(payload.data(), offset);
-        std::string value = Serializer::deserializeString(payload.data(), offset);
-        h_set(storage, key, field, value, true);
+        std::vector<std::pair<std::string, std::string>> field_values;
+        while (offset < payload.size())
+        {
+            std::string field = Serializer::deserializeString(payload.data(), offset);
+            std::string value = Serializer::deserializeString(payload.data(), offset);
+            field_values.emplace_back(field, value);
+        }
+        h_set(storage, key, field_values, true);
     }
     else if (type == OperationType::kHDel)
     {
-        std::string field = Serializer::deserializeString(payload.data(), offset);
-        h_del(storage, key, field, true);
+        std::vector<std::string> fields;
+        while (offset < payload.size())
+        {
+            fields.push_back(Serializer::deserializeString(payload.data(), offset));
+        }
+        h_del(storage, key, fields, true);
     }
     else
     {
@@ -1311,17 +1420,21 @@ bool HashProcessor::recover(Storage *storage, const uint8_t type, const std::str
     return true;
 }
 
-bool HashProcessor::h_set(Storage *storage, const std::string &key, const std::string &field, const std::string &value, const bool is_recover)
+size_t HashProcessor::h_set(Storage *storage, const std::string &key, const std::vector<std::pair<std::string, std::string>> &field_values, const bool is_recover)
 {
     if (storage->enable_wal_ && storage->wal_ && !is_recover)
     {
-        std::string payload = Serializer::serialize(field) + Serializer::serialize(value);
+        std::string payload;
+        for (const auto &kv : field_values)
+        {
+            payload += Serializer::serialize(kv.first) + Serializer::serialize(kv.second);
+        }
         storage->wal_->append_log(OperationType::kHSet, key, payload);
     }
-    bool is_new = false;
+    size_t new_fields = 0;
     try
     {
-        storage->memtable_->handle_value(key, [&field, &value, &is_new](EValue &val) -> EValue &
+        storage->memtable_->handle_value(key, [&field_values, &new_fields](EValue &val) -> EValue &
                                          {
                                             if (!std::holds_alternative<std::unordered_map<std::string, std::string>>(val.value))
                                             {
@@ -1333,10 +1446,12 @@ bool HashProcessor::h_set(Storage *storage, const std::string &key, const std::s
                                                 val.expire_time=0;
                                                 map.clear();
                                             }
-                                            if (map.find(field) == map.end()) is_new = true;
-                                            map[field] = value;
+                                            for(const auto& kv : field_values) {
+                                                if (map.find(kv.first) == map.end()) new_fields++;
+                                                map[kv.first] = kv.second;
+                                            }
                                             return val; });
-        return is_new;
+        return new_fields;
     }
     catch (const std::out_of_range &e)
     {
@@ -1349,25 +1464,32 @@ bool HashProcessor::h_set(Storage *storage, const std::string &key, const std::s
                 throw std::runtime_error("value is not a hash");
             }
             auto &map = std::get<std::unordered_map<std::string, std::string>>(val.value);
-            if (map.find(field) == map.end())
-                is_new = true;
-            map[field] = value;
+            for (const auto &kv : field_values)
+            {
+                if (map.find(kv.first) == map.end())
+                    new_fields++;
+                map[kv.first] = kv.second;
+            }
             storage->write_memtable(key, val);
-            return is_new;
+            return new_fields;
         }
         else
         {
             std::unordered_map<std::string, std::string> map;
-            map[field] = value;
+            for (const auto &kv : field_values)
+            {
+                map[kv.first] = kv.second;
+                new_fields++;
+            }
             EValue val;
             val.value = map;
             storage->write_memtable(key, val);
-            return true;
+            return new_fields;
         }
     }
     catch (const std::exception &e)
     {
-        LOG_ERROR("h_set key: %s, field: %s, error: %s", key, field, e.what());
+        LOG_ERROR("h_set key: %s, error: %s", key.c_str(), e.what());
         throw e;
     }
 }
@@ -1387,19 +1509,23 @@ std::optional<std::string> HashProcessor::h_get(Storage *storage, const std::str
     return std::nullopt;
 }
 
-bool HashProcessor::h_del(Storage *storage, const std::string &key, const std::string &field, const bool is_recover)
+size_t HashProcessor::h_del(Storage *storage, const std::string &key, const std::vector<std::string> &fields, const bool is_recover)
 {
     if (storage->enable_wal_ && storage->wal_ && !is_recover)
     {
-        storage->wal_->append_log(OperationType::kHDel, key, Serializer::serialize(field));
+        std::string payload;
+        for (const auto &f : fields)
+        {
+            payload += Serializer::serialize(f);
+        }
+        storage->wal_->append_log(OperationType::kHDel, key, payload);
     }
-    bool deleted = false;
+    size_t deleted_count = 0;
     try
     {
-        storage->memtable_->handle_value(key, [&field, &deleted](EValue &val) -> EValue &
+        storage->memtable_->handle_value(key, [&fields, &deleted_count](EValue &val) -> EValue &
                                          {
                                             if(val.is_deleted() || val.is_expired()){
-                                                deleted = true;
                                                 return val;
                                             }
                                             if (!std::holds_alternative<std::unordered_map<std::string, std::string>>(val.value))
@@ -1407,9 +1533,11 @@ bool HashProcessor::h_del(Storage *storage, const std::string &key, const std::s
                                                 throw std::runtime_error("value is not a hash");
                                             }
                                             auto &map = std::get<std::unordered_map<std::string, std::string>>(val.value);
-                                            if(map.erase(field)) deleted = true;
+                                            for(const auto& f : fields) {
+                                                if(map.erase(f)) deleted_count++;
+                                            }
                                             return val; });
-        return deleted;
+        return deleted_count;
     }
     catch (const std::out_of_range &e)
     {
@@ -1422,21 +1550,22 @@ bool HashProcessor::h_del(Storage *storage, const std::string &key, const std::s
                 throw std::runtime_error("value is not a hash");
             }
             auto &map = std::get<std::unordered_map<std::string, std::string>>(val.value);
-            if (map.erase(field))
+            for (const auto &f : fields)
             {
-                deleted = true;
-                storage->write_memtable(key, val);
+                if (map.erase(f))
+                    deleted_count++;
             }
-            return deleted;
+            storage->write_memtable(key, val);
+            return deleted_count;
         }
         else
         {
-            return true;
+            return 0;
         }
     }
     catch (const std::exception &e)
     {
-        LOG_ERROR("h_del key: %s, field: %s, error: %s", key, field, e.what());
+        LOG_ERROR("h_del key: %s, error: %s", key.c_str(), e.what());
         throw e;
     }
 }

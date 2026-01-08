@@ -8,6 +8,7 @@
 #include "logger/logger.h"
 
 EyaKVConfig &config = EyaKVConfig::get_instance();
+
 Storage *EyaKVStarter::storage = nullptr;
 EyaServer *EyaKVStarter::server = nullptr;
 std::atomic<bool> EyaKVStarter::should_shutdown(false);

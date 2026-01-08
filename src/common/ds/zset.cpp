@@ -11,10 +11,10 @@ void ZSet::zadd(const std::string &member, const std::string &score)
     auto it = member_score_map_.find(member);
     if (it != member_score_map_.end())
     {
-        skiplist_.remove(it->second + "\0" + member);
+        skiplist_.remove(it->second + " " + member);
     }
     // 1. 更新跳表
-    skiplist_.insert(score + "\0" + member, member); // 使用分值+成员作为复合键，确保唯一性
+    skiplist_.insert(score + " " + member, member); // 使用分值+成员作为复合键，确保唯一性
     // 2. 更新成员-分值映射
     member_score_map_[member] = score;
     size_exclude_skiplist.fetch_add(calculateStringSize(member) + calculateStringSize(score) + HASH_COST, std::memory_order_relaxed);
@@ -40,7 +40,7 @@ bool ZSet::zrem(const std::string &member)
     }
     std::string score = it->second;
     // 1. 从跳表删除
-    bool removed = skiplist_.remove(score + "\0" + member);
+    bool removed = skiplist_.remove(score + " " + member);
     if (removed)
     {
         // 2. 从成员-分值映射删除
@@ -64,12 +64,12 @@ void ZSet::zclear()
 
 std::vector<std::pair<std::string, std::string>> ZSet::zrange_by_score(const std::string &min_score, const std::string &max_score) const
 {
-    std::string min = min_score + "\0";
-    std::string max = max_score + "\0";
+    std::string min = min_score + " ";
+    std::string max = max_score + " ";
     std::vector<std::pair<std::string, std::string>> result = skiplist_.range_by_key(min, max);
     for (auto &item : result)
     {
-        item.first = item.first.substr(0, item.first.find("\0"));
+        item.first = item.first.substr(0, item.first.find(" "));
     }
     return result;
 }
@@ -79,7 +79,7 @@ std::vector<std::pair<std::string, std::string>> ZSet::zrange_by_rank(size_t sta
     std::vector<std::pair<std::string, std::string>> result = skiplist_.range_by_rank(start_rank, end_rank);
     for (auto &item : result)
     {
-        item.first = item.first.substr(0, item.first.find("\0"));
+        item.first = item.first.substr(0, item.first.find(" "));
     }
     return result;
 }
@@ -92,14 +92,14 @@ std::optional<size_t> ZSet::zrank(const std::string &member) const
         return std::nullopt;
     }
     std::string score = it->second;
-    std::string key = score + "\0" + member;
+    std::string key = score + " " + member;
     return skiplist_.rank(key);
 }
 
 size_t ZSet::zrem_range_by_score(const std::string &min_score, const std::string &max_score)
 {
-    std::string min = min_score + "\0";
-    std::string max = max_score + "\0";
+    std::string min = min_score + " ";
+    std::string max = max_score + " ";
     std::vector<std::pair<std::string, std::string>> result = skiplist_.range_by_key(min, max);
     size_t removed_size = 0;
     for (auto &item : result)
@@ -157,10 +157,10 @@ std::optional<std::string> ZSet::z_incrby(const std::string &member, const std::
         return std::nullopt;
     }
     std::string score = it->second;
-    std::string key = score + "\0" + member;
+    std::string key = score + " " + member;
     skiplist_.remove(key);
     std::string new_score = std::to_string(std::stod(score) + std::stod(increment));
-    skiplist_.insert(new_score + "\0" + member, member);
+    skiplist_.insert(new_score + " " + member, member);
     member_score_map_[member] = new_score;
     return new_score;
 }

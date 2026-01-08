@@ -208,7 +208,7 @@ struct Response
         {
             for (const auto &p : arg)
             {
-                ss << "(" << p.first << ", " << ::to_string(p.second) << ") ";
+                ss << "(" << p.first << ", " << ::to_string(p.second) << ") "<<",";
             }
         }else if constexpr (std::is_same_v<T, EyaValue>)
         {
@@ -228,7 +228,12 @@ struct Response
         {
             ss << error_msg_;
         }
-        return ss.str();
+        std::string result = ss.str();
+        if (result.back() == ',')
+        {
+            result.pop_back();
+        }
+        return result;
     }
 };
 enum RequestType

@@ -2,14 +2,6 @@
 #define UTILS_H
 
 #include <string>
-inline int compare_double_strings(const std::string &a, const std::string &b)
-{
-    std::string a_clean = a.substr(0, a.find('\0'));
-    std::string b_clean = b.substr(0, b.find('\0'));
-    double da = std::stod(a_clean);
-    double db = std::stod(b_clean);
-    return (da < db) ? -1 : ((da > db) ? 1 : 0);
-}
 /**
  * @brief 计算 std::string 的实际大小
  */
@@ -81,5 +73,20 @@ inline std::vector<std::string> split(const std::string &str, char delimiter)
     result.push_back(current_substr);
 
     return result;
+}
+
+inline std::string trim(const std::string &str)
+{
+    size_t start = 0;
+    size_t end = str.size() - 1;
+    while (start < str.size() && isspace(str[start]))
+    {
+        ++start;
+    }
+    while (end > 0 && isspace(str[end]))
+    {
+        --end;
+    }
+    return str.substr(start, end - start + 1);
 }
 #endif // UTILS_H
