@@ -75,7 +75,14 @@ EyaServer::~EyaServer()
         wait_queue_.pop_front();
     }
     lock.unlock();
-
+    // 关闭监听Socket
+    {
+        std::lock_guard<std::mutex> sockets_lock(sockets_mutex_);
+        for (auto &socket : sockets_)
+        {
+            CLOSE_SOCKET(socket);
+        }
+    }
     if (listen_socket_ != INVALID_SOCKET_VALUE)
     {
         CLOSE_SOCKET(listen_socket_);
@@ -438,6 +445,10 @@ void EyaServer::handle_accept()
             {
                 std::lock_guard<std::mutex> auth_lock(auth_mutex_);
                 connections_without_auth_.insert({client_sock, std::chrono::steady_clock::now()});
+            }
+            {
+                std::lock_guard<std::mutex> sockets_lock(sockets_mutex_);
+                sockets_.insert(client_sock);
             }
             auth_cv_.notify_one();
             send_connection_state(ConnectionState::READY, client_sock);
@@ -855,7 +866,11 @@ void EyaServer::close_socket(socket_t sock)
         std::lock_guard<std::mutex> lock(auth_mutex_);
         connections_without_auth_.erase({sock});
     }
-
+    // 从sockets集合中移除
+    {
+        std::lock_guard<std::mutex> sockets_lock(sockets_mutex_);
+        sockets_.erase(sock);
+    }
     // 检查等待队列，激活等待的连接
     std::optional<Connection>
         to_activate;

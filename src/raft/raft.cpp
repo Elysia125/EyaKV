@@ -1,14 +1,12 @@
 #include "raft/raft.h"
-#include <iostream>
+#include "logger/logger.h"
 
-namespace eyakv::raft {
-
-void RaftNode::Start() {
+void RaftNode::start()
+{
     std::cout << "Raft node starting (stub)" << std::endl;
 }
 
-void RaftNode::Stop() {
+void RaftNode::stop()
+{
     std::cout << "Raft node stopping (stub)" << std::endl;
 }
-
-} // namespace eyakv::raft

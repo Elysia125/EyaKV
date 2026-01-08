@@ -346,7 +346,9 @@ private:
     // ========== 线程池相关 ==========
     std::unique_ptr<ThreadPool> thread_pool_; // 线程池，用于异步处理客户端请求
     Storage *storage_;                        // 存储引擎指针，用于执行键值操作
-
+    // 保存所有socket的map，用于关闭socket
+    std::unordered_set<socket_t> sockets_;
+    std::mutex sockets_mutex_;
     // ========== 平台特定的IO复用句柄或数据 ==========
 #ifdef __linux__
     int epoll_fd_;               // epoll 文件描述符
