@@ -634,6 +634,9 @@ void Storage::set_key_expire(const std::string &key, uint64_t expire_time)
     {
         memtable_->handle_value(key, [&](EValue &v) -> EValue &
                                 {
+                                    if(v.is_deleted()||v.is_expired()){
+                                        return v;
+                                    }
         v.expire_time = expire_time;
         return v; });
     }

@@ -203,16 +203,16 @@ Response receive_server_response(socket_t client_socket)
 
     // Receive body
     std::vector<char> body_buffer(response_header.length);
-    recv_len = recv(client_socket, body_buffer.data(), response_header.length, 0);
-    if (recv_len == SOCKET_ERROR_VALUE)
+    int total_recv = 0;
+    while (total_recv < response_header.length)
     {
-        throw std::runtime_error("recv body failed: " + socket_error_to_string(GET_SOCKET_ERROR()));
+        recv_len = recv(client_socket, body_buffer.data() + total_recv, response_header.length - total_recv, 0);
+        if (recv_len == SOCKET_ERROR_VALUE)
+        {
+            throw std::runtime_error("recv body failed: " + socket_error_to_string(GET_SOCKET_ERROR()));
+        }
+        total_recv += recv_len;
     }
-    if (recv_len != static_cast<int>(response_header.length))
-    {
-        throw std::runtime_error("incomplete body received");
-    }
-
     // Deserialize body
     offset = 0;
     return Response::deserializeResponse(body_buffer.data(), offset);

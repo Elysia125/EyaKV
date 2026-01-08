@@ -199,16 +199,24 @@ struct Response
         }
         else if constexpr (std::is_same_v<T, std::vector<std::string>>)
         {
-            for (const auto &s : arg)
-            {
-                ss << s << ",";
+            if(arg.empty()){
+                ss<<"null";
+            }else{
+                for (const auto &s : arg)
+                {
+                    ss << s << ",";
+                }
             }
         }
         else if constexpr (std::is_same_v<T, std::vector<std::pair<std::string, EyaValue>>>)
         {
-            for (const auto &p : arg)
-            {
-                ss << "(" << p.first << ", " << ::to_string(p.second) << ") "<<",";
+            if(arg.empty()){
+                ss<<"null";
+            }else{
+                for (const auto &p : arg)
+                {
+                    ss << "(" << p.first << ", " << ::to_string(p.second) << ") "<<",";
+                }
             }
         }else if constexpr (std::is_same_v<T, EyaValue>)
         {
