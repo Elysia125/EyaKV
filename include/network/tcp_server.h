@@ -310,7 +310,7 @@ private:
     void send_connection_state(ConnectionState state, socket_t client_sock);
 
 private:
-    // ========== 服务器配置参数 ==========
+    //  服务器配置参数
     const std::string ip_;                   // 监听的IP地址，"0.0.0.0"表示监听所有接口
     const u_short port_;                     // 监听的端口号
     const std::string password_;             // 服务器密码，为空表示不需要认证
@@ -321,35 +321,35 @@ private:
     const uint32_t worker_queue_size_;       // 工作线程任务队列大小
     const uint32_t worker_wait_timeout_;     // 任务提交等待超时时间（秒）
 
-    // ========== Socket 和运行状态 ==========
+    //  Socket 和运行状态
     socket_t listen_socket_;                    // 监听socket描述符
     bool is_running_;                           // 服务器运行状态标志
     std::atomic<uint32_t> current_connections_; // 当前活跃连接数统计
 
-    // ========== 认证相关 ==========
+    //  认证相关
     std::string auth_key_; // 认证密钥，客户端通过密码验证后获得
 
-    // ========== 等待队列管理 ==========
+    //  等待队列管理
     std::deque<Connection> wait_queue_;         // 等待队列，存储等待连接资源的客户端
     std::mutex wait_queue_mutex_;               // 等待队列互斥锁
     std::condition_variable_any wait_queue_cv_; // 条件变量，用于通知监控线程
     std::thread queue_monitor_thread_;          // 等待队列监控线程，检查连接超时
     std::atomic<bool> stop_monitor_;            // 监控线程停止标志
 
-    // ========== 认证超时管理 ==========
+    //  认证超时管理
     std::unordered_set<Connection, ConnectionHash> connections_without_auth_; // 未认证连接集合
     std::mutex auth_mutex_;                                                   // 认证集合互斥锁
     std::condition_variable auth_cv_;                                         // 认证条件变量，用于通知监控线程
     std::thread auth_monitor_thread_;                                         // 认证超时监控线程
     std::atomic<bool> stop_auth_monitor_;                                     // 认证监控线程停止标志
 
-    // ========== 线程池相关 ==========
+    //  线程池相关
     std::unique_ptr<ThreadPool> thread_pool_; // 线程池，用于异步处理客户端请求
     Storage *storage_;                        // 存储引擎指针，用于执行键值操作
     // 保存所有socket的map，用于关闭socket
     std::unordered_set<socket_t> sockets_;
     std::mutex sockets_mutex_;
-    // ========== 平台特定的IO复用句柄或数据 ==========
+    //  平台特定的IO复用句柄或数据
 #ifdef __linux__
     int epoll_fd_;               // epoll 文件描述符
     struct epoll_event *events_; // epoll 事件数组，用于存储就绪事件

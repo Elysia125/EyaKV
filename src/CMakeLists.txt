@@ -99,6 +99,12 @@ add_library(eyakv_raft STATIC
     raft/raft.cpp
 )
 
+if(WIN32)
+    target_link_libraries(eyakv_raft PRIVATE ${PLATFORM_LIBS})
+else()
+    target_link_libraries(eyakv_raft PRIVATE ${PLATFORM_LIBS})
+endif()
+
 target_include_directories(eyakv_raft PUBLIC
     ${EYAKV_INCLUDE_DIR}
     ${CMAKE_CURRENT_BINARY_DIR}
@@ -108,6 +114,7 @@ target_include_directories(eyakv_raft PUBLIC
 target_link_libraries(eyakv_raft PRIVATE
     eyakv_logger
     eyakv_common
+    Threads::Threads
 )
 
 
