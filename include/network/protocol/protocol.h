@@ -1,6 +1,7 @@
 #ifndef PROTOCOL_H_
 #define PROTOCOL_H_
 #include "common/types/value.h"
+#include "common/socket/protocol/protocol.h"
 #ifdef _WIN32
 #include <winsock2.h>
 #pragma comment(lib, "ws2_32.lib")
@@ -13,61 +14,15 @@ using ResponseData = std::variant<std::monostate,                               
                                   std::vector<std::pair<std::string, EyaValue>>, // kRange,kHEntries,kZRangeByRank,kZRangeByScore,kLRange
                                   EyaValue                                       // kGet
                                   >;
-enum HeaderType
-{
-    REQUEST = 0,
-    RESPONSE = 1
-};
 
-struct Header
-{
-    uint32_t magic_number = htonl(0xEA1314);
-    uint8_t version = 1;
-    HeaderType type;
-    uint32_t length;
-    static constexpr size_t PROTOCOL_HEADER_SIZE = 10;
-    Header(HeaderType type, uint32_t length, uint8_t version = 1) : type(type), length(length), version(version) {}
-    std::string serialize() const
-    {
-        uint8_t header_type = static_cast<uint8_t>(type);
-        std::string result;
-        uint32_t len = htonl(this->length);
-        result.append(reinterpret_cast<const char *>(&magic_number), sizeof(magic_number));
-        result.append(reinterpret_cast<const char *>(&version), sizeof(version));
-        result.append(reinterpret_cast<const char *>(&header_type), sizeof(header_type));
-        result.append(reinterpret_cast<const char *>(&len), sizeof(len));
-        return result;
-    }
-
-    static Header deserialize(const char *data, size_t &offset)
-    {
-        uint32_t magic_number;
-        std::memcpy(&magic_number, data + offset, sizeof(magic_number));
-        offset += sizeof(magic_number);
-        if (ntohl(magic_number) != 0xEA1314)
-        {
-            throw std::runtime_error("Invalid magic number");
-        }
-        uint8_t version;
-        std::memcpy(&version, data + offset, sizeof(version));
-        offset += sizeof(version);
-        uint8_t type;
-        std::memcpy(&type, data + offset, sizeof(type));
-        offset += sizeof(type);
-        uint32_t length;
-        std::memcpy(&length, data + offset, sizeof(length));
-        offset += sizeof(length);
-        return Header(static_cast<HeaderType>(type), ntohl(length), version);
-    }
-};
-
-struct Response
+struct Response : public ProtocolBody
 {
     int code_;
     ResponseData data_;
     std::string error_msg_;
     Response(int code, ResponseData data, const std::string &error_msg)
         : code_(code), data_(data), error_msg_(error_msg) {}
+    Response() : code_(0), data_(std::monostate()), error_msg_("") {}
     static Response success(ResponseData data, const std::string error_msg = "")
     {
         return Response{1, data, error_msg};
@@ -124,7 +79,7 @@ struct Response
         es.append(Serializer::serialize(error_msg_));
         return es;
     }
-    static Response deserializeResponse(const char *data, size_t &offset)
+    void deserialize(const char *data, size_t &offset)
     {
         int code;
         std::memcpy(&code, data + offset, sizeof(code));
@@ -180,7 +135,9 @@ struct Response
             throw std::runtime_error("Invalid Response index");
         }
         std::string error_msg = Serializer::deserializeString(data, offset);
-        return Response(code, rdata, error_msg);
+        this->code_ = code;
+        this->data_ = rdata;
+        this->error_msg_ = error_msg;
     }
 
     std::string to_string() const
@@ -246,14 +203,16 @@ struct Response
 };
 enum RequestType
 {
+    NONE,   // 无操作
     AUTH,   // 权限认证
     COMMAND // 命令
 };
-struct Request
+struct Request : public ProtocolBody
 {
     RequestType type;
     std::string command;
     std::string auth_key;
+    Request() : type(RequestType::NONE), command(""), auth_key("") {}
     Request(RequestType t, const std::string &cmd, const std::string key = "") : type(t), command(cmd), auth_key(key) {}
     static Request auth(const std::string &password)
     {
@@ -272,14 +231,16 @@ struct Request
         s.append(Serializer::serialize(auth_key));
         return s;
     }
-    static Request deserializeRequest(const char *data, size_t &offset)
+    void deserialize(const char *data, size_t &offset)
     {
         uint8_t type;
         std::memcpy(&type, data + offset, sizeof(type));
         offset += sizeof(type);
         std::string command = Serializer::deserializeString(data, offset);
         std::string auth_key = Serializer::deserializeString(data, offset);
-        return Request(static_cast<RequestType>(type), command, auth_key);
+        this->type = static_cast<RequestType>(type);
+        this->command = command;
+        this->auth_key = auth_key;
     }
     std::string to_string() const
     {
@@ -293,14 +254,14 @@ inline std::string serialize_request(RequestType t, const std::string &cmd, cons
 {
     Request req(t, cmd, key);
     std::string body = req.serialize();
-    Header header(HeaderType::REQUEST, static_cast<uint32_t>(body.size()));
+    ProtocolHeader header(static_cast<uint32_t>(body.size()));
     return header.serialize() + body;
 }
 
 inline std::string serialize_response(const Response &resp)
 {
     std::string body = resp.serialize();
-    Header header(HeaderType::RESPONSE, static_cast<uint32_t>(body.size()));
+    ProtocolHeader header(static_cast<uint32_t>(body.size()));
     return header.serialize() + body;
 }
 

@@ -3,6 +3,8 @@
 #include <string>
 #include <stdexcept>
 #include <cstdint>
+#include <cstring>
+#include <chrono>
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -30,7 +32,9 @@ typedef int socket_t;
 inline std::string socket_error_to_string(int error) { return strerror(error); }
 #endif
 
-// 对socket的RAII封装
+/**
+ * @brief 对socket的RAII封装
+ */
 class SocketGuard
 {
 public:
@@ -81,6 +85,9 @@ private:
 };
 
 #ifdef _WIN32
+/**
+ * @brief 对WSAStartup/WSACleanup的RAII封装
+ */
 class WSAInitGuard
 {
 public:
@@ -251,20 +258,85 @@ inline int receive_data(socket_t client_socket, std::string &data, uint32_t data
         return -3;
     }
 
-    //  步骤3：执行接收操作（跨平台重试逻辑）
-    int received = 0;
-#ifdef _WIN32
-    // Windows无EINTR，直接调用recv
-    received = recv(client_socket, data.data(), static_cast<int>(data_size), 0);
-#else
-    // Linux处理EINTR信号中断：重试recv
-    do
+    //  步骤3：循环接收直到达到指定长度或发生错误
+    uint32_t total_received = 0;
+    while (total_received < data_size)
     {
-        received = recv(client_socket, data.data(), data_size, 0);
-    } while (received == SOCKET_ERROR_VALUE && GET_SOCKET_ERROR() == EINTR);
+        uint32_t remaining = data_size - total_received;
+        int received = 0;
+
+#ifdef _WIN32
+        // Windows无EINTR，直接调用recv
+        received = recv(client_socket, &data[total_received], static_cast<int>(remaining), 0);
+#else
+        // Linux处理EINTR信号中断：重试recv
+        do
+        {
+            received = recv(client_socket, &data[total_received], remaining, 0);
+        } while (received == SOCKET_ERROR_VALUE && GET_SOCKET_ERROR() == EINTR);
 #endif
 
-    //  步骤4：恢复原有超时配置
+        // 处理recv返回值
+        if (received > 0)
+        {
+            total_received += received;
+        }
+        else if (received == 0)
+        {
+            // 对方正常关闭连接
+            if (has_old_timeout)
+            {
+#ifdef _WIN32
+                setsockopt(client_socket, SOL_SOCKET, SO_RCVTIMEO, (char *)&old_timeout, sizeof(old_timeout));
+#else
+                setsockopt(client_socket, SOL_SOCKET, SO_RCVTIMEO, &old_tv, sizeof(old_tv));
+#endif
+            }
+            data.clear();
+            return -2;
+        }
+        else // received == SOCKET_ERROR_VALUE
+        {
+            // 区分超时和其他错误
+            int err_code = GET_SOCKET_ERROR();
+            bool is_timeout = false;
+#ifdef _WIN32
+            if (err_code == WSAETIMEDOUT)
+            {
+                is_timeout = true;
+            }
+#else
+            if (err_code == EAGAIN || err_code == EWOULDBLOCK)
+            {
+                is_timeout = true;
+            }
+#endif
+
+            // 恢复原有超时配置
+            if (has_old_timeout)
+            {
+#ifdef _WIN32
+                setsockopt(client_socket, SOL_SOCKET, SO_RCVTIMEO, (char *)&old_timeout, sizeof(old_timeout));
+#else
+                setsockopt(client_socket, SOL_SOCKET, SO_RCVTIMEO, &old_tv, sizeof(old_tv));
+#endif
+            }
+
+            if (is_timeout)
+            {
+                data.clear();
+                return -1; // 超时
+            }
+            else
+            {
+                // 其他错误（如连接重置、无效socket等）
+                data.clear();
+                return -3;
+            }
+        }
+    }
+
+    // 步骤4：恢复原有超时配置（成功接收完整数据）
     if (has_old_timeout)
     {
 #ifdef _WIN32
@@ -274,40 +346,44 @@ inline int receive_data(socket_t client_socket, std::string &data, uint32_t data
 #endif
     }
 
-    //  步骤5：精细化处理返回值
-    if (received > 0)
+    // 步骤5：成功返回
+    return static_cast<int>(total_received);
+}
+
+/**
+ * @brief 连接信息结构体
+ *
+ * 用于存储 TCP 连接的相关信息，包括 socket 描述符、
+ * 连接时间和客户端地址等。主要用于等待队列和未认证连接集合。
+ */
+struct Connection
+{
+    socket_t socket;                                  // socket描述符
+    std::chrono::steady_clock::time_point start_time; // 等待开始时间/就绪开始时间
+    sockaddr_in client_addr;                          // 客户端地址信息
+
+    /**
+     * @brief 相等性比较运算符
+     *
+     * @param other 另一个 Connection 对象
+     * @return true 如果 socket 描述符相同
+     */
+    bool operator==(const Connection &other) const
     {
-        data.resize(received); // 调整为实际接收长度
-        return received;
+        return socket == other.socket;
     }
-    else if (received == 0)
+};
+
+namespace std
+{
+    template <>
+    struct hash<Connection>
     {
-        // recv返回0：跨平台均表示对方正常关闭连接
-        data.clear();
-        return -2;
-    }
-    else // received == SOCKET_ERROR_VALUE
-    {
-        // 区分超时和其他错误
-#ifdef _WIN32
-        int err_code = GET_SOCKET_ERROR();
-        if (err_code == WSAETIMEDOUT)
+        size_t operator()(const Connection &conn) const
         {
-            data.clear();
-            return -1; // 超时
+            return std::hash<socket_t>()(conn.socket);
         }
-#else
-        int err_code = GET_SOCKET_ERROR();
-        if (err_code == EAGAIN || err_code == EWOULDBLOCK)
-        {
-            data.clear();
-            return -1; // 超时
-        }
-#endif
-        // 其他错误（如连接重置、无效socket等）
-        data.clear();
-        return -3;
-    }
+    };
 }
 
 #endif

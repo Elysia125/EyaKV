@@ -1,25 +1,29 @@
-#ifndef RAFT_CLIENT_H
-#define RAFT_CLIENT_H
-#include "common/socket/socket.h"
+#ifndef SOCKET_CS_CLIENT_H_
+#define SOCKET_CS_CLIENT_H_
+#include "common/socket/cs/common.h"
 
-class RaftClient
+class TCPClient : public TCPBase
 {
 private:
-    std::string host_;
-    int port_;
     SocketGuard socket_guard_;
 #ifdef _WIN32
     WSAInitGuard wsa_guard_;
 #endif
 public:
-    RaftClient(std::string host, int port) : host_(host), port_(port), socket_guard_(), wsa_guard_()
+    TCPClient(std::string host, u_short port) : TCPBase(host, port), socket_guard_(), wsa_guard_()
     {
         if (!wsa_guard_.init())
         {
             throw std::runtime_error("Failed to initialize Winsock");
         }
     }
-    ~RaftClient() = default;
+    ~TCPClient()
+    {
+        if (socket_guard_.is_valid())
+        {
+            CLOSE_SOCKET(socket_guard_.get());
+        }
+    }
 
     void connect()
     {
@@ -36,9 +40,9 @@ public:
         server_addr.sin_port = htons(port_);
 
         // Convert host to IP address
-        if (inet_pton(AF_INET, host_.c_str(), &server_addr.sin_addr) <= 0)
+        if (inet_pton(AF_INET, ip_.c_str(), &server_addr.sin_addr) <= 0)
         {
-            throw std::runtime_error("Invalid server address: " + host_);
+            throw std::runtime_error("Invalid server address: " + ip_);
         }
 
         // Connect to server
@@ -48,14 +52,14 @@ public:
         }
     }
 
-    inline int send_request(const std::string &data)
+    int send(const ProtocolBody &body)
     {
-        return send_data(socket_guard_.get(), data);
+        return TCPBase::send(body, socket_guard_.get());
     }
+    int receive(ProtocolBody &body, uint32_t timeout = 0)
+    {
+        return TCPBase::receive(body, socket_guard_.get(), timeout);
+    }
+};
 
-    inline int receive_response(std::string &data, uint32_t data_size, uint32_t timeout = 0)
-    {
-        return receive_data(socket_guard_.get(), data, data_size, timeout);
-    }
-}
-#endif // RAFT_CLIENT_H
+#endif
