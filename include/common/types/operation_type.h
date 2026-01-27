@@ -82,6 +82,44 @@ static std::unordered_map<std::string, uint8_t> operationTypeMap = {
     {"hkeys", OperationType::kHKeys},
     {"hvalues", OperationType::kHValues},
     {"hentries", OperationType::kHEntries}};
+inline std::unordered_set<uint8_t> read_types={
+    OperationType::kExists,
+    OperationType::kGet,
+    OperationType::kSMembers,
+    OperationType::kZScore,
+    OperationType::kZRank,
+    OperationType::kZCard,
+    OperationType::kZRangeByRank,
+    OperationType::kZRangeByScore,
+    OperationType::kLRange,
+    OperationType::kLGet,
+    OperationType::kLSize,
+    OperationType::kHGet,
+    OperationType::kHKeys,
+    OperationType::kHValues,
+    OperationType::kHEntries
+};
+inline std::unordered_set<uint8_t> write_types={
+    OperationType::kRemove,
+    OperationType::kRange,
+    OperationType::kExpire,
+    OperationType::kSet,
+    OperationType::kSAdd,
+    OperationType::kSRem,
+    OperationType::kZAdd,
+    OperationType::kZRem,
+    OperationType::kZIncrBy,
+    OperationType::kZRemByRank,
+    OperationType::kZRemByScore,
+    OperationType::kLPush,
+    OperationType::kLPop,
+    OperationType::kRPush,
+    OperationType::kRPop,
+    OperationType::kLPopN,
+    OperationType::kRPopN,
+    OperationType::kHSet,
+    OperationType::kHDel
+};
 inline uint8_t stringToOperationType(const std::string &cmd)
 {
     std::string lower_cmd = cmd;

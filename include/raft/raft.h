@@ -14,7 +14,8 @@
 #include <shared_mutex>
 #include "common/base/export.h"
 #include "raft/protocol/protocol.h"
-
+#include "common/socket/cs/client.h"
+#include "common/socket/cs/server.h"
 //  Raft角色枚举
 enum RaftRole
 {
@@ -287,14 +288,12 @@ namespace std
 }
 
 //  Raft节点类
-
-//  Raft节点类
-class EYAKV_RAFT_API RaftNode
+class EYAKV_RAFT_API RaftNode : public TCPServer
 {
 private:
     //  持久化状态
     std::atomic<uint32_t> current_term_;     // 当前任期
-    std::atomic<RaftNodeAddress> voted_for_; // 本任期投票给的节点（-1表示未投票）
+    std::atomic<RaftNodeAddress> voted_for_; // 本任期投票给的节点（空表示未投票）
     RaftLogRingBuffer log_buffer_;           // 环形日志缓冲区
     std::atomic<uint32_t> commit_index_;     // 已提交的最高日志索引
     std::atomic<uint32_t> last_applied_;     // 已应用到状态机的最高日志索引
@@ -308,7 +307,7 @@ private:
 
     //  集群配置
     std::vector<RaftNodeAddress> cluster_nodes_; // 集群所有节点ID
-    std::atomic<RaftNodeAddress> leader_id_;     // 当前感知的Leader ID（-1表示无）
+    std::atomic<RaftNodeAddress> leader_id_;     // 当前感知的Leader ID（空表示无）
 
     //  超时配置（毫秒）
     int election_timeout_min_ = 150; // 选举超时最小值
@@ -324,9 +323,28 @@ private:
     mutable std::mutex mutex_;
 
     //  线程控制
-    std::atomic<bool> running_;
     std::thread election_thread_;
     std::thread heartbeat_thread_;
+    std::atomic<bool> election_thread_running_;
+    std::atomic<bool> heartbeat_thread_running_;
+
+    // 连接管理（与主节点的连接，如果是主节点则为nullptr）
+    std::unique_ptr<TCPClient> follower_client_;
+    std::thread follower_client_thread_;
+    std::atomic<bool> follower_client_thread_running_;
+
+    // 元数据文件句柄
+    FILE *metadata_file_ = nullptr;
+
+    ProtocolBody *new_body()
+    {
+        return new RaftMessage();
+    }
+
+    void handle_request(ProtocolBody *body, socket_t client_sock)
+    {
+        // TODO 处理请求
+    }
 
     // 生成随机选举超时时间
     int generate_election_timeout()
@@ -379,21 +397,6 @@ private:
 public:
     RaftNode();
     ~RaftNode();
-
-    // 启动节点
-    void start();
-
-    // 停止节点
-    void stop();
-
-    // 处理RequestVote请求
-    RequestVoteResponse handle_request_vote(const RequestVoteRequest &req);
-
-    // 处理AppendEntries请求
-    AppendEntriesResponse handle_append_entries(const AppendEntriesRequest &req);
-
-    // 接收RPC消息
-    void receive_rpc(int from_node_id, RaftMessageType msg_type, const std::string &data);
 
     // 提交命令（返回日志索引，成功则>=0，失败则为-1）
     int submit_command(const std::string &cmd);

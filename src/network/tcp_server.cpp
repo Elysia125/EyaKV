@@ -10,7 +10,7 @@
 #ifdef __linux__
 #define INITIAL_BUFFER_SIZE 8096
 #endif
-EyaServer::EyaServer(Storage *storage, const std::string &ip,
+EyaServer::EyaServer(const std::string &ip,
                      const u_short port,
                      const std::string &password,
                      const uint32_t max_connections,
@@ -24,8 +24,7 @@ EyaServer::EyaServer(Storage *storage, const std::string &ip,
       worker_thread_count_(worker_thread_count),
       worker_queue_size_(worker_queue_size),
       worker_wait_timeout_(worker_wait_timeout),
-      stop_auth_monitor_(false),
-      storage_(storage)
+      stop_auth_monitor_(false)
 {
 #ifdef _WIN32
     WSADATA wsaData;
@@ -44,7 +43,11 @@ EyaServer::EyaServer(Storage *storage, const std::string &ip,
 
 EyaServer::~EyaServer()
 {
-    // 停止所有监控线程
+    stop();
+}
+
+void EyaServer::stop()
+{
     stop_auth_monitor_ = true;
     auth_cv_.notify_all();
 
@@ -52,7 +55,7 @@ EyaServer::~EyaServer()
     {
         auth_monitor_thread_.join();
     }
-    stop();
+    TCPServer::stop();
 }
 
 void EyaServer::start()
@@ -419,6 +422,11 @@ void EyaServer::handle_request(ProtocolBody *body, socket_t client_sock)
             }
             else
             {
+                if(!Storage::is_init()){
+                    LOG_ERROR("Storage is not initialized");
+                    exit(1);
+                }
+                static Storage* storage_=Storage::get_instance();
                 // 解析命令并执行
                 std::vector<std::string> command_parts = split(request->command, ' ');
                 if (command_parts.empty())

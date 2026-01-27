@@ -46,7 +46,7 @@ class ZSetProcessor;
  */
 class EYAKV_STORAGE_API Storage
 {
-public:
+private:
     /**
      * @brief 构造函数。
      * @param data_dir 数据存储目录，用于存放 WAL 和 SSTable 文件。
@@ -64,6 +64,8 @@ public:
                      const unsigned int &sstable_merge_threshold = 5,
                      const unsigned int &sstable_zero_level_size = 10,
                      const double &sstable_level_size_ratio = 10.0);
+
+public:
     ~Storage();
 
     // 禁止拷贝
@@ -73,6 +75,52 @@ public:
     Storage(Storage &&) = default;
     Storage &operator=(Storage &&) = default;
 
+    // 获取静态单例(双重检查锁)
+    static Storage *get_instance()
+    {
+        return instance_;
+    }
+    static void release_instance()
+    {
+        if (instance_ != nullptr)
+        {
+            delete instance_;
+            instance_ = nullptr;
+        }
+    }
+    // 初始化单例
+    static void init(const std::string &data_dir,
+                     const std::string &wal_dir,
+                     const bool &read_only = false,
+                     const bool &enable_wal = true,
+                     const std::optional<unsigned int> &wal_flush_interval = 1000,
+                     const WALFlushStrategy &wal_flush_strategy = WALFlushStrategy::BACKGROUND_THREAD,
+                     const size_t &memtable_size = 1024 * 1024 * 1024,
+                     const size_t &skiplist_max_level = 16,
+                     const double &skiplist_probability = 0.5,
+                     const SSTableMergeStrategy &sstable_merge_strategy = SSTableMergeStrategy::SIZE_TIERED_COMPACTION,
+                     const unsigned int &sstable_merge_threshold = 5,
+                     const unsigned int &sstable_zero_level_size = 10,
+                     const double &sstable_level_size_ratio = 10.0)
+    {
+        if (instance_ == nullptr)
+        {
+            instance_ = new Storage(data_dir, wal_dir,
+                                    read_only, enable_wal,
+                                    wal_flush_interval,
+                                    wal_flush_strategy,
+                                    memtable_size, skiplist_max_level,
+                                    skiplist_probability,
+                                    sstable_merge_strategy, sstable_merge_threshold,
+                                    sstable_zero_level_size, sstable_level_size_ratio);
+            is_init_ = true;
+        }
+    }
+
+    static bool is_init()
+    {
+        return is_init_;
+    }
     /**
      * @brief 读取数据。
      *
@@ -146,7 +194,9 @@ private:
     std::thread flush_thread_;
     std::condition_variable flush_cv_;
     std::mutex flush_mutex_;
-
+    static bool is_init_;
+    // 静态单例
+    static Storage *instance_;
     /**
      * @brief 系统启动时的数据恢复流程。
      * 包括重新加载 SSTable 和重放 WAL。

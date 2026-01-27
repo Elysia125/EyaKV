@@ -15,35 +15,7 @@
 #include "common/concurrency/threadpool.h"
 #include "network/protocol/protocol.h"
 #include "common/socket/cs/server.h"
-// 平台差异化宏定义与头文件包含
-#ifdef _WIN32
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#pragma comment(lib, "ws2_32.lib")
-typedef SOCKET socket_t;
-#define INVALID_SOCKET_VALUE INVALID_SOCKET
-#define SOCKET_ERROR_VALUE SOCKET_ERROR
-#define CLOSE_SOCKET closesocket
-#else
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <arpa/inet.h>
-#include <errno.h>
-typedef int socket_t;
-#define INVALID_SOCKET_VALUE -1
-#define SOCKET_ERROR_VALUE -1
-#define CLOSE_SOCKET close
-#endif
 
-// IO复用技术头文件
-#ifdef __linux__
-#include <sys/epoll.h>
-#elif defined(__APPLE__)
-#include <sys/event.h>
-#include <sys/time.h>
-#endif
 #undef DEFAULT_MAX_CONNECTIONS
 #undef DEFAULT_CONNECT_WAIT_QUEUE_SIZE
 #undef DEFAULT_CONNECT_WAIT_TIMEOUT
@@ -98,7 +70,7 @@ public:
      * @param worker_queue_size 工作线程任务队列大小（默认 1000）
      * @param worker_wait_timeout 任务提交等待超时时间，单位秒（默认 30）
      */
-    EyaServer(Storage *storage, const std::string &ip,
+    EyaServer(const std::string &ip,
               const u_short port,
               const std::string &password,
               const uint32_t max_connections = DEFAULT_MAX_CONNECTIONS,
@@ -261,17 +233,6 @@ private:
 
     //  线程池相关
     std::unique_ptr<ThreadPool> thread_pool_; // 线程池，用于异步处理客户端请求
-    Storage *storage_;                        // 存储引擎指针，用于执行键值操作
-    //  平台特定的IO复用句柄或数据
-#ifdef __linux__
-    int epoll_fd_;               // epoll 文件描述符
-    struct epoll_event *events_; // epoll 事件数组，用于存储就绪事件
-#elif defined(__APPLE__)
-    int kqueue_fd_;             // kqueue 文件描述符
-    struct kevent *event_list_; // kevent 事件列表，用于存储就绪事件
-#else // Windows (使用select模型)
-    fd_set master_set_; // select 主集合，存储所有需要监听的 socket
-#endif
 };
 
 #endif // SERVER_H

@@ -12,7 +12,6 @@ class EyaServer;
 class EYAKV_STARTER_API EyaKVStarter
 {
 private:
-    static Storage *storage;
     static EyaServer *server;
     static std::atomic<bool> should_shutdown;
 
@@ -23,7 +22,7 @@ private:
 
     static void initialize_logger();
 
-    static Storage *initialize_storage();
+    static void initialize_storage();
 
     static void initialize_server();
 

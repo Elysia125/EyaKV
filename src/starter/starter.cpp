@@ -9,7 +9,6 @@
 
 EyaKVConfig &config = EyaKVConfig::get_instance();
 
-Storage *EyaKVStarter::storage = nullptr;
 EyaServer *EyaKVStarter::server = nullptr;
 std::atomic<bool> EyaKVStarter::should_shutdown(false);
 void EyaKVStarter::print_banner()
@@ -35,7 +34,7 @@ void EyaKVStarter::initialize()
 {
     print_banner();
     initialize_logger();
-    storage = initialize_storage();
+    initialize_storage();
     initialize_server();
     register_signal_handlers();
 }
@@ -74,7 +73,7 @@ void EyaKVStarter::initialize_logger()
     }
 }
 
-Storage *EyaKVStarter::initialize_storage()
+void EyaKVStarter::initialize_storage()
 {
     std::cout << "Initializing storage..." << std::endl;
     std::optional<std::string> data_dir = config.get_config(DATA_DIR_KEY);
@@ -119,21 +118,20 @@ Storage *EyaKVStarter::initialize_storage()
     SSTableMergeStrategy sstable_merge_strategy = static_cast<SSTableMergeStrategy>(std::stoi(config.get_config(SSTABLE_MERGE_STRATEGY_KEY).value()));
     uint32_t sstable_zero_level_size = static_cast<uint32_t>(std::stoul(config.get_config(SSTABLE_ZERO_LEVEL_SIZE_KEY).value()));
     uint32_t sstable_level_size_ratio = static_cast<uint32_t>(std::stoul(config.get_config(SSTABLE_LEVEL_SIZE_RATIO_KEY).value()));
-    static Storage *st = new Storage(data_dir.value(),
-                                     wal_dir.value(),
-                                     read_only,
-                                     wal_enable,
-                                     wal_flush_interval,
-                                     wal_flush_strategy,
-                                     memtable_size,
-                                     skiplist_max_level,
-                                     skiplist_probability,
-                                     sstable_merge_strategy,
-                                     sstable_merge_threshold,
-                                     sstable_zero_level_size,
-                                     sstable_level_size_ratio);
+    Storage::init(data_dir.value(),
+                  wal_dir.value(),
+                  read_only,
+                  wal_enable,
+                  wal_flush_interval,
+                  wal_flush_strategy,
+                  memtable_size,
+                  skiplist_max_level,
+                  skiplist_probability,
+                  sstable_merge_strategy,
+                  sstable_merge_threshold,
+                  sstable_zero_level_size,
+                  sstable_level_size_ratio);
     std::cout << "Storage initialized. Data directory: " << data_dir.value() << std::endl;
-    return st;
 }
 
 void EyaKVStarter::initialize_server()
@@ -172,8 +170,7 @@ void EyaKVStarter::initialize_server()
     std::optional<std::string> worker_wait_timeout_str = config.get_config(WORKER_WAIT_TIMEOUT_KEY);
     uint32_t worker_wait_timeout = worker_wait_timeout_str.has_value() ? static_cast<uint32_t>(std::stoul(worker_wait_timeout_str.value())) : DEFAULT_WORKER_WAIT_TIMEOUT;
 
-    server = new EyaServer(storage,
-                           ip_str.value(),
+    server = new EyaServer(ip_str.value(),
                            port,
                            password,
                            max_connections,
@@ -237,13 +234,9 @@ void EyaKVStarter::shutdown()
     }
 
     // 清理存储资源
-    if (storage != nullptr)
-    {
-        LOG_INFO("Cleaning up storage...");
-        delete storage;
-        storage = nullptr;
-        LOG_INFO("Storage cleaned up");
-    }
+    LOG_INFO("Cleaning up storage...");
+    Storage::release_instance();
+    LOG_INFO("Storage cleaned up");
 
     LOG_INFO("Graceful shutdown completed");
     exit(EXIT_SUCCESS);

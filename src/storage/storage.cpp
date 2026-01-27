@@ -11,6 +11,8 @@ const auto remove_evalue = [](EValue &value) -> EValue &
         value.deleted = true;
         return value; };
 
+Storage *Storage::instance_ = nullptr;
+bool Storage::is_init_ = false;
 Storage::Storage(const std::string &data_dir,
                  const std::string &wal_dir,
                  const bool &read_only,

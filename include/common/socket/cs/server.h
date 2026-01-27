@@ -284,7 +284,7 @@ public:
         }
     }
 
-    void stop()
+    virtual void stop()
     {
         // 停止所有监控线程
         wait_thread_stop_monitor_.store(true, std::memory_order_relaxed);
