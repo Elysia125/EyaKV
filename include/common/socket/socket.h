@@ -32,6 +32,70 @@ typedef int socket_t;
 inline std::string socket_error_to_string(int error) { return strerror(error); }
 #endif
 
+struct Address
+{
+    std::string host;
+    int port;
+    Address(const std::string &host, int port) : host(host), port(port) {}
+
+    Address() : host(""), port(0) {}
+
+    bool operator==(const Address &other) const
+    {
+        return host == other.host && port == other.port;
+    }
+
+    bool is_null() const
+    {
+        return host.empty() && port == 0;
+    }
+
+    std::string to_string() const
+    {
+        return host + ":" + std::to_string(port);
+    }
+
+    std::string serialize() const
+    {
+        std::string data;
+        uint32_t host_len = host.size();
+        host_len = htonl(host_len);
+        data.append(reinterpret_cast<const char *>(&host_len), sizeof(host_len));
+        data.append(host);
+        uint32_t port_net = htonl(port);
+        data.append(reinterpret_cast<const char *>(&port_net), sizeof(port_net));
+        return data;
+    }
+
+    static Address deserialize(const char *data, size_t &offset)
+    {
+        uint32_t host_len;
+        std::memcpy(&host_len, data + offset, sizeof(host_len));
+        offset += sizeof(host_len);
+        host_len = ntohl(host_len);
+        std::string host(data + offset, host_len);
+        offset += host_len;
+        uint32_t port_net;
+        std::memcpy(&port_net, data + offset, sizeof(port_net));
+        offset += sizeof(port_net);
+        port_net = ntohl(port_net);
+        return Address(host, port_net);
+    }
+};
+
+namespace std
+{
+    template <>
+    struct hash<Address>
+    {
+        std::size_t operator()(const Address &addr) const
+        {
+            std::string data = addr.to_string();
+            return std::hash<std::string>()(data);
+        }
+    };
+}
+
 /**
  * @brief 对socket的RAII封装
  */

@@ -75,6 +75,34 @@ inline std::vector<std::string> split(const std::string &str, char delimiter)
     return result;
 }
 
+inline std::vector<std::string> split_by_spacer(const std::string &str)
+{
+    std::vector<std::string> result;
+    std::string current_substr;
+    for (char c : str)
+    {
+        if (c == ' ')
+        {
+            // 遇到分隔符：将当前子串加入结果，然后清空
+            if (!current_substr.empty())
+            {
+                result.push_back(current_substr);
+                current_substr.clear();
+            }
+        }
+        else
+        {
+            // 非分隔符：追加到当前子串
+            current_substr += c;
+        }
+    }
+
+    // 处理最后一段子串（原字符串末尾没有分隔符的情况）
+    result.push_back(current_substr);
+
+    return result;
+}
+
 inline std::string trim(const std::string &str)
 {
     size_t start = 0;

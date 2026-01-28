@@ -16,6 +16,8 @@
 #include "raft/protocol/protocol.h"
 #include "common/socket/cs/client.h"
 #include "common/socket/cs/server.h"
+#include "network/protocol/protocol.h"
+
 //  Raft角色枚举
 enum RaftRole
 {
@@ -223,91 +225,27 @@ public:
     }
 };
 
-struct RaftNodeAddress
-{
-    std::string host;
-    int port;
-    RaftNodeAddress(const std::string &host, int port) : host(host), port(port) {}
-
-    RaftNodeAddress() : host(""), port(0) {}
-
-    bool operator==(const RaftNodeAddress &other) const
-    {
-        return host == other.host && port == other.port;
-    }
-
-    bool is_null() const
-    {
-        return host.empty() && port == 0;
-    }
-
-    std::string to_string() const
-    {
-        return host + ":" + std::to_string(port);
-    }
-
-    std::string serialize() const
-    {
-        std::string data;
-        uint32_t host_len = host.size();
-        host_len = htonl(host_len);
-        data.append(reinterpret_cast<const char *>(&host_len), sizeof(host_len));
-        data.append(host);
-        uint32_t port_net = htonl(port);
-        data.append(reinterpret_cast<const char *>(&port_net), sizeof(port_net));
-        return data;
-    }
-
-    static RaftNodeAddress deserialize(const char *data, size_t &offset)
-    {
-        uint32_t host_len;
-        std::memcpy(&host_len, data + offset, sizeof(host_len));
-        offset += sizeof(host_len);
-        host_len = ntohl(host_len);
-        std::string host(data + offset, host_len);
-        offset += host_len;
-        uint32_t port_net;
-        std::memcpy(&port_net, data + offset, sizeof(port_net));
-        offset += sizeof(port_net);
-        port_net = ntohl(port_net);
-        return RaftNodeAddress(host, port_net);
-    }
-};
-
-namespace std
-{
-    template <>
-    struct hash<RaftNodeAddress>
-    {
-        std::size_t operator()(const RaftNodeAddress &addr) const
-        {
-            std::string data = addr.to_string();
-            return std::hash<std::string>()(data);
-        }
-    };
-}
-
 //  Raft节点类
 class EYAKV_RAFT_API RaftNode : public TCPServer
 {
 private:
     //  持久化状态
-    std::atomic<uint32_t> current_term_;     // 当前任期
-    std::atomic<RaftNodeAddress> voted_for_; // 本任期投票给的节点（空表示未投票）
-    RaftLogRingBuffer log_buffer_;           // 环形日志缓冲区
-    std::atomic<uint32_t> commit_index_;     // 已提交的最高日志索引
-    std::atomic<uint32_t> last_applied_;     // 已应用到状态机的最高日志索引
+    std::atomic<uint32_t> current_term_; // 当前任期
+    std::atomic<Address> voted_for_;     // 本任期投票给的节点（空表示未投票）
+    RaftLogRingBuffer log_buffer_;       // 环形日志缓冲区
+    std::atomic<uint32_t> commit_index_; // 已提交的最高日志索引
+    std::atomic<uint32_t> last_applied_; // 已应用到状态机的最高日志索引
 
     //  易失性状态
     std::atomic<RaftRole> role_; // 角色
-
+    std::string password_;       // 认证密码(空表示不认证，主节点有效)
     //  易失性状态（仅 Leader）
-    std::unordered_map<RaftNodeAddress, uint32_t> next_index_;  // 每个Follower下一个要发送的日志索引
-    std::unordered_map<RaftNodeAddress, uint32_t> match_index_; // 每个Follower已匹配的日志索引
+    std::unordered_map<Address, uint32_t> next_index_;  // 每个Follower下一个要发送的日志索引
+    std::unordered_map<Address, uint32_t> match_index_; // 每个Follower已匹配的日志索引
 
     //  集群配置
-    std::vector<RaftNodeAddress> cluster_nodes_; // 集群所有节点ID
-    std::atomic<RaftNodeAddress> leader_id_;     // 当前感知的Leader ID（空表示无）
+    std::vector<Address> cluster_nodes_;  // 集群所有节点ID
+    std::atomic<Address> leader_address_; // 当前感知的Leader ID（空表示无）
 
     //  超时配置（毫秒）
     int election_timeout_min_ = 150; // 选举超时最小值
@@ -335,6 +273,11 @@ private:
 
     // 元数据文件句柄
     FILE *metadata_file_ = nullptr;
+    // 单例
+    static std::unique_ptr<RaftNode> instance_;
+    static bool is_init_;
+
+    RaftNode(const std::string root_dir, const std::string &ip, const u_short port, const uint32_t max_follower_count = 3, const std::string password = "");
 
     ProtocolBody *new_body()
     {
@@ -394,15 +337,37 @@ private:
     // 应用已提交的日志到状态机
     void apply_committed_entries();
 
+    // 执行命令
+    Response execute_command(const std::string &cmd);
+
+    Response handle_raft_command(const std::vector<std::string> &command_parts, bool &is_exec);
+
 public:
-    RaftNode();
     ~RaftNode();
 
     // 提交命令（返回日志索引，成功则>=0，失败则为-1）
-    int submit_command(const std::string &cmd);
+    Response submit_command(const std::string &cmd);
 
     // 获取当前角色
     RaftRole get_role() const { return role_.load(); }
+
+    static RaftNode *get_instance()
+    {
+        return instance_.get();
+    }
+    static bool is_init()
+    {
+        return is_init_;
+    }
+
+    static void init(const std::string root_dir, const std::string &ip, const u_short port, const uint32_t max_follower_count = 3, const std::string password = "")
+    {
+        if (is_init_)
+        {
+            throw std::runtime_error("RaftNode already initialized");
+        }
+        instance_ = std::make_unique<RaftNode>(root_dir, ip, port, max_follower_count, password);
+    }
 };
 
 #endif

@@ -82,7 +82,7 @@ static std::unordered_map<std::string, uint8_t> operationTypeMap = {
     {"hkeys", OperationType::kHKeys},
     {"hvalues", OperationType::kHValues},
     {"hentries", OperationType::kHEntries}};
-inline std::unordered_set<uint8_t> read_types={
+static std::unordered_set<uint8_t> read_types = {
     OperationType::kExists,
     OperationType::kGet,
     OperationType::kSMembers,
@@ -97,9 +97,8 @@ inline std::unordered_set<uint8_t> read_types={
     OperationType::kHGet,
     OperationType::kHKeys,
     OperationType::kHValues,
-    OperationType::kHEntries
-};
-inline std::unordered_set<uint8_t> write_types={
+    OperationType::kHEntries};
+static std::unordered_set<uint8_t> write_types = {
     OperationType::kRemove,
     OperationType::kRange,
     OperationType::kExpire,
@@ -118,8 +117,7 @@ inline std::unordered_set<uint8_t> write_types={
     OperationType::kLPopN,
     OperationType::kRPopN,
     OperationType::kHSet,
-    OperationType::kHDel
-};
+    OperationType::kHDel};
 inline uint8_t stringToOperationType(const std::string &cmd)
 {
     std::string lower_cmd = cmd;
@@ -130,6 +128,16 @@ inline uint8_t stringToOperationType(const std::string &cmd)
         return it->second;
     }
     throw std::runtime_error("unknown operation type: " + cmd);
+}
+
+inline bool isReadOperation(uint8_t op_type)
+{
+    return read_types.find(op_type) != read_types.end();
+}
+
+inline bool isWriteOperation(uint8_t op_type)
+{
+    return write_types.find(op_type) != write_types.end();
 }
 
 #endif

@@ -11,7 +11,7 @@ const auto remove_evalue = [](EValue &value) -> EValue &
         value.deleted = true;
         return value; };
 
-Storage *Storage::instance_ = nullptr;
+std::unique_ptr<Storage> Storage::instance_ = nullptr;
 bool Storage::is_init_ = false;
 Storage::Storage(const std::string &data_dir,
                  const std::string &wal_dir,
@@ -84,6 +84,7 @@ Storage::Storage(const std::string &data_dir,
         }
     }
     start_background_flush_thread();
+    is_init_ = true;
     LOG_INFO("Storage engine initialized. Data dir:%s ", data_dir_.c_str());
 }
 

@@ -78,15 +78,7 @@ public:
     // 获取静态单例(双重检查锁)
     static Storage *get_instance()
     {
-        return instance_;
-    }
-    static void release_instance()
-    {
-        if (instance_ != nullptr)
-        {
-            delete instance_;
-            instance_ = nullptr;
-        }
+        return instance_.get();
     }
     // 初始化单例
     static void init(const std::string &data_dir,
@@ -105,15 +97,14 @@ public:
     {
         if (instance_ == nullptr)
         {
-            instance_ = new Storage(data_dir, wal_dir,
-                                    read_only, enable_wal,
-                                    wal_flush_interval,
-                                    wal_flush_strategy,
-                                    memtable_size, skiplist_max_level,
-                                    skiplist_probability,
-                                    sstable_merge_strategy, sstable_merge_threshold,
-                                    sstable_zero_level_size, sstable_level_size_ratio);
-            is_init_ = true;
+            instance_ = std::make_unique<Storage>(data_dir, wal_dir,
+                                                  read_only, enable_wal,
+                                                  wal_flush_interval,
+                                                  wal_flush_strategy,
+                                                  memtable_size, skiplist_max_level,
+                                                  skiplist_probability,
+                                                  sstable_merge_strategy, sstable_merge_threshold,
+                                                  sstable_zero_level_size, sstable_level_size_ratio);
         }
     }
 
@@ -196,7 +187,7 @@ private:
     std::mutex flush_mutex_;
     static bool is_init_;
     // 静态单例
-    static Storage *instance_;
+    static std::unique_ptr<Storage> instance_;
     /**
      * @brief 系统启动时的数据恢复流程。
      * 包括重新加载 SSTable 和重放 WAL。
