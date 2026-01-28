@@ -6,6 +6,7 @@
 #include <set>
 #include <optional>
 #include <bit>
+#include "common/socket/socket.h"
 #include "common/socket/protocol/protocol.h"
 #include "common/serialization/serializer.h"
 #ifdef _WIN32
@@ -14,33 +15,44 @@
 #else
 #include <arpa/inet.h>
 #endif
-//  日志缓冲区配置
-#define RAFT_LOG_BUFFER_SIZE 8192 // 环形缓冲区大小
+// 日志缓冲区配置
+#define RAFT_LOG_BUFFER_SIZE 8192 // 环形缓冲区大小（已弃用，使用RaftLogArray代替）
 
 using Serializer = EyaKV::Serializer;
 
 //  RPC 消息类型
 enum RaftMessageType
 {
-    HEART_BEAT = 0,              // 心跳消息
-    REQUEST_VOTE = 1,            // 请求投票
-    REQUEST_VOTE_RESPONSE = 2,   // 请求投票响应
-    APPEND_ENTRIES = 3,          // 日志追加
-    APPEND_ENTRIES_RESPONSE = 4, // 日志追加响应
-    NEW_CONNECTION = 5,          // 新连接
-    DATA_SNAPSHOT_RESPONSE = 6,  // 数据快照响应
-    NEW_MASTER = 7,              // 新主节点选举成功消息
-    NEW_SLAVER = 8,              // 新从节点消息
+    HEART_BEAT = 0,                 // 心跳消息
+    REQUEST_VOTE = 1,               // 请求投票
+    REQUEST_VOTE_RESPONSE = 2,      // 请求投票响应
+    APPEND_ENTRIES = 3,             // 日志追加
+    APPEND_ENTRIES_RESPONSE = 4,    // 日志追加响应
+    NEW_NODE = 5,                   // 新节点加入广播
+    NEW_MASTER = 7,                 // 新主节点选举成功消息
+    QUERY_LEADER = 9,               // 探查leader
+    QUERY_LEADER_RESPONSE = 10,     // 探查leader响应
+    JOIN_CLUSTER = 11,              // 新节点加入集群
+    JOIN_CLUSTER_RESPONSE = 12,     // 新节点加入响应
+    CLUSTER_CONFIG = 13,            // 集群配置变更
+    CLUSTER_CONFIG_RESPONSE = 14,   // 集群配置变更响应
+    SNAPSHOT_INSTALL = 15,          // 快照安装
+    SNAPSHOT_INSTALL_RESPONSE = 16, // 快照安装响应
+    LOG_SYNC_REQUEST = 17,          // 日志同步请求
+    LOG_SYNC_RESPONSE = 18          // 日志同步响应
 };
-//  日志条目结构体
+// 日志条目结构体（根据设计文档更新）
 struct LogEntry
 {
-    uint32_t term;   // 日志所属任期
-    uint32_t index;  // 日志索引（全局唯一）
-    std::string cmd; // 客户端命令
+    uint32_t term;         // 日志所属任期
+    uint32_t index;        // 日志索引（全局唯一）
+    uint32_t command_type; // 命令类型 (预留字段，用于区分普通命令、配置变更等)
+    std::string cmd;       // 客户端命令
+    uint64_t timestamp;    // 时间戳 (用于调试和超时检测)
 
-    LogEntry() : term(0), index(0) {}
-    LogEntry(uint32_t t, uint32_t i, const std::string &c) : term(t), index(i), cmd(c) {}
+    LogEntry() : term(0), index(0), command_type(0), timestamp(0) {}
+    LogEntry(uint32_t t, uint32_t i, const std::string &c, uint64_t ts = 0, uint32_t cmd_type = 0)
+        : term(t), index(i), command_type(cmd_type), cmd(c), timestamp(ts) {}
 
     // 序列化
     std::string serialize() const
@@ -48,11 +60,15 @@ struct LogEntry
         std::string result;
         uint32_t net_term = htonl(term);
         uint32_t net_index = htonl(index);
-        uint32_t cmd_len = htonl(static_cast<uint32_t>(cmd.size()));
+        uint32_t net_command_type = htonl(command_type);
+        uint32_t net_timestamp = htonl(static_cast<uint32_t>(timestamp >> 32));
+        uint32_t net_timestamp_low = htonl(static_cast<uint32_t>(timestamp & 0xFFFFFFFF));
         result.append(reinterpret_cast<const char *>(&net_term), sizeof(net_term));
         result.append(reinterpret_cast<const char *>(&net_index), sizeof(net_index));
-        result.append(reinterpret_cast<const char *>(&cmd_len), sizeof(cmd_len));
-        result.append(cmd);
+        result.append(reinterpret_cast<const char *>(&net_command_type), sizeof(net_command_type));
+        result.append(reinterpret_cast<const char *>(&net_timestamp), sizeof(net_timestamp));
+        result.append(reinterpret_cast<const char *>(&net_timestamp_low), sizeof(net_timestamp_low));
+        result.append(Serializer::serialize(cmd));
         return result;
     }
 
@@ -60,18 +76,23 @@ struct LogEntry
     static LogEntry deserialize(const char *data, size_t &offset)
     {
         LogEntry entry;
-        uint32_t net_term, net_index, cmd_len;
+        uint32_t net_term, net_index, net_command_type, net_timestamp, net_timestamp_low;
         std::memcpy(&net_term, data + offset, sizeof(net_term));
         offset += sizeof(net_term);
         entry.term = ntohl(net_term);
         std::memcpy(&net_index, data + offset, sizeof(net_index));
         offset += sizeof(net_index);
         entry.index = ntohl(net_index);
-        std::memcpy(&cmd_len, data + offset, sizeof(cmd_len));
-        offset += sizeof(cmd_len);
-        cmd_len = ntohl(cmd_len);
-        entry.cmd.assign(data + offset, cmd_len);
-        offset += cmd_len;
+        std::memcpy(&net_command_type, data + offset, sizeof(net_command_type));
+        offset += sizeof(net_command_type);
+        entry.command_type = ntohl(net_command_type);
+        std::memcpy(&net_timestamp, data + offset, sizeof(net_timestamp));
+        offset += sizeof(net_timestamp);
+        std::memcpy(&net_timestamp_low, data + offset, sizeof(net_timestamp_low));
+        offset += sizeof(net_timestamp_low);
+        entry.timestamp = (static_cast<uint64_t>(ntohl(net_timestamp)) << 32) | ntohl(net_timestamp_low);
+        // 反序列化cmd字符串
+        entry.cmd = Serializer::deserializeString(data, offset);
         return entry;
     }
 
@@ -92,58 +113,6 @@ namespace std
         }
     };
 }
-struct NewConnection
-{
-    bool is_reconnect;   // 是否为重新连接
-    uint32_t last_index; // 日志的最后一个索引
-    NewConnection(bool is_reconnect, uint32_t last_index) : is_reconnect(is_reconnect), last_index(last_index) {}
-    NewConnection() : is_reconnect(false), last_index(0) {}
-    std::string serialize() const
-    {
-        std::string result;
-        uint8_t net_is_reconnect = static_cast<uint8_t>(is_reconnect);
-        uint32_t net_last_index = htonl(last_index);
-        result.append(reinterpret_cast<const char *>(&net_is_reconnect), sizeof(net_is_reconnect));
-        result.append(reinterpret_cast<const char *>(&net_last_index), sizeof(net_last_index));
-        return result;
-    }
-
-    static NewConnection deserialize(const char *data, size_t &offset)
-    {
-        uint8_t net_is_reconnect;
-        uint32_t net_last_index;
-        std::memcpy(&net_is_reconnect, data + offset, sizeof(net_is_reconnect));
-        offset += sizeof(net_is_reconnect);
-        std::memcpy(&net_last_index, data + offset, sizeof(net_last_index));
-        offset += sizeof(net_last_index);
-        return NewConnection(net_is_reconnect != 0, ntohl(net_last_index));
-    }
-};
-
-struct NewSlaver
-{
-    std::string ip;
-    uint16_t port;
-    NewSlaver() = default;
-    NewSlaver(std::string ip, uint16_t port) : ip(ip), port(port) {}
-    std::string serialize() const
-    {
-        std::string result;
-        uint16_t net_port = htons(port);
-        result.append(Serializer::serialize(ip));
-        result.append(reinterpret_cast<const char *>(&net_port), sizeof(net_port));
-        return result;
-    }
-
-    static NewSlaver deserialize(const char *data, size_t &offset)
-    {
-        std::string ip = Serializer::deserializeString(data, offset);
-        uint16_t net_port;
-        std::memcpy(&net_port, data + offset, sizeof(net_port));
-        offset += sizeof(net_port);
-        return NewSlaver(ip, ntohs(net_port));
-    }
-};
 
 // 心跳消息数据
 struct HeartBeatData
@@ -320,32 +289,363 @@ struct AppendEntriesResponseData
     }
 };
 
-// 数据快照传输数据（支持分块传输，避免内存溢出）
-struct DataSnapshotResponseData
+// 新节点加入广播
+struct NewNodeJoinData
 {
+    Address node_address;
+
+    NewNodeJoinData(const Address &addr)
+        : node_address(addr) {}
+
     std::string serialize() const
     {
-        return "";
+        return node_address.serialize();
     }
 
-    static DataSnapshotResponseData deserialize(const char *data, size_t &offset)
+    static NewNodeJoinData deserialize(const char *data, size_t &offset)
     {
-        return DataSnapshotResponseData();
+        Address addr = Address::deserialize(data, offset);
+        return NewNodeJoinData(addr);
     }
 };
+// 集群元数据结构
+struct ClusterMetadata
+{
+    std::vector<Address> cluster_nodes_; // 集群所有节点地址列表
+    Address current_leader_;             // 当前leader地址 (可能为空)
+    uint32_t cluster_version_;           // 集群配置版本号 (用于联合共识)
+
+    ClusterMetadata() : cluster_version_(0) {}
+
+    std::string serialize() const
+    {
+        std::string result;
+        uint32_t net_version = htonl(cluster_version_);
+        result.append(reinterpret_cast<const char *>(&net_version), sizeof(net_version));
+
+        result.append(current_leader_.serialize());
+
+        uint32_t node_count = htonl(static_cast<uint32_t>(cluster_nodes_.size()));
+        result.append(reinterpret_cast<const char *>(&node_count), sizeof(node_count));
+        for (const auto &node : cluster_nodes_)
+        {
+            result.append(node.serialize());
+        }
+        return result;
+    }
+
+    static ClusterMetadata deserialize(const char *data, size_t &offset)
+    {
+        ClusterMetadata metadata;
+        uint32_t net_version;
+        std::memcpy(&net_version, data + offset, sizeof(net_version));
+        offset += sizeof(net_version);
+        metadata.cluster_version_ = ntohl(net_version);
+
+        metadata.current_leader_ = Address::deserialize(data, offset);
+
+        uint32_t node_count;
+        std::memcpy(&node_count, data + offset, sizeof(node_count));
+        offset += sizeof(node_count);
+        node_count = ntohl(node_count);
+        for (uint32_t i = 0; i < node_count; ++i)
+        {
+            metadata.cluster_nodes_.push_back(Address::deserialize(data, offset));
+        }
+        return metadata;
+    }
+};
+
+// 探查leader响应消息
+struct QueryLeaderResponseData
+{
+    bool has_leader;
+    Address leader_address;
+    uint32_t leader_term;
+
+    QueryLeaderResponseData() : has_leader(false), leader_term(0) {}
+    QueryLeaderResponseData(bool has, const Address &addr, uint32_t term)
+        : has_leader(has), leader_address(addr), leader_term(term) {}
+
+    std::string serialize() const
+    {
+        std::string result;
+        uint8_t net_has_leader = static_cast<uint8_t>(has_leader ? 1 : 0);
+        result.append(reinterpret_cast<const char *>(&net_has_leader), sizeof(net_has_leader));
+
+        if (has_leader)
+        {
+            result.append(leader_address.serialize());
+            uint32_t net_term = htonl(leader_term);
+            result.append(reinterpret_cast<const char *>(&net_term), sizeof(net_term));
+        }
+        return result;
+    }
+
+    static QueryLeaderResponseData deserialize(const char *data, size_t &offset)
+    {
+        uint8_t net_has_leader;
+        std::memcpy(&net_has_leader, data + offset, sizeof(net_has_leader));
+        offset += sizeof(net_has_leader);
+
+        QueryLeaderResponseData response;
+        response.has_leader = (net_has_leader != 0);
+
+        if (response.has_leader)
+        {
+            response.leader_address = Address::deserialize(data, offset);
+
+            uint32_t net_term;
+            std::memcpy(&net_term, data + offset, sizeof(net_term));
+            offset += sizeof(net_term);
+            response.leader_term = ntohl(net_term);
+        }
+        return response;
+    }
+};
+
+// 新节点加入集群消息
+struct JoinClusterData
+{
+    bool is_reconnect;    // 是否是重连
+    std::string password; // 密码
+    uint32_t last_index;  // 日志的最后一个索引
+    JoinClusterData() : is_reconnect(false), password(""), last_index(0) {}
+    JoinClusterData(bool reconnect, const std::string &pwd, uint32_t last_idx)
+        : is_reconnect(reconnect), password(pwd), last_index(last_idx) {}
+
+    std::string serialize() const
+    {
+        std::string result;
+        uint8_t net_is_reconnect = static_cast<uint8_t>(is_reconnect ? 1 : 0);
+
+        result.append(reinterpret_cast<const char *>(&net_is_reconnect), sizeof(net_is_reconnect));
+
+        // 序列化密码和日志索引
+        uint32_t net_last_index = htonl(last_index);
+        result.append(reinterpret_cast<const char *>(&net_last_index), sizeof(net_last_index));
+
+        result.append(Serializer::serialize(password));
+
+        return result;
+    }
+    static JoinClusterData deserialize(const char *data, size_t &offset)
+    {
+        JoinClusterData join_data;
+        uint8_t net_is_reconnect;
+        std::memcpy(&net_is_reconnect, data + offset, sizeof(net_is_reconnect));
+        offset += sizeof(net_is_reconnect);
+        join_data.is_reconnect = (net_is_reconnect != 0);
+
+        uint32_t net_last_index;
+        std::memcpy(&net_last_index, data + offset, sizeof(net_last_index));
+        offset += sizeof(net_last_index);
+        join_data.last_index = ntohl(net_last_index);
+
+        join_data.password = Serializer::deserializeString(data, offset);
+
+        return join_data;
+    }
+};
+
+// 新节点加入集群响应
+struct JoinClusterResponseData
+{
+    bool success;
+    std::string error_message;
+    ClusterMetadata cluster_metadata;
+    uint32_t sync_from_index;
+
+    JoinClusterResponseData() : success(false), sync_from_index(0) {}
+
+    std::string serialize() const
+    {
+        std::string result;
+        uint8_t net_success = static_cast<uint8_t>(success ? 1 : 0);
+        result.append(reinterpret_cast<const char *>(&net_success), sizeof(net_success));
+
+        if (success)
+        {
+            result.append(cluster_metadata.serialize());
+
+            uint32_t net_sync_index = htonl(sync_from_index);
+            result.append(reinterpret_cast<const char *>(&net_sync_index), sizeof(net_sync_index));
+        }
+        else
+        {
+            uint32_t err_len = htonl(static_cast<uint32_t>(error_message.size()));
+            result.append(reinterpret_cast<const char *>(&err_len), sizeof(err_len));
+            result.append(error_message);
+        }
+        return result;
+    }
+
+    static JoinClusterResponseData deserialize(const char *data, size_t &offset)
+    {
+        JoinClusterResponseData response;
+        uint8_t net_success;
+        std::memcpy(&net_success, data + offset, sizeof(net_success));
+        offset += sizeof(net_success);
+        response.success = (net_success != 0);
+
+        if (response.success)
+        {
+            response.cluster_metadata = ClusterMetadata::deserialize(data, offset);
+
+            uint32_t net_sync_index;
+            std::memcpy(&net_sync_index, data + offset, sizeof(net_sync_index));
+            offset += sizeof(net_sync_index);
+            response.sync_from_index = ntohl(net_sync_index);
+        }
+        else
+        {
+            uint32_t err_len;
+            std::memcpy(&err_len, data + offset, sizeof(err_len));
+            offset += sizeof(err_len);
+            err_len = ntohl(err_len);
+            response.error_message.assign(data + offset, err_len);
+            offset += err_len;
+        }
+        return response;
+    }
+};
+
+// 快照安装消息
+struct SnapshotInstallData
+{
+    uint32_t term;
+    std::string leader_id;
+    uint32_t last_included_index;
+    uint32_t last_included_term;
+    std::string snapshot_data;
+    uint32_t offset;
+    bool done;
+
+    SnapshotInstallData() : term(0), last_included_index(0), last_included_term(0), offset(0), done(false) {}
+
+    std::string serialize() const
+    {
+        std::string result;
+        uint32_t net_term = htonl(term);
+        uint32_t net_last_index = htonl(last_included_index);
+        uint32_t net_last_term = htonl(last_included_term);
+        uint32_t net_offset = htonl(offset);
+        uint8_t net_done = static_cast<uint8_t>(done ? 1 : 0);
+
+        result.append(reinterpret_cast<const char *>(&net_term), sizeof(net_term));
+
+        uint32_t leader_len = htonl(static_cast<uint32_t>(leader_id.size()));
+        result.append(reinterpret_cast<const char *>(&leader_len), sizeof(leader_len));
+        result.append(leader_id);
+
+        result.append(reinterpret_cast<const char *>(&net_last_index), sizeof(net_last_index));
+        result.append(reinterpret_cast<const char *>(&net_last_term), sizeof(net_last_term));
+
+        uint32_t data_len = htonl(static_cast<uint32_t>(snapshot_data.size()));
+        result.append(reinterpret_cast<const char *>(&data_len), sizeof(data_len));
+        result.append(snapshot_data);
+
+        result.append(reinterpret_cast<const char *>(&net_offset), sizeof(net_offset));
+        result.append(reinterpret_cast<const char *>(&net_done), sizeof(net_done));
+
+        return result;
+    }
+
+    static SnapshotInstallData deserialize(const char *data, size_t &offset)
+    {
+        SnapshotInstallData snapshot;
+        uint32_t net_term, net_last_index, net_last_term, net_offset;
+        uint8_t net_done;
+
+        std::memcpy(&net_term, data + offset, sizeof(net_term));
+        offset += sizeof(net_term);
+        snapshot.term = ntohl(net_term);
+
+        uint32_t leader_len;
+        std::memcpy(&leader_len, data + offset, sizeof(leader_len));
+        offset += sizeof(leader_len);
+        leader_len = ntohl(leader_len);
+        snapshot.leader_id.assign(data + offset, leader_len);
+        offset += leader_len;
+
+        std::memcpy(&net_last_index, data + offset, sizeof(net_last_index));
+        offset += sizeof(net_last_index);
+        snapshot.last_included_index = ntohl(net_last_index);
+
+        std::memcpy(&net_last_term, data + offset, sizeof(net_last_term));
+        offset += sizeof(net_last_term);
+        snapshot.last_included_term = ntohl(net_last_term);
+
+        uint32_t data_len;
+        std::memcpy(&data_len, data + offset, sizeof(data_len));
+        offset += sizeof(data_len);
+        data_len = ntohl(data_len);
+        snapshot.snapshot_data.assign(data + offset, data_len);
+        offset += data_len;
+
+        std::memcpy(&net_offset, data + offset, sizeof(net_offset));
+        offset += sizeof(net_offset);
+        snapshot.offset = ntohl(net_offset);
+
+        std::memcpy(&net_done, data + offset, sizeof(net_done));
+        offset += sizeof(net_done);
+        snapshot.done = (net_done != 0);
+
+        return snapshot;
+    }
+};
+
+// 快照安装响应
+struct SnapshotInstallResponseData
+{
+    bool success;
+    uint32_t term;
+
+    SnapshotInstallResponseData() : success(false), term(0) {}
+    SnapshotInstallResponseData(bool succ, uint32_t t) : success(succ), term(t) {}
+
+    std::string serialize() const
+    {
+        std::string result;
+        uint8_t net_success = static_cast<uint8_t>(success ? 1 : 0);
+        uint32_t net_term = htonl(term);
+        result.append(reinterpret_cast<const char *>(&net_success), sizeof(net_success));
+        result.append(reinterpret_cast<const char *>(&net_term), sizeof(net_term));
+        return result;
+    }
+
+    static SnapshotInstallResponseData deserialize(const char *data, size_t &offset)
+    {
+        SnapshotInstallResponseData response;
+        uint8_t net_success;
+        uint32_t net_term;
+
+        std::memcpy(&net_success, data + offset, sizeof(net_success));
+        offset += sizeof(net_success);
+        response.success = (net_success != 0);
+
+        std::memcpy(&net_term, data + offset, sizeof(net_term));
+        offset += sizeof(net_term);
+        response.term = ntohl(net_term);
+        return response;
+    }
+};
+
 struct RaftMessage : public ProtocolBody
 {
-    RaftMessageType type = RaftMessageType::HEART_BEAT;                    // RPC 消息类型
-    uint32_t term = 0;                                                     // 请求发送者任期
-    std::optional<HeartBeatData> heartbeat_data;                           // 心跳数据
-    std::optional<RequestVoteData> request_vote_data;                      // 请求投票数据
-    std::optional<RequestVoteResponseData> request_vote_response_data;     // 请求投票响应数据
-    std::optional<AppendEntriesData> append_entries_data;                  // 日志追加数据
-    std::optional<AppendEntriesResponseData> append_entries_response_data; // 日志追加响应数据
-    std::optional<NewConnection> new_connection;                           // 新连接数据
-    std::optional<NewSlaver> new_slaver;                                   // 新从节点数据
-    std::optional<DataSnapshotResponseData> data_snapshot_response_data;   // 数据快照响应数据
-
+    RaftMessageType type = RaftMessageType::HEART_BEAT;                        // RPC 消息类型
+    uint32_t term = 0;                                                         // 请求发送者任期
+    std::optional<HeartBeatData> heartbeat_data;                               // 心跳数据
+    std::optional<RequestVoteData> request_vote_data;                          // 请求投票数据
+    std::optional<RequestVoteResponseData> request_vote_response_data;         // 请求投票响应数据
+    std::optional<AppendEntriesData> append_entries_data;                      // 日志追加数据
+    std::optional<AppendEntriesResponseData> append_entries_response_data;     // 日志追加响应数据
+    std::optional<QueryLeaderResponseData> query_leader_response_data;         // 探查leader响应数据
+    std::optional<JoinClusterData> join_cluster_data;                          // 新节点加入集群数据
+    std::optional<JoinClusterResponseData> join_cluster_response_data;         // 新节点加入集群响应数据
+    std::optional<SnapshotInstallData> snapshot_install_data;                  // 快照安装数据
+    std::optional<SnapshotInstallResponseData> snapshot_install_response_data; // 快照安装响应数据
+    std::optional<NewNodeJoinData> new_node_join_data;                         // 新连接数据
     RaftMessage() = default;
 
     static RaftMessage heart_beat(uint32_t term, uint32_t leader_commit)
@@ -405,19 +705,11 @@ struct RaftMessage : public ProtocolBody
         return msg;
     }
 
-    static RaftMessage new_connection(bool is_reconnect, uint32_t last_index)
+    static RaftMessage new_node_join_broadcast(Address addr)
     {
         RaftMessage msg;
-        msg.type = RaftMessageType::NEW_CONNECTION;
-        msg.new_connection = NewConnection(is_reconnect, last_index);
-        return msg;
-    }
-
-    static RaftMessage new_slaver(std::string ip, uint16_t port)
-    {
-        RaftMessage msg;
-        msg.type = RaftMessageType::NEW_SLAVER;
-        msg.new_slaver = NewSlaver(ip, port);
+        msg.type = RaftMessageType::NEW_NODE;
+        msg.new_node_join_data = NewNodeJoinData(addr);
         return msg;
     }
 
@@ -429,10 +721,65 @@ struct RaftMessage : public ProtocolBody
         return msg;
     }
 
-    static RaftMessage data_snapshot_response()
+    // 新增消息工厂函数
+    static RaftMessage query_leader()
     {
         RaftMessage msg;
-        msg.type = RaftMessageType::DATA_SNAPSHOT_RESPONSE;
+        msg.type = RaftMessageType::QUERY_LEADER;
+        return msg;
+    }
+
+    static RaftMessage query_leader_response(bool has_leader, const Address &addr, uint32_t term)
+    {
+        RaftMessage msg;
+        msg.type = RaftMessageType::QUERY_LEADER_RESPONSE;
+        msg.query_leader_response_data = QueryLeaderResponseData(has_leader, addr, term);
+        return msg;
+    }
+
+    static RaftMessage join_cluster(bool is_reconnect, uint32_t last_index, const std::string &password)
+    {
+        RaftMessage msg;
+        msg.type = RaftMessageType::JOIN_CLUSTER;
+        msg.join_cluster_data = JoinClusterData(is_reconnect, password, last_index);
+        return msg;
+    }
+
+    static RaftMessage join_cluster_response(bool success, const std::string &error,
+                                             const ClusterMetadata &meta, uint32_t sync_index)
+    {
+        RaftMessage msg;
+        msg.type = RaftMessageType::JOIN_CLUSTER_RESPONSE;
+        msg.join_cluster_response_data = JoinClusterResponseData();
+        msg.join_cluster_response_data->success = success;
+        msg.join_cluster_response_data->error_message = error;
+        msg.join_cluster_response_data->cluster_metadata = meta;
+        msg.join_cluster_response_data->sync_from_index = sync_index;
+        return msg;
+    }
+
+    static RaftMessage snapshot_install(uint32_t term, const std::string &leader_id,
+                                        uint32_t last_index, uint32_t last_term,
+                                        const std::string &data, uint32_t offset, bool done)
+    {
+        RaftMessage msg;
+        msg.type = RaftMessageType::SNAPSHOT_INSTALL;
+        msg.snapshot_install_data = SnapshotInstallData();
+        msg.snapshot_install_data->term = term;
+        msg.snapshot_install_data->leader_id = leader_id;
+        msg.snapshot_install_data->last_included_index = last_index;
+        msg.snapshot_install_data->last_included_term = last_term;
+        msg.snapshot_install_data->snapshot_data = data;
+        msg.snapshot_install_data->offset = offset;
+        msg.snapshot_install_data->done = done;
+        return msg;
+    }
+
+    static RaftMessage snapshot_install_response(bool success, uint32_t term)
+    {
+        RaftMessage msg;
+        msg.type = RaftMessageType::SNAPSHOT_INSTALL_RESPONSE;
+        msg.snapshot_install_response_data = SnapshotInstallResponseData(success, term);
         return msg;
     }
 
@@ -448,62 +795,80 @@ struct RaftMessage : public ProtocolBody
         switch (type)
         {
         case RaftMessageType::HEART_BEAT:
-            if (heartbeat_data)
+            if (heartbeat_data.has_value())
             {
                 result.append(heartbeat_data->serialize());
             }
             break;
 
         case RaftMessageType::REQUEST_VOTE:
-            if (request_vote_data)
+            if (request_vote_data.has_value())
             {
                 result.append(request_vote_data->serialize());
             }
             break;
 
         case RaftMessageType::REQUEST_VOTE_RESPONSE:
-            if (request_vote_response_data)
+            if (request_vote_response_data.has_value())
             {
                 result.append(request_vote_response_data->serialize());
             }
             break;
 
         case RaftMessageType::APPEND_ENTRIES:
-            if (append_entries_data)
+            if (append_entries_data.has_value())
             {
                 result.append(append_entries_data->serialize());
             }
             break;
 
         case RaftMessageType::APPEND_ENTRIES_RESPONSE:
-            if (append_entries_response_data)
+            if (append_entries_response_data.has_value())
             {
                 result.append(append_entries_response_data->serialize());
             }
             break;
 
-        case RaftMessageType::NEW_CONNECTION:
-            if (new_connection)
+        case RaftMessageType::NEW_NODE:
+            if (new_node_join_data.has_value())
             {
-                result.append(new_connection->serialize());
+                result.append(new_node_join_data->serialize());
             }
             break;
 
-        case RaftMessageType::NEW_SLAVER:
-            if (new_slaver)
+        case RaftMessageType::QUERY_LEADER_RESPONSE:
+            if (query_leader_response_data.has_value())
             {
-                result.append(new_slaver->serialize());
+                result.append(query_leader_response_data->serialize());
             }
             break;
 
-        case RaftMessageType::DATA_SNAPSHOT_RESPONSE:
-            if (data_snapshot_response_data)
+        case RaftMessageType::JOIN_CLUSTER:
+            if (join_cluster_data.has_value())
             {
-                result.append(data_snapshot_response_data->serialize());
+                result.append(join_cluster_data->serialize());
             }
             break;
 
-        case RaftMessageType::NEW_MASTER:
+        case RaftMessageType::JOIN_CLUSTER_RESPONSE:
+            if (join_cluster_response_data.has_value())
+            {
+                result.append(join_cluster_response_data->serialize());
+            }
+            break;
+
+        case RaftMessageType::SNAPSHOT_INSTALL:
+            if (snapshot_install_data.has_value())
+            {
+                result.append(snapshot_install_data->serialize());
+            }
+            break;
+
+        case RaftMessageType::SNAPSHOT_INSTALL_RESPONSE:
+            if (snapshot_install_response_data.has_value())
+            {
+                result.append(snapshot_install_response_data->serialize());
+            }
             break;
 
         default:
@@ -545,19 +910,28 @@ struct RaftMessage : public ProtocolBody
             append_entries_response_data = AppendEntriesResponseData::deserialize(data, offset);
             break;
 
-        case RaftMessageType::NEW_CONNECTION:
-            new_connection = NewConnection::deserialize(data, offset);
+        case RaftMessageType::NEW_NODE:
+            new_node_join_data = NewNodeJoinData::deserialize(data, offset);
             break;
 
-        case RaftMessageType::NEW_SLAVER:
-            new_slaver = NewSlaver::deserialize(data, offset);
+        case RaftMessageType::QUERY_LEADER_RESPONSE:
+            query_leader_response_data = QueryLeaderResponseData::deserialize(data, offset);
             break;
 
-        case RaftMessageType::DATA_SNAPSHOT_RESPONSE:
-            data_snapshot_response_data = DataSnapshotResponseData::deserialize(data, offset);
+        case RaftMessageType::JOIN_CLUSTER:
+            join_cluster_data = JoinClusterData::deserialize(data, offset);
             break;
 
-        case RaftMessageType::NEW_MASTER:
+        case RaftMessageType::JOIN_CLUSTER_RESPONSE:
+            join_cluster_response_data = JoinClusterResponseData::deserialize(data, offset);
+            break;
+
+        case RaftMessageType::SNAPSHOT_INSTALL:
+            snapshot_install_data = SnapshotInstallData::deserialize(data, offset);
+            break;
+
+        case RaftMessageType::SNAPSHOT_INSTALL_RESPONSE:
+            snapshot_install_response_data = SnapshotInstallResponseData::deserialize(data, offset);
             break;
 
         default:

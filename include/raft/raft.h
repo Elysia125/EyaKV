@@ -26,203 +26,103 @@ enum RaftRole
     Leader
 };
 
-//  环形日志缓冲区（Redis偏移环形式）
-class EYAKV_RAFT_API RaftLogRingBuffer
+// 持久化状态结构
+struct PersistentState
+{
+    uint32_t current_term_;            // 当前任期
+    std::string voted_for_;            // 本任期投票给的节点地址字符串
+    ClusterMetadata cluster_metadata_; // 集群配置
+    uint32_t log_snapshot_index_;      // 最后快照索引 (用于日志清理)
+
+    PersistentState() : current_term_(0), log_snapshot_index_(0) {}
+};
+
+//  日志数组 - WAL + Index + Compaction 机制
+class EYAKV_RAFT_API RaftLogArray
 {
 private:
-    std::vector<LogEntry> buffer_; // 固定大小的缓冲区
-    uint32_t tail_;                // 写指针（下一个写入位置）
-    uint32_t base_index_;          // 基准索引（环形缓冲区起始对应的逻辑索引）
-    mutable std::shared_mutex mutex_;
+    // 内存日志
+    std::vector<LogEntry> entries_;
+    uint32_t base_index_;             // 基准索引（最老日志索引）
+    mutable std::shared_mutex mutex_; // 读写锁
 
-    // 计算实际缓冲区索引
-    inline uint32_t to_buffer_index(uint32_t logical_index) const
-    {
-        return logical_index % buffer_.size();
-    }
+    // WAL 文件 (Append-only, 顺序写)
+    FILE *wal_file_ = nullptr;
+    std::string wal_path_;
+
+    // 索引文件 (记录每个日志条目的文件偏移量)
+    std::vector<uint64_t> index_offsets_; // index_offsets_[i] = entries_[i] 在 WAL 中的偏移
+    FILE *index_file_ = nullptr;
+    std::string index_path_;
+
+    // 元数据
+    std::string log_dir_;
 
 public:
-    explicit RaftLogRingBuffer(uint32_t size = RAFT_LOG_BUFFER_SIZE)
-        : buffer_(size), tail_(0), base_index_(0)
-    {
-    }
+    explicit RaftLogArray(const std::string &log_dir);
+    ~RaftLogArray();
 
-    RaftLogRingBuffer(uint32_t base_index, uint32_t tail, std::vector<LogEntry> &buffer)
-    {
-        base_index_ = base_index;
-        tail_ = tail;
-        buffer_ = std::move(buffer);
-    }
+    // 追加日志 (内存 + WAL + 更新索引)
+    bool append(const LogEntry &entry);
 
-    ~RaftLogRingBuffer() = default;
-    // 追加日志条目
-    bool append(const LogEntry &entry)
-    {
-        std::unique_lock<std::shared_mutex> lock(mutex_);
+    // 批量追加日志
+    bool batch_append(const std::vector<LogEntry> &entries);
 
-        uint32_t buffer_idx = to_buffer_index(tail_);
-        buffer_[buffer_idx] = entry;
-        tail_++;
+    // 获取指定索引的日志
+    bool get(uint32_t index, LogEntry &entry) const;
 
-        // 如果缓冲区满了，移动head指针
-        if (tail_ - base_index_ > buffer_.size())
-        {
-            base_index_++;
-        }
-        return true;
-    }
+    // 截断日志 (从某索引开始删除，模拟 Compaction)
+    // truncate_from(index): 删除 index 及之后的日志 (保留 [base_index_, index))
+    bool truncate_from(uint32_t index);
 
-    // 获取指定索引的日志条目
-    bool get(uint32_t index, LogEntry &entry) const
-    {
-        std::shared_lock<std::shared_mutex> lock(mutex_);
-        if (index < base_index_ || index >= tail_)
-        {
-            return false; // 索引超出范围
-        }
-
-        uint32_t buffer_idx = to_buffer_index(index);
-        entry = buffer_[buffer_idx];
-        return true;
-    }
-
-    // 截断日志（从某索引开始删除）
-    bool truncate_from(uint32_t index)
-    {
-        std::unique_lock<std::shared_mutex> lock(mutex_);
-
-        if (index < base_index_ || index > tail_)
-        {
-            return false;
-        }
-
-        tail_ = index;
-        return true;
-    }
+    // 截断日志 (在某索引之前删除，用于快照清理)
+    // truncate_before(index): 删除 index 之前的日志 (保留 [index, last_index])
+    bool truncate_before(uint32_t index);
 
     // 获取最后一条日志
-    bool get_last(LogEntry &entry) const
-    {
-        std::shared_lock<std::shared_mutex> lock(mutex_);
-        if (tail_ == 0)
-        {
-            return false;
-        }
-
-        uint32_t buffer_idx = to_buffer_index(tail_ - 1);
-        entry = buffer_[buffer_idx];
-        return true;
-    }
+    bool get_last(LogEntry &entry) const;
 
     // 获取最后一条日志的索引和任期
-    bool get_last_info(uint32_t &index, uint32_t &term) const
-    {
-        std::shared_lock<std::shared_mutex> lock(mutex_);
-        if (tail_ == 0)
-        {
-            index = 0;
-            term = 0;
-            return false;
-        }
-
-        index = tail_ - 1;
-        uint32_t buffer_idx = to_buffer_index(tail_ - 1);
-        term = buffer_[buffer_idx].term;
-        return true;
-    }
-
-    // 获取指定索引的日志任期
-    uint32_t get_term(uint32_t index) const
-    {
-        std::shared_lock<std::shared_mutex> lock(mutex_);
-        if (index < base_index_ || index >= tail_)
-        {
-            return 0;
-        }
-
-        uint32_t buffer_idx = to_buffer_index(index);
-        return buffer_[buffer_idx].term;
-    }
+    bool get_last_info(uint32_t &index, uint32_t &term) const;
 
     // 获取日志数量
-    uint32_t size() const
-    {
-        std::shared_lock<std::shared_mutex> lock(mutex_);
-        return tail_ - base_index_;
-    }
+    uint32_t size() const;
 
     // 获取最后的日志索引
-    uint32_t get_last_index() const
-    {
-        std::shared_lock<std::shared_mutex> lock(mutex_);
-        return tail_ > 0 ? tail_ - 1 : 0;
-    }
+    uint32_t get_last_index() const;
+
     // 获取基准索引（最老的日志索引）
-    uint32_t get_base_index() const
-    {
-        std::shared_lock<std::shared_mutex> lock(mutex_);
-        return base_index_;
-    }
+    uint32_t get_base_index() const;
 
-    // 获取从指定索引开始的所有日志条目
-    std::vector<LogEntry> get_entries_from(uint32_t start_index) const
-    {
-        std::shared_lock<std::shared_mutex> lock(mutex_);
-        std::vector<LogEntry> entries;
+    // 获取从指定索引开始的所有日志 (用于快照同步)
+    std::vector<LogEntry> get_entries_from(uint32_t start_index) const;
 
-        if (start_index < base_index_ || start_index > tail_)
-        {
-            return entries;
-        }
+    // 从磁盘恢复 (Recover 机制，使用 Index 加速)
+    bool recover();
 
-        for (uint32_t i = start_index; i < tail_; ++i)
-        {
-            uint32_t buffer_idx = to_buffer_index(i - base_index_);
-            entries.push_back(buffer_[buffer_idx]);
-        }
+    // 创建快照点 (记录 snapshot_index，后续可 truncate 之前的日志)
+    bool create_snapshot(uint32_t snapshot_index);
 
-        return entries;
-    }
+    // 刷盘 (强制写入磁盘)
+    void flush();
 
-    // 序列化
-    std::string serialize() const
-    {
-        std::shared_lock<std::shared_mutex> lock(mutex_);
-        std::string data;
-        uint32_t base_index = htonl(base_index_);
-        uint32_t tail = htonl(tail_);
-        data.append(reinterpret_cast<const char *>(&base_index), sizeof(base_index));
-        data.append(reinterpret_cast<const char *>(&tail), sizeof(tail));
-        uint32_t size = htonl(tail_ - base_index_);
-        data.append(reinterpret_cast<const char *>(&size), sizeof(size));
-        for (uint32_t i = base_index_; i < tail_; ++i)
-        {
-            uint32_t buffer_idx = to_buffer_index(i);
-            data.append(buffer_[buffer_idx].serialize());
-        }
-        return data;
-    }
-    // 反序列化
-    static RaftLogRingBuffer *deserialize(const char *data, size_t &offset)
-    {
-        uint32_t base_index, tail, size;
-        std::memcpy(&base_index, data + offset, sizeof(base_index));
-        offset += sizeof(base_index);
-        std::memcpy(&tail, data + offset, sizeof(tail));
-        offset += sizeof(tail);
-        std::memcpy(&size, data + offset, sizeof(size));
-        offset += sizeof(size);
-        base_index = ntohl(base_index);
-        tail = ntohl(tail);
-        size = ntohl(size);
-        std::vector<LogEntry> buffer(size);
-        for (uint32_t i = base_index; i < tail; ++i)
-        {
-            LogEntry entry = LogEntry::deserialize(data, offset);
-            buffer[i % size] = entry;
-        }
-        return new RaftLogRingBuffer(base_index, tail, buffer);
-    }
+    // 获取指定索引的日志任期
+    uint32_t get_term(uint32_t index) const;
+
+    // 同步元数据到磁盘
+    void sync_metadata();
+
+private:
+    // 内部辅助方法
+    bool write_entry_to_wal(const LogEntry &entry, uint64_t &offset); // 写入 WAL
+    bool write_batch_to_wal(const std::vector<LogEntry> &entries);    // 批量写入 WAL
+    bool write_index_entry(uint64_t offset);                          // 写入索引项
+    bool read_entry_from_wal(uint64_t offset, LogEntry &entry) const; // 从 WAL 读取
+    bool append_to_index(uint64_t offset);                            // 追加到内存索引
+    void truncate_wal_and_index();                                     // 截断 WAL 和索引文件 (重建文件)
+    bool load_index();                                                // 加载索引
+    bool load_entries();                                              // 加载日志条目
+    uint32_t compute_checksum(const std::string &data) const;         // 计算校验和
 };
 
 //  Raft节点类
@@ -231,21 +131,27 @@ class EYAKV_RAFT_API RaftNode : public TCPServer
 private:
     //  持久化状态
     std::atomic<uint32_t> current_term_; // 当前任期
-    std::atomic<Address> voted_for_;     // 本任期投票给的节点（空表示未投票）
-    RaftLogRingBuffer log_buffer_;       // 环形日志缓冲区
+    Address voted_for_;                  // 本任期投票给的节点地址
+    RaftLogArray log_array_;             // 日志数组
     std::atomic<uint32_t> commit_index_; // 已提交的最高日志索引
     std::atomic<uint32_t> last_applied_; // 已应用到状态机的最高日志索引
+
+    // 持久化状态对象
+    PersistentState persistent_state_; // 持久化状态
 
     //  易失性状态
     std::atomic<RaftRole> role_; // 角色
     std::string password_;       // 认证密码(空表示不认证，主节点有效)
+
     //  易失性状态（仅 Leader）
     std::unordered_map<Address, uint32_t> next_index_;  // 每个Follower下一个要发送的日志索引
     std::unordered_map<Address, uint32_t> match_index_; // 每个Follower已匹配的日志索引
 
     //  集群配置
-    std::vector<Address> cluster_nodes_;  // 集群所有节点ID
-    std::atomic<Address> leader_address_; // 当前感知的Leader ID（空表示无）
+    std::vector<Address> cluster_nodes_; // 集群所有节点地址
+    Address leader_address_;             // 当前leader地址
+    ClusterMetadata cluster_metadata_;   // 集群元数据
+    std::string leader_password_;        // Leader密码
 
     //  超时配置（毫秒）
     int election_timeout_min_ = 150; // 选举超时最小值
@@ -273,6 +179,9 @@ private:
 
     // 元数据文件句柄
     FILE *metadata_file_ = nullptr;
+    std::string root_dir_; // 数据根目录
+    std::string log_dir_;  // 日志目录
+
     // 单例
     static std::unique_ptr<RaftNode> instance_;
     static bool is_init_;
@@ -288,6 +197,40 @@ private:
     {
         // TODO 处理请求
     }
+
+    // 初始化相关方法
+    void load_persistent_state();       // 加载持久化状态
+    void save_persistent_state();       // 保存持久化状态
+    void init_as_follower();            // 场景1: 作为follower启动
+    void init_as_bootstrap_leader();    // 场景2: 自举为leader
+    void init_with_cluster_discovery(); // 场景3: 探查集群
+    void start_background_threads();    // 启动后台线程
+    void sync_cluster_metadata();       // 同步集群配置
+    void sync_missing_logs();           // 同步缺失日志
+
+    // 消息处理方法
+    bool handle_append_entries(const RaftMessage &msg);                                   // 处理AppendEntries请求
+    bool handle_request_vote(const RaftMessage &msg);                                     // 处理RequestVote请求
+    void handle_append_entries_response(const Address &follower, const RaftMessage &msg); // 处理AppendEntries响应
+    void handle_request_vote_response(const Address &voter, const RaftMessage &msg);      // 处理RequestVote响应
+    void handle_query_leader(const RaftMessage &msg);                                     // 处理探查leader请求
+    void handle_join_cluster(const RaftMessage &msg);                                     // 处理新节点加入请求
+
+    // 日志复制和提交方法
+    void send_append_entries(const std::string &follower, bool is_heartbeat = false); // 发送AppendEntries
+    void send_heartbeat_to_all();                                                     // 向所有节点发送心跳
+    void send_request_vote();                                                         // 发送RequestVote
+    void handle_append_entries_response(const std::string &follower, bool success,
+                                        uint32_t conflict_index, uint32_t match_index); // 处理响应
+    void try_commit_entries();                                                          // 尝试提交日志
+    void commit_entry(uint32_t index);                                                  // 提交指定索引的日志
+    void apply_committed_entries();                                                     // 应用已提交的日志到状态机
+
+    // 辅助方法
+    uint32_t get_current_timestamp();                          // 获取当前时间戳
+    int count_reachable_nodes();                               // 计算可达节点数
+    void stop_accepting_writes();                              // 停止接受写请求
+    void on_active_connect(const std::string &target_address); // 主动连接处理
 
     // 生成随机选举超时时间
     int generate_election_timeout()
@@ -331,8 +274,8 @@ private:
     // 发送RequestVote请求
     void send_request_vote();
 
-    // 发送AppendEntries（心跳或日志复制）
-    void send_append_entries(int follower_id, bool is_heartbeat = false);
+    // 发送AppendEntries（心跳或日志复制）- 改为使用string类型的地址
+    void send_append_entries(const std::string &follower, bool is_heartbeat = false);
 
     // 应用已提交的日志到状态机
     void apply_committed_entries();
@@ -342,10 +285,12 @@ private:
 
     Response handle_raft_command(const std::vector<std::string> &command_parts, bool &is_exec);
 
+    void add_new_connection(socket_t client_sock, const sockaddr_in &client_addr) override;
+
 public:
     ~RaftNode();
 
-    // 提交命令（返回日志索引，成功则>=0，失败则为-1）
+    // 提交命令
     Response submit_command(const std::string &cmd);
 
     // 获取当前角色

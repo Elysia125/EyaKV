@@ -348,63 +348,7 @@ public:
                 LOG_ERROR("Accept failed: %s", strerror(errno));
             }
 
-            // 检查连接数限制和等待队列
-            std::unique_lock<std::mutex> lock(wait_queue_mutex_);
-
-            if (current_connections_ < max_connections_)
-            {
-                // 连接数未满，直接接受
-                set_non_blocking(client_sock);
-
-                char clientIp[INET_ADDRSTRLEN];
-                inet_ntop(AF_INET, &client_addr.sin_addr, clientIp, INET_ADDRSTRLEN);
-                LOG_INFO("New connection accepted: %s:%d", clientIp, ntohs(client_addr.sin_port));
-
-                struct epoll_event ev;
-                ev.events = EPOLLIN | EPOLLET; // 边缘触发模式
-                ev.data.fd = client_sock;
-                if (epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, client_sock, &ev) == -1)
-                {
-                    LOG_ERROR("Epoll ctl failed for client socket: %s", strerror(errno));
-                    CLOSE_SOCKET(client_sock);
-                    continue;
-                }
-                current_connections_++;
-                lock.unlock();
-                {
-                    std::lock_guard<std::mutex> sockets_lock(sockets_mutex_);
-                    sockets_.insert(client_sock);
-                }
-            }
-            else if (wait_queue_.size() < connect_wait_queue_size_)
-            {
-                // 连接数已满，加入等待队列
-                bool was_empty = wait_queue_.empty();
-                set_non_blocking(client_sock);
-                char clientIp[INET_ADDRSTRLEN];
-                inet_ntop(AF_INET, &client_addr.sin_addr, clientIp, INET_ADDRSTRLEN);
-                LOG_INFO("Connection added to wait queue (current: %d, waiting: %zu)",
-                         current_connections_, wait_queue_.size() + 1);
-
-                wait_queue_.push_back({client_sock,
-                                       std::chrono::steady_clock::now(),
-                                       client_addr});
-
-                // 只在队列从空变非空时通知
-                lock.unlock();
-                if (was_empty)
-                {
-                    wait_queue_cv_.notify_one();
-                }
-            }
-            else
-            {
-                // 等待队列已满，拒绝连接
-                lock.unlock();
-                LOG_WARN("Connection rejected: both active and wait queues full");
-                CLOSE_SOCKET(client_sock);
-                continue;
-            }
+            add_new_connection(client_sock, client_addr);
         }
 #else
         // 非Linux平台（macOS、Windows）保持原有逻辑
@@ -434,6 +378,13 @@ public:
         }
 
         // 尝试接受连接
+        add_new_connection(client_sock, client_addr);
+#endif
+    }
+
+    virtual void add_new_connection(socket_t client_sock, const sockaddr_in &client_addr)
+    {
+        // 尝试接受连接
         std::unique_lock<std::mutex> lock(wait_queue_mutex_);
 
         if (current_connections_ < max_connections_)
@@ -442,16 +393,26 @@ public:
             set_non_blocking(client_sock);
             char clientIp[INET_ADDRSTRLEN];
             inet_ntop(AF_INET, &client_addr.sin_addr, clientIp, INET_ADDRSTRLEN);
-            LOG_INFO("New connection accepted: %s:%d", clientIp, ntohs(client_addr.sin_port));
 
             // 添加到IO复用
 #ifdef __APPLE__
             struct kevent change;
             EV_SET(&change, client_sock, EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, NULL);
             kevent(kqueue_fd_, &change, 1, NULL, 0, NULL);
+#elif __linux__
+            struct epoll_event ev;
+            ev.events = EPOLLIN | EPOLLET; // 边缘触发模式
+            ev.data.fd = client_sock;
+            if (epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, client_sock, &ev) == -1)
+            {
+                LOG_ERROR("Epoll ctl failed for client socket: %s", strerror(errno));
+                CLOSE_SOCKET(client_sock);
+                continue;
+            }
 #else // Windows
             FD_SET(client_sock, &master_set_);
 #endif
+            LOG_INFO("New connection accepted: %s:%d", clientIp, ntohs(client_addr.sin_port));
 
             current_connections_++;
             lock.unlock();
@@ -478,6 +439,10 @@ public:
             {
                 wait_queue_cv_.notify_one();
             }
+            {
+                std::lock_guard<std::mutex> sockets_lock(sockets_mutex_);
+                sockets_.insert(client_sock);
+            }
         }
         else
         {
@@ -486,7 +451,6 @@ public:
             LOG_WARN("Connection rejected: both active and wait queues full");
             CLOSE_SOCKET(client_sock);
         }
-#endif
     }
 
     virtual void handle_client(socket_t client_sock)

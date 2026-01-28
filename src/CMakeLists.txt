@@ -95,8 +95,22 @@ target_link_libraries(eyakv_network PRIVATE
 )
 
 # Module 4: Raft - 共识算法库
+# 下载并配置zlib（指定版本，避免兼容性问题）
+FetchContent_Declare(
+    zlib
+    GIT_REPOSITORY https://github.com/madler/zlib.git
+    GIT_TAG v1.3.1  # 稳定版本，可替换为最新版
+    GIT_SHALLOW TRUE
+)
+
+# 编译zlib（跳过zlib的测试/示例，加速编译）
+set(ZLIB_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(ZLIB_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(zlib)
+
 add_library(eyakv_raft STATIC
     raft/raft.cpp
+    raft/raft_log_array.cpp
 )
 
 if(WIN32)
@@ -115,6 +129,7 @@ target_link_libraries(eyakv_raft PRIVATE
     eyakv_logger
     eyakv_common
     Threads::Threads
+    ZLIB::ZLIB
 )
 
 

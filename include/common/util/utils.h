@@ -1,6 +1,5 @@
 #ifndef UTILS_H
 #define UTILS_H
-
 #include <string>
 /**
  * @brief 计算 std::string 的实际大小
@@ -117,4 +116,5 @@ inline std::string trim(const std::string &str)
     }
     return str.substr(start, end - start + 1);
 }
+
 #endif // UTILS_H

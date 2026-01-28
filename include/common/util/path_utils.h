@@ -187,18 +187,5 @@ public:
 
                 return std::string(resolved_path);
         }
-        static bool RenameFile(const std::string &old_path, const std::string &new_path)
-        {
-                try
-                {
-                        std::filesystem::rename(old_path, new_path);
-                        return true;
-                }
-                catch (const std::filesystem::filesystem_error &e)
-                {
-                        std::cerr << "Failed to rename file from " << old_path << " to " << new_path << std::endl;
-                        return false;
-                }
-        }
 };
 #endif // PATH_UTILS_H
