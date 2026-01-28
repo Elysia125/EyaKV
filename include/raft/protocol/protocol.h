@@ -315,7 +315,7 @@ struct ClusterMetadata
     Address current_leader_;             // 当前leader地址 (可能为空)
     uint32_t cluster_version_;           // 集群配置版本号 (用于联合共识)
 
-    ClusterMetadata() : cluster_version_(0) {}
+    ClusterMetadata() : cluster_nodes_(), current_leader_(), cluster_version_(0) {}
 
     std::string serialize() const
     {
@@ -359,48 +359,19 @@ struct ClusterMetadata
 // 探查leader响应消息
 struct QueryLeaderResponseData
 {
-    bool has_leader;
     Address leader_address;
-    uint32_t leader_term;
 
-    QueryLeaderResponseData() : has_leader(false), leader_term(0) {}
-    QueryLeaderResponseData(bool has, const Address &addr, uint32_t term)
-        : has_leader(has), leader_address(addr), leader_term(term) {}
-
+    QueryLeaderResponseData() : leader_address() {}
+    QueryLeaderResponseData(const Address &addr)
+        : leader_address(addr) {}
     std::string serialize() const
     {
-        std::string result;
-        uint8_t net_has_leader = static_cast<uint8_t>(has_leader ? 1 : 0);
-        result.append(reinterpret_cast<const char *>(&net_has_leader), sizeof(net_has_leader));
-
-        if (has_leader)
-        {
-            result.append(leader_address.serialize());
-            uint32_t net_term = htonl(leader_term);
-            result.append(reinterpret_cast<const char *>(&net_term), sizeof(net_term));
-        }
-        return result;
+        return leader_address.serialize();
     }
-
     static QueryLeaderResponseData deserialize(const char *data, size_t &offset)
     {
-        uint8_t net_has_leader;
-        std::memcpy(&net_has_leader, data + offset, sizeof(net_has_leader));
-        offset += sizeof(net_has_leader);
-
-        QueryLeaderResponseData response;
-        response.has_leader = (net_has_leader != 0);
-
-        if (response.has_leader)
-        {
-            response.leader_address = Address::deserialize(data, offset);
-
-            uint32_t net_term;
-            std::memcpy(&net_term, data + offset, sizeof(net_term));
-            offset += sizeof(net_term);
-            response.leader_term = ntohl(net_term);
-        }
-        return response;
+        Address addr = Address::deserialize(data, offset);
+        return QueryLeaderResponseData(addr);
     }
 };
 
@@ -729,11 +700,11 @@ struct RaftMessage : public ProtocolBody
         return msg;
     }
 
-    static RaftMessage query_leader_response(bool has_leader, const Address &addr, uint32_t term)
+    static RaftMessage query_leader_response(const Address &addr)
     {
         RaftMessage msg;
         msg.type = RaftMessageType::QUERY_LEADER_RESPONSE;
-        msg.query_leader_response_data = QueryLeaderResponseData(has_leader, addr, term);
+        msg.query_leader_response_data = QueryLeaderResponseData(addr);
         return msg;
     }
 

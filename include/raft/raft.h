@@ -29,15 +29,80 @@ enum RaftRole
 // 持久化状态结构
 struct PersistentState
 {
-    uint32_t current_term_;            // 当前任期
-    std::string voted_for_;            // 本任期投票给的节点地址字符串
-    ClusterMetadata cluster_metadata_; // 集群配置
-    uint32_t log_snapshot_index_;      // 最后快照索引 (用于日志清理)
+    std::atomic<uint32_t> current_term_{0};       // 当前任期
+    std::string voted_for_ = "";                  // 本任期投票给的节点地址字符串
+    ClusterMetadata cluster_metadata_;            // 集群配置
+    std::atomic<uint32_t> log_snapshot_index_{0}; // 最后快照索引 (用于日志清理)
+    std::string leader_password_ = "";            // 领导者密码(用于重连)
+    std::atomic<uint32_t> commit_index_{0};       // 已提交的最高日志索引
+    std::atomic<uint32_t> last_applied_{0};       // 已应用到状态机的最高日志索引
+    PersistentState() {}
 
-    PersistentState() : current_term_(0), log_snapshot_index_(0) {}
+    PersistentState(const PersistentState &other)
+    {
+        current_term_.store(other.current_term_.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        voted_for_ = other.voted_for_;
+        cluster_metadata_ = other.cluster_metadata_;
+        log_snapshot_index_.store(other.log_snapshot_index_.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        leader_password_ = other.leader_password_;
+        commit_index_.store(other.commit_index_.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        last_applied_.store(other.last_applied_.load(std::memory_order_relaxed), std::memory_order_relaxed);
+    }
+
+    PersistentState &operator=(const PersistentState &other)
+    {
+        current_term_.store(other.current_term_.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        voted_for_ = other.voted_for_;
+        cluster_metadata_ = other.cluster_metadata_;
+        log_snapshot_index_.store(other.log_snapshot_index_.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        leader_password_ = other.leader_password_;
+        commit_index_.store(other.commit_index_.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        last_applied_.store(other.last_applied_.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        return *this;
+    }
+
+    // 序列化到文件
+    std::string serialize() const
+    {
+        uint32_t current_term = current_term_.load(std::memory_order_relaxed);
+        uint32_t log_snapshot_index = log_snapshot_index_.load(std::memory_order_relaxed);
+        uint32_t commit_index = commit_index_.load(std::memory_order_relaxed);
+        uint32_t last_applied = last_applied_.load(std::memory_order_relaxed);
+        std::string data;
+        data.append(reinterpret_cast<const char *>(&current_term), sizeof(current_term));
+        data.append(Serializer::serialize(voted_for_));
+        data.append(cluster_metadata_.serialize());
+        data.append(reinterpret_cast<const char *>(&log_snapshot_index), sizeof(log_snapshot_index));
+        data.append(Serializer::serialize(leader_password_));
+        data.append(reinterpret_cast<const char *>(&commit_index), sizeof(commit_index));
+        data.append(reinterpret_cast<const char *>(&last_applied), sizeof(last_applied));
+        return data;
+    }
+
+    // 从文件反序列化
+    static PersistentState deserialize(const char *data, size_t &offset)
+    {
+        PersistentState state;
+        uint32_t current_term, log_snapshot_index, commit_index, last_applied;
+        std::memcpy(&current_term, data + offset, sizeof(current_term));
+        offset += sizeof(current_term);
+        state.voted_for_ = Serializer::deserializeString(data, offset);
+        state.cluster_metadata_ = ClusterMetadata::deserialize(data, offset);
+        std::memcpy(&log_snapshot_index, data + offset, sizeof(log_snapshot_index));
+        offset += sizeof(log_snapshot_index);
+        state.leader_password_ = Serializer::deserializeString(data, offset);
+        std::memcpy(&commit_index, data + offset, sizeof(commit_index));
+        offset += sizeof(commit_index);
+        std::memcpy(&last_applied, data + offset, sizeof(last_applied));
+        offset += sizeof(last_applied);
+        state.current_term_.store(current_term, std::memory_order_relaxed);
+        state.log_snapshot_index_.store(log_snapshot_index, std::memory_order_relaxed);
+        state.commit_index_.store(commit_index, std::memory_order_relaxed);
+        state.last_applied_.store(last_applied, std::memory_order_relaxed);
+        return state;
+    }
 };
 
-//  日志数组 - WAL + Index + Compaction 机制
 class EYAKV_RAFT_API RaftLogArray
 {
 private:
@@ -119,7 +184,7 @@ private:
     bool write_index_entry(uint64_t offset);                          // 写入索引项
     bool read_entry_from_wal(uint64_t offset, LogEntry &entry) const; // 从 WAL 读取
     bool append_to_index(uint64_t offset);                            // 追加到内存索引
-    void truncate_wal_and_index();                                     // 截断 WAL 和索引文件 (重建文件)
+    void truncate_wal_and_index();                                    // 截断 WAL 和索引文件 (重建文件)
     bool load_index();                                                // 加载索引
     bool load_entries();                                              // 加载日志条目
     uint32_t compute_checksum(const std::string &data) const;         // 计算校验和
@@ -129,12 +194,7 @@ private:
 class EYAKV_RAFT_API RaftNode : public TCPServer
 {
 private:
-    //  持久化状态
-    std::atomic<uint32_t> current_term_; // 当前任期
-    Address voted_for_;                  // 本任期投票给的节点地址
-    RaftLogArray log_array_;             // 日志数组
-    std::atomic<uint32_t> commit_index_; // 已提交的最高日志索引
-    std::atomic<uint32_t> last_applied_; // 已应用到状态机的最高日志索引
+    RaftLogArray log_array_; // 日志数组
 
     // 持久化状态对象
     PersistentState persistent_state_; // 持久化状态
@@ -148,16 +208,13 @@ private:
     std::unordered_map<Address, uint32_t> match_index_; // 每个Follower已匹配的日志索引
 
     //  集群配置
-    std::vector<Address> cluster_nodes_; // 集群所有节点地址
-    Address leader_address_;             // 当前leader地址
-    ClusterMetadata cluster_metadata_;   // 集群元数据
-    std::string leader_password_;        // Leader密码
+    std::string leader_password_; // Leader密码
 
     //  超时配置（毫秒）
     int election_timeout_min_ = 150; // 选举超时最小值
     int election_timeout_max_ = 300; // 选举超时最大值
     int heartbeat_interval_ = 30;    // 心跳间隔
-
+    int raft_msg_timeout_ = 1000;     // raft消息超时
     //  随机数生成（用于选举超时）
     std::mt19937 rng_;
     int election_timeout_;
@@ -169,18 +226,17 @@ private:
     //  线程控制
     std::thread election_thread_;
     std::thread heartbeat_thread_;
-    std::atomic<bool> election_thread_running_;
-    std::atomic<bool> heartbeat_thread_running_;
+    std::atomic<bool> election_thread_running_{false};
+    std::atomic<bool> heartbeat_thread_running_{false};
 
     // 连接管理（与主节点的连接，如果是主节点则为nullptr）
     std::unique_ptr<TCPClient> follower_client_;
     std::thread follower_client_thread_;
-    std::atomic<bool> follower_client_thread_running_;
+    std::atomic<bool> follower_client_thread_running_{false};
 
     // 元数据文件句柄
     FILE *metadata_file_ = nullptr;
     std::string root_dir_; // 数据根目录
-    std::string log_dir_;  // 日志目录
 
     // 单例
     static std::unique_ptr<RaftNode> instance_;
@@ -202,7 +258,6 @@ private:
     void load_persistent_state();       // 加载持久化状态
     void save_persistent_state();       // 保存持久化状态
     void init_as_follower();            // 场景1: 作为follower启动
-    void init_as_bootstrap_leader();    // 场景2: 自举为leader
     void init_with_cluster_discovery(); // 场景3: 探查集群
     void start_background_threads();    // 启动后台线程
     void sync_cluster_metadata();       // 同步集群配置
@@ -217,9 +272,9 @@ private:
     void handle_join_cluster(const RaftMessage &msg);                                     // 处理新节点加入请求
 
     // 日志复制和提交方法
-    void send_append_entries(const std::string &follower, bool is_heartbeat = false); // 发送AppendEntries
-    void send_heartbeat_to_all();                                                     // 向所有节点发送心跳
-    void send_request_vote();                                                         // 发送RequestVote
+    void send_append_entries(const Address &follower, bool is_heartbeat = false); // 发送AppendEntries
+    void send_heartbeat_to_all();                                                 // 向所有节点发送心跳
+    void send_request_vote();                                                     // 发送RequestVote
     void handle_append_entries_response(const std::string &follower, bool success,
                                         uint32_t conflict_index, uint32_t match_index); // 处理响应
     void try_commit_entries();                                                          // 尝试提交日志
@@ -261,6 +316,8 @@ private:
 
     // 心跳线程主循环
     void heartbeat_loop();
+    // Follower客户端线程主循环
+    void follower_client_loop();
 
     // 转换为Follower
     void become_follower(uint32_t term);
@@ -271,6 +328,8 @@ private:
     // 转换为Leader
     void become_leader();
 
+    // 连接到主节点
+    bool connect_to_leader(const Address &leader_addr);
     // 发送RequestVote请求
     void send_request_vote();
 

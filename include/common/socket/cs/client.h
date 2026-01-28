@@ -25,6 +25,16 @@ public:
         }
     }
 
+    socket_t get_socket() const
+    {
+        return socket_guard_.get();
+    }
+
+    bool is_connected() const
+    {
+        return socket_guard_.is_valid();
+    }
+
     void connect()
     {
         socket_guard_.reset(socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));

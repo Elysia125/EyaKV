@@ -395,23 +395,7 @@ public:
             inet_ntop(AF_INET, &client_addr.sin_addr, clientIp, INET_ADDRSTRLEN);
 
             // 添加到IO复用
-#ifdef __APPLE__
-            struct kevent change;
-            EV_SET(&change, client_sock, EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, NULL);
-            kevent(kqueue_fd_, &change, 1, NULL, 0, NULL);
-#elif __linux__
-            struct epoll_event ev;
-            ev.events = EPOLLIN | EPOLLET; // 边缘触发模式
-            ev.data.fd = client_sock;
-            if (epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, client_sock, &ev) == -1)
-            {
-                LOG_ERROR("Epoll ctl failed for client socket: %s", strerror(errno));
-                CLOSE_SOCKET(client_sock);
-                continue;
-            }
-#else // Windows
-            FD_SET(client_sock, &master_set_);
-#endif
+            add_socket_to_epoll(client_sock);
             LOG_INFO("New connection accepted: %s:%d", clientIp, ntohs(client_addr.sin_port));
 
             current_connections_++;
@@ -451,6 +435,28 @@ public:
             LOG_WARN("Connection rejected: both active and wait queues full");
             CLOSE_SOCKET(client_sock);
         }
+    }
+
+    void add_socket_to_epoll(socket_t client_sock)
+    {
+        // 添加到IO复用
+#ifdef __APPLE__
+        struct kevent change;
+        EV_SET(&change, client_sock, EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, NULL);
+        kevent(kqueue_fd_, &change, 1, NULL, 0, NULL);
+#elif __linux__
+        struct epoll_event ev;
+        ev.events = EPOLLIN | EPOLLET; // 边缘触发模式
+        ev.data.fd = client_sock;
+        if (epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, client_sock, &ev) == -1)
+        {
+            LOG_ERROR("Epoll ctl failed for client socket: %s", strerror(errno));
+            close_socket(client_sock);
+            continue;
+        }
+#else // Windows
+        FD_SET(client_sock, &master_set_);
+#endif
     }
 
     virtual void handle_client(socket_t client_sock)

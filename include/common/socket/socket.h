@@ -450,4 +450,87 @@ namespace std
     };
 }
 
+/**
+ * @brief 检测主机字节序（大端/小端）
+ * @return true：大端序；false：小端序
+ */
+inline bool is_big_endian()
+{
+    union
+    {
+        uint32_t val;
+        uint8_t bytes[4];
+    } test = {0x01020304}; // 大端序存储为 01 02 03 04，小端为 04 03 02 01
+    return (test.bytes[0] == 0x01);
+}
+
+using get_address_func = std::function<int((socket_t s, sockaddr *name, int *namelen))>;
+
+static bool get_address(get_address_func func, socket_t sock, Address &result)
+{
+    sockaddr_storage addr;
+    socklen_t addr_len = sizeof(addr);
+    if (func(sock, reinterpret_cast<sockaddr *>(&addr), &addr_len) != 0)
+    {
+        std::cerr << "获取地址信息失败" << std::endl;
+        return false;
+    }
+    char ip_buf[INET6_ADDRSTRLEN];
+    uint16_t port = 0;
+    size_t ip_buf_len = sizeof(ip_buf);
+    switch (addr.ss_family)
+    {
+    case AF_INET:
+    { // IPv4
+        const struct sockaddr_in *ipv4_addr = reinterpret_cast<const struct sockaddr_in *>(&addr);
+        // 转换IP：二进制→字符串（网络字节序→可读）
+        if (inet_ntop(AF_INET, &ipv4_addr->sin_addr, ip_buf, ip_buf_len) == nullptr)
+        {
+            std::cerr << "IPv4地址转换失败" << std::endl;
+            return false;
+        }
+        // 转换端口：网络字节序→主机字节序
+        port = ntohs(ipv4_addr->sin_port);
+        break;
+    }
+    case AF_INET6:
+    { // IPv6
+        const struct sockaddr_in6 *ipv6_addr = reinterpret_cast<const struct sockaddr_in6 *>(&addr);
+        // 转换IP：IPv6二进制→字符串（如2001:0db8::1）
+        if (inet_ntop(AF_INET6, &ipv6_addr->sin6_addr, ip_buf, ip_buf_len) == nullptr)
+        {
+            std::cerr << "IPv6地址转换失败" << std::endl;
+            return false;
+        }
+        // 转换端口：IPv6端口同样用ntohs转换
+        port = ntohs(ipv6_addr->sin6_port);
+        break;
+    }
+    default:
+    {
+        std::cerr << "不支持的地址族：" << addr.ss_family << std::endl;
+        return false;
+    }
+    }
+    result.host = std::string(ip_buf);
+    result.port = port;
+    return true;
+}
+
+/**
+ * @brief 根据socket获取本地地址信息
+ */
+inline bool get_self_address(socket_t sock, Address &result)
+{
+    return get_address(getsockname, sock, result);
+}
+
+/**
+ *  @brief 根据socket获取对方地址信息
+ */
+inline bool get_opposite_address(socket_t sock, Address &result)
+{
+    return get_address(getpeername, sock, result);
+}
+
 #endif
