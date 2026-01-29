@@ -213,16 +213,17 @@ bool RaftLogArray::append_to_index(uint64_t offset)
     return write_index_entry(offset);
 }
 
-bool RaftLogArray::append(const LogEntry &entry)
+bool RaftLogArray::append(LogEntry &entry)
 {
     std::unique_lock<std::shared_mutex> lock(mutex_);
+    entry.index = base_index_ + entries_.size();
 
     // 1. 写入 WAL
     uint64_t offset;
     if (!write_entry_to_wal(entry, offset))
     {
         LOG_ERROR("Failed to write entry to WAL");
-        return false;
+        return -1;
     }
 
     // 2. 追加到内存
@@ -238,7 +239,31 @@ bool RaftLogArray::append(const LogEntry &entry)
     return true;
 }
 
-bool RaftLogArray::batch_append(const std::vector<LogEntry> &entries)
+bool RaftLogArray::append(const LogEntry &entry)
+{
+    std::unique_lock<std::shared_mutex> lock(mutex_);
+    // 1. 写入 WAL
+    uint64_t offset;
+    if (!write_entry_to_wal(entry, offset))
+    {
+        LOG_ERROR("Failed to write entry to WAL");
+        return -1;
+    }
+
+    // 2. 追加到内存
+    entries_.push_back(entry);
+
+    // 3. 更新索引
+    index_offsets_.push_back(offset);
+    if (!write_index_entry(offset))
+    {
+        LOG_WARN("Failed to write index entry to file");
+    }
+
+    return true;
+}
+
+bool RaftLogArray::batch_append(std::vector<LogEntry> &entries)
 {
     if (entries.empty())
     {
@@ -246,7 +271,37 @@ bool RaftLogArray::batch_append(const std::vector<LogEntry> &entries)
     }
 
     std::unique_lock<std::shared_mutex> lock(mutex_);
+    uint32_t start_index = base_index_ + entries_.size();
+    for (auto &entry : entries)
+    {
+        entry.index = start_index++;
+    }
+    // 1. 写入 WAL (批量)
+    uint64_t offset = ftell(wal_file_);
+    if (!write_batch_to_wal(entries))
+    {
+        LOG_ERROR("Failed to write batch to WAL");
+        return false;
+    }
 
+    // 2. 追加到内存
+    for (const auto &entry : entries)
+    {
+        entries_.push_back(entry);
+        index_offsets_.push_back(offset);
+        offset += sizeof(uint32_t) * 2 + entry.serialize().size(); // 估算下一个偏移
+    }
+
+    return true;
+}
+
+bool RaftLogArray::batch_append(const std::vector<LogEntry> &entries)
+{
+    if (entries.empty())
+    {
+        return true;
+    }
+    std::unique_lock<std::shared_mutex> lock(mutex_);
     // 1. 写入 WAL (批量)
     uint64_t offset = ftell(wal_file_);
     if (!write_batch_to_wal(entries))

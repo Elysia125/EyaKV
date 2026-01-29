@@ -350,6 +350,9 @@ bool RaftNode::become_follower(const Address &leader_addr, uint32_t term, bool i
                 // 关闭所有follower_sockets_
                 for (auto &socket : follower_sockets_)
                 {
+                    // 给当前的follower_sockets_发送QueryLeaderResponse消息,让他们也去连接leader
+                    RaftMessage response = RaftMessage::query_leader_response(leader_addr);
+                    send(response, socket);
                     close_socket(socket);
                 }
                 // 清空follower_sockets_和follower_address_map_
@@ -467,18 +470,13 @@ void RaftNode::send_request_vote()
     log_array_.get_last_info(last_index, last_term);
 
     // 构造RequestVote消息
-    RaftMessage msg = RaftMessage::request_vote(current_term_.load(), last_index);
-
-    std::string my_addr = ip_ + ":" + std::to_string(port_);
+    RaftMessage msg = RaftMessage::request_vote(persistent_state_.current_term_.load(), last_index);
 
     // 向所有集群节点发送投票请求
-    for (const auto &node : cluster_nodes_)
+    for (const auto &node : persistent_state_.cluster_metadata_.cluster_nodes_)
     {
-        if (node == my_addr)
-            continue;
-
         LOG_INFO("Sending RequestVote to %s (term=%u, last_log_index=%u)",
-                 node.c_str(), persistent_state_.current_term_.load(), last_index);
+                 node.to_string().c_str(), persistent_state_.current_term_.load(), last_index);
 
         // TODO: 实际发送消息 (需要实现TCPClient发送)
         // 这将在后续实现完整的消息处理逻辑
@@ -554,13 +552,13 @@ bool RaftNode::handle_append_entries(const RaftMessage &msg)
                   msg.term, persistent_state_.current_term_.load());
         return false;
     }
-
-    // 2. 发现更高term，降级为follower
+    role_ = RaftRole::Follower;
+    // 2. 发现更高term,更新term
     if (msg.term > persistent_state_.current_term_.load())
     {
         LOG_INFO("Discovered higher term %u (current: %u), stepping down to follower",
                  msg.term, persistent_state_.current_term_.load());
-        become_follower(msg.term);
+        persistent_state_.current_term_.store(msg.term);
     }
 
     // 重置选举超时
@@ -615,10 +613,11 @@ bool RaftNode::handle_append_entries(const RaftMessage &msg)
     }
 
     // 5. 更新commit_index
-    if (data.leader_commit > commit_index_.load())
+    if (data.leader_commit > persistent_state_.commit_index_.load(std::memory_order_relaxed))
     {
         uint32_t new_commit = std::min(data.leader_commit, log_array_.get_last_index());
-        commit_index_ = new_commit;
+        persistent_state_.commit_index_.store(new_commit, std::memory_order_relaxed);
+        save_persistent_state();
         LOG_INFO("Updated commit_index to %u", new_commit);
         apply_committed_entries();
     }
@@ -627,7 +626,7 @@ bool RaftNode::handle_append_entries(const RaftMessage &msg)
 }
 
 // 处理RequestVote请求
-bool RaftNode::handle_request_vote(const RaftMessage &msg)
+bool RaftNode::handle_request_vote(const RaftMessage &msg, const socket_t &sock)
 {
     std::lock_guard<std::mutex> lock(mutex_);
 
@@ -659,7 +658,7 @@ bool RaftNode::handle_request_vote(const RaftMessage &msg)
 
     // 3. 检查是否已投票
     std::string candidate_addr = ""; // TODO: 从消息中获取候选人地址
-    if (!voted_for_.empty() && persistent_state_.voted_for_ != candidate_addr)
+    if (!persistent_state_.voted_for_.empty() && persistent_state_.voted_for_ != candidate_addr)
     {
         LOG_DEBUG("Already voted for %s in term %u", persistent_state_.voted_for_.c_str(), persistent_state_.current_term_.load());
         return false;
@@ -686,66 +685,32 @@ bool RaftNode::handle_request_vote(const RaftMessage &msg)
 // 应用已提交的日志到状态机
 void RaftNode::apply_committed_entries()
 {
-    while (last_applied_.load() < commit_index_.load())
+    while (persistent_state_.last_applied_.load() < persistent_state_.commit_index_.load())
     {
-        last_applied_++;
+        persistent_state_.last_applied_++;
 
         // 获取日志条目
         LogEntry entry;
-        if (log_array_.get(last_applied_.load(), entry))
+        if (log_array_.get(persistent_state_.last_applied_.load(), entry))
         {
             // 应用到状态机
             Response result = execute_command(entry.cmd);
 
-            LOG_INFO("Applied log %u, result: %s", last_applied_.load(),
-                     result.success ? "success" : "failed");
+            LOG_INFO("Applied log %u, result: %s", persistent_state_.last_applied_.load(),
+                     result.code_ == 1 ? "success" : "failed");
         }
     }
+    save_persistent_state();
 }
 
 // 尝试提交日志
 void RaftNode::try_commit_entries()
 {
-    // 找到大多数节点都已匹配的日志索引
-    std::vector<uint32_t> matched_indices;
-    for (const auto &[node, idx] : match_index_)
-    {
-        matched_indices.push_back(idx);
-    }
-
-    std::sort(matched_indices.begin(), matched_indices.end(), std::greater<uint32_t>());
-
-    if (matched_indices.empty())
-    {
-        return;
-    }
-
-    uint32_t majority_index = matched_indices[cluster_nodes_.size() / 2];
-
-    // 只有当前term的日志才能提交
-    if (majority_index > commit_index_.load() &&
-        log_array_.get_term(majority_index) == persistent_state_.current_term_.load())
-    {
-        commit_entry(majority_index);
-    }
 }
 
 // 提交指定索引的日志
 void RaftNode::commit_entry(uint32_t index)
 {
-    std::lock_guard<std::mutex> lock(mutex_);
-
-    if (index <= commit_index_.load())
-    {
-        return; // 已提交
-    }
-
-    // 更新commit_index
-    commit_index_ = index;
-    LOG_INFO("Committed log entries up to index %u", index);
-
-    // 应用到状态机
-    apply_committed_entries();
 }
 
 // 计算可达节点数
@@ -761,19 +726,6 @@ void RaftNode::stop_accepting_writes()
 {
     LOG_INFO("Stopping write requests");
     // TODO: 实现写请求拒绝逻辑
-}
-
-// 主动连接处理
-void RaftNode::on_active_connect(const std::string &target_address)
-{
-    if (role_ == RaftRole::Leader)
-    {
-        LOG_WARN("Active connecting to another node, step down to follower");
-        become_follower(current_term_.load());
-    }
-
-    // TODO: 尝试连接并发送探查消息
-    LOG_INFO("Actively connecting to node: %s", target_address.c_str());
 }
 
 // 处理探查leader请求
@@ -862,7 +814,7 @@ void RaftNode::handle_join_cluster(const RaftMessage &msg, const socket_t &clien
 }
 
 // 处理AppendEntries响应
-void RaftNode::handle_append_entries_response(const Address &follower, const RaftMessage &msg)
+void RaftNode::handle_append_entries_response(const RaftMessage &msg, const socket_t &sock)
 {
     if (!msg.append_entries_response_data)
     {
@@ -872,18 +824,11 @@ void RaftNode::handle_append_entries_response(const Address &follower, const Raf
 
     const auto &response = *msg.append_entries_response_data;
 
-    if (response.term > persistent_state_.current_term_.load())
-    {
-        // 发现更高term，降级
-        become_follower(response.term);
-        return;
-    }
-
     if (response.success)
     {
         // 复制成功，更新match_index和next_index
-        match_index_[follower] = log_array_.get_last_index();
-        next_index_[follower] = match_index_[follower] + 1;
+        match_index_[sock] = log_array_.get_last_index();
+        next_index_[sock] = match_index_[sock] + 1;
 
         // 检查是否可以提交
         try_commit_entries();
@@ -891,18 +836,18 @@ void RaftNode::handle_append_entries_response(const Address &follower, const Raf
     else
     {
         // 复制失败，回退next_index
-        if (next_index_[follower] > 0)
+        if (next_index_[sock] > 0)
         {
-            next_index_[follower]--;
+            next_index_[sock]--;
         }
 
         // 重试
-        send_append_entries(follower, false);
+        send_append_entries(sock, false);
     }
 }
 
 // 处理RequestVote响应
-void RaftNode::handle_request_vote_response(const std::string &voter, const RaftMessage &msg)
+void RaftNode::handle_request_vote_response(const RaftMessage &msg, const socket_t &sock)
 {
     if (!msg.request_vote_response_data)
     {
@@ -911,25 +856,24 @@ void RaftNode::handle_request_vote_response(const std::string &voter, const Raft
     }
 
     const auto &response = *msg.request_vote_response_data;
-
-    if (response.term > persistent_state_.current_term_.load())
-    {
-        // 发现更高term，降级
-        become_follower(response.term);
-        return;
-    }
-
-    if (response.vote_granted)
-    {
-        LOG_INFO("Received vote from %s for term %u", voter.c_str(), persistent_state_.current_term_.load());
-        // TODO: 统计投票，如果获得多数则成为leader
-    }
-    else
-    {
-        LOG_DEBUG("Vote rejected from %s", voter.c_str());
-    }
 }
+
+// 执行命令
 Response RaftNode::execute_command(const std::string &cmd)
+{
+    if (!Storage::is_init())
+    {
+        LOG_ERROR("Storage is not initialized");
+        exit(1);
+    }
+    static Storage *storage_ = Storage::get_instance();
+    std::vector<std::string> command_parts = split_by_spacer(cmd);
+    uint8_t operation = stringToOperationType(command_parts[0]);
+    return storage_->execute(operation, command_parts);
+}
+
+// 实现两阶段提交 - 提交命令
+Response RaftNode::submit_command(const std::string &cmd)
 {
     if (!Storage::is_init())
     {
@@ -940,7 +884,6 @@ Response RaftNode::execute_command(const std::string &cmd)
     // 解析命令并执行
     std::vector<std::string> command_parts = split_by_spacer(cmd);
     Response response;
-
     if (command_parts.empty())
     {
         response = Response::error("Invalid command");
@@ -954,50 +897,48 @@ Response RaftNode::execute_command(const std::string &cmd)
             return response;
         }
         uint8_t operation = stringToOperationType(command_parts[0]);
-        if (isWriteOperation(operation) && role_ != RaftRole::Leader)
+        if (isReadOperation(operation))
+        {
+            // 读操作直接执行
+            command_parts.erase(command_parts.begin());
+            response = storage_->execute(operation, command_parts);
+        }
+        else if (role_ != RaftRole::Leader)
         {
             response = Response::error("not the leader node,cannot write");
-            return response;
         }
-        command_parts.erase(command_parts.begin());
-        response = storage_->execute(operation, command_parts);
+        else
+        {
+            // 主节点的写操作需要两阶段执行
+            // 创建日志条目
+            LogEntry entry;
+            uint32_t last_index = log_array_.get_last_index();
+            entry.term = persistent_state_.current_term_.load();
+            entry.cmd = cmd;
+            entry.timestamp = get_current_timestamp();
+            entry.command_type = 0; // 普通命令类型
+
+            // [阶段1] 预写日志
+            if (!log_array_.append(entry))
+            {
+                LOG_ERROR("Failed to append log entry");
+                return Response::error("execute failed");
+            }
+
+            LOG_INFO("Pre-wrote command at index %u, term %u", entry.index, entry.term);
+
+            // [阶段2] 触发日志复制（异步）
+            {
+                std::shared_lock<std::shared_mutex> lock(follower_sockets_mutex_);
+                for (const auto &sock : follower_sockets_)
+                {
+                    send_append_entries(sock, false);
+                }
+            }
+            response = Response::success(std::to_string(entry.index));
+        }
     }
     return response;
-}
-
-// [修改] 实现两阶段提交 - 提交命令
-Response RaftNode::submit_command(const std::string &cmd)
-{
-    if (role_ != RaftRole::Leader)
-    {
-        LOG_WARN("Not the leader, cannot submit command");
-        return Response::error("Not the leader");
-    }
-
-    // 创建日志条目
-    LogEntry entry;
-    uint32_t last_index = log_array_.get_last_index();
-    entry.index = last_index + 1;
-    entry.term = persistent_state_.current_term_.load();
-    entry.command = cmd;
-    entry.timestamp = get_current_timestamp();
-    entry.command_type = 0; // 普通命令类型
-
-    // [阶段1] 预写日志
-    if (!log_array_.append(entry))
-    {
-        LOG_ERROR("Failed to append log entry");
-        return Response::error("Failed to append log");
-    }
-
-    LOG_INFO("Pre-wrote command at index %u, term %u", entry.index, entry.term);
-
-    // [阶段2] 触发日志复制（异步）
-    // TODO: 立即向所有follower发送AppendEntries
-    // 这将在后续完整实现中完成
-
-    // 返回日志索引 (客户端可用此索引查询结果)
-    return Response::success(entry.index);
 }
 
 Response RaftNode::handle_raft_command(const std::vector<std::string> &command_parts, bool &is_exec)

@@ -128,11 +128,12 @@ public:
     ~RaftLogArray();
 
     // 追加日志 (内存 + WAL + 更新索引)
+    bool append(LogEntry &entry);
+
     bool append(const LogEntry &entry);
-
     // 批量追加日志
+    bool batch_append(std::vector<LogEntry> &entries);
     bool batch_append(const std::vector<LogEntry> &entries);
-
     // 获取指定索引的日志
     bool get(uint32_t index, LogEntry &entry) const;
 
@@ -265,12 +266,12 @@ private:
     void sync_missing_logs();           // 同步缺失日志
 
     // 消息处理方法
-    bool handle_append_entries(const RaftMessage &msg);                                   // 处理AppendEntries请求
-    bool handle_request_vote(const RaftMessage &msg);                                     // 处理RequestVote请求
-    void handle_append_entries_response(const Address &follower, const RaftMessage &msg); // 处理AppendEntries响应
-    void handle_request_vote_response(const Address &voter, const RaftMessage &msg);      // 处理RequestVote响应
-    void handle_query_leader(const RaftMessage &msg, const socket_t &client_sock);        // 处理探查leader请求
-    void handle_join_cluster(const RaftMessage &msg, const socket_t &client_sock);        // 处理新节点加入请求
+    bool handle_append_entries(const RaftMessage &msg);                                // 处理AppendEntries请求
+    bool handle_request_vote(const RaftMessage &msg, const socket_t &sock);            // 处理RequestVote请求
+    void handle_append_entries_response(const RaftMessage &msg, const socket_t &sock); // 处理AppendEntries响应
+    void handle_request_vote_response(const RaftMessage &msg, const socket_t &sock);   // 处理RequestVote响应
+    void handle_query_leader(const RaftMessage &msg, const socket_t &client_sock);     // 处理探查leader请求
+    void handle_join_cluster(const RaftMessage &msg, const socket_t &client_sock);     // 处理新节点加入请求
 
     // 日志复制和提交方法
     void send_append_entries(const socket_t &sock, bool is_heartbeat = false); // 发送AppendEntries
@@ -283,10 +284,9 @@ private:
     void apply_committed_entries();                                                     // 应用已提交的日志到状态机
 
     // 辅助方法
-    uint32_t get_current_timestamp();                          // 获取当前时间戳
-    int count_reachable_nodes();                               // 计算可达节点数
-    void stop_accepting_writes();                              // 停止接受写请求
-    void on_active_connect(const std::string &target_address); // 主动连接处理
+    uint32_t get_current_timestamp(); // 获取当前时间戳
+    int count_reachable_nodes();      // 计算可达节点数
+    void stop_accepting_writes();     // 停止接受写请求
 
     // 广播消息到所有从节点
     void broadcast_to_followers(const RaftMessage &msg);
@@ -347,7 +347,8 @@ private:
 
     void add_new_connection(socket_t client_sock, const sockaddr_in &client_addr) override;
 
-    bool remove_node(const Address& addr);
+    bool remove_node(const Address &addr);
+
 public:
     ~RaftNode();
 
