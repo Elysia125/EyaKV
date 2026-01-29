@@ -269,24 +269,29 @@ struct AppendEntriesData
 // 日志追加响应消息数据
 struct AppendEntriesResponseData
 {
-    bool success; // 请求是否成功
-
-    AppendEntriesResponseData(bool succ = false) : success(succ) {}
+    bool success;       // 请求是否成功
+    uint32_t log_index; // 最终的日志索引
+    AppendEntriesResponseData(bool succ = false, uint32_t idx = 0) : success(succ), log_index(idx) {}
 
     std::string serialize() const
     {
         std::string result;
         uint8_t net_success = static_cast<uint8_t>(success ? 1 : 0);
+        uint32_t net_log_index = htonl(log_index);
         result.append(reinterpret_cast<const char *>(&net_success), sizeof(net_success));
+        result.append(reinterpret_cast<const char *>(&net_log_index), sizeof(net_log_index));
         return result;
     }
 
     static AppendEntriesResponseData deserialize(const char *data, size_t &offset)
     {
         uint8_t net_success;
+        uint32_t net_log_index;
         std::memcpy(&net_success, data + offset, sizeof(net_success));
         offset += sizeof(net_success);
-        return AppendEntriesResponseData(net_success != 0);
+        std::memcpy(&net_log_index, data + offset, sizeof(net_log_index));
+        offset += sizeof(net_log_index);
+        return AppendEntriesResponseData(net_success != 0, ntohl(net_log_index));
     }
 };
 
@@ -695,12 +700,12 @@ struct RaftMessage : public ProtocolBody
         return msg;
     }
 
-    static RaftMessage append_entries_response(uint32_t term, bool success)
+    static RaftMessage append_entries_response(uint32_t term, bool success, uint32_t last_log_index)
     {
         RaftMessage msg;
         msg.type = RaftMessageType::APPEND_ENTRIES_RESPONSE;
         msg.term = term;
-        msg.append_entries_response_data = AppendEntriesResponseData(success);
+        msg.append_entries_response_data = AppendEntriesResponseData(success, last_log_index);
         return msg;
     }
 

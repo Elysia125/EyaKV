@@ -149,7 +149,8 @@ void RaftNode::follower_client_loop()
             break;
         }
         ProtocolBody *msg = new_body();
-        int ret = follower_client_->receive(*msg);
+        // 为了防止一直等待添加一个超时时间
+        int ret = follower_client_->receive(*msg, raft_msg_timeout_);
         if (ret == -1)
         {
             LOG_ERROR("Follower client failed to receive message,because of timeout");
@@ -160,14 +161,101 @@ void RaftNode::follower_client_loop()
         {
             LOG_ERROR("Follower client failed to receive message, connection closed");
             delete msg;
-            follower_client_ = nullptr;
-            follower_client_thread_running_ = false;
-            // TODO 或许可以直接触发选举
+            // 尝试重连(3次)
+            bool is_connected = false;
+            for (int i = 0; i < 3; i++)
+            {
+                try
+                {
+                    if (!follower_client_thread_running_ || follower_client_->is_connected() || follower_client_ == nullptr)
+                    {
+                        break;
+                    }
+                    follower_client_->connect();
+                    is_connected = true;
+                    break;
+                }
+                catch (const std::exception &e)
+                {
+                    LOG_ERROR("Failed to reconnect leader: %s", e.what());
+                    // 休眠1秒
+                    std::this_thread::sleep_for(std::chrono::seconds(1));
+                }
+            }
+            if (!is_connected)
+            {
+                LOG_ERROR("Failed to reconnect leader, giving up");
+                follower_client_ == nullptr;
+                follower_client_thread_running_ = false;
+                break;
+            }
         }
         else if (ret > 0)
         {
-            // TODO 处理收到的消息
+            // 处理收到的消息
+            RaftMessage *raft_msg = dynamic_cast<RaftMessage *>(msg);
+            handle_leader_message(*raft_msg);
         }
+    }
+}
+
+void RaftNode::handle_leader_message(const RaftMessage &msg)
+{
+    switch (msg.type)
+    {
+    case RaftMessageType::APPEND_ENTRIES:
+        handle_append_entries(msg);
+        break;
+    case RaftMessageType::NEW_NODE:
+        handle_new_node_join(msg);
+        break;
+    case RaftMessageType::LEAVE_NODE:
+        handle_leave_node(msg);
+        break;
+    default:
+        LOG_WARN("Unknown message type: %d", static_cast<int>(msg.type));
+        break;
+    }
+}
+void RaftNode::handle_leave_node(const RaftMessage &msg)
+{
+    LOG_INFO("Node leaving the cluster");
+    if (!msg.leave_node_data.has_value())
+    {
+        LOG_WARN("Leave node data is empty");
+    }
+    auto &data = *msg.leave_node_data;
+    Address self_addr;
+    get_self_address(follower_client_->get_socket(), self_addr);
+    if (self_addr == data.node_address)
+    {
+        LOG_INFO("This node is leaving the cluster, shutting down");
+        follower_client_ = nullptr;
+        follower_client_thread_running_ = false;
+        if (follower_client_thread_.joinable())
+        {
+            follower_client_thread_.join();
+        }
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        persistent_state_.cluster_metadata_.cluster_nodes_.erase(data.node_address);
+        save_persistent_state();
+    }
+}
+void RaftNode::handle_new_node_join(const RaftMessage &msg)
+{
+    LOG_INFO("New node joined the cluster");
+    if (!msg.new_node_join_data.has_value())
+    {
+        LOG_WARN("New node join data is empty");
+    }
+    auto &data = *msg.new_node_join_data;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        persistent_state_.cluster_metadata_.cluster_nodes_.insert(data.node_address);
+        save_persistent_state();
     }
 }
 // 场景1: 作为follower启动
@@ -334,6 +422,7 @@ bool RaftNode::become_follower(const Address &leader_addr, uint32_t term, bool i
             LOG_INFO("Follower client received init message response");
             // 更新任期
             persistent_state_.cluster_metadata_.current_leader_ = leader_addr;
+            persistent_state_.cluster_metadata_.cluster_nodes_.clear();
             persistent_state_.commit_index_ = commit_index;
             if (term > persistent_state_.current_term_)
             {
@@ -492,47 +581,49 @@ void RaftNode::send_heartbeat_to_all()
     std::shared_lock<std::shared_mutex> lock(follower_sockets_mutex_);
     for (const auto &sock : follower_sockets_)
     {
-        send_append_entries(sock, true); // true表示心跳
+        send_append_entries(sock);
     }
 }
 
 // 发送AppendEntries
-void RaftNode::send_append_entries(const socket_t &sock, bool is_heartbeat)
+void RaftNode::send_append_entries(const socket_t &sock)
 {
+    std::lock_guard<std::mutex> lock(mutex_); // 需注意锁的范围，避免死锁
+
+    // 如果不是 Leader，不发送
     if (role_ != RaftRole::Leader)
-    {
         return;
-    }
 
+    // 获取该 Follower 需要的下一条日志索引
     uint32_t next_idx = next_index_[sock];
+    uint32_t last_log_idx = log_array_.get_last_index();
 
-    // 获取待发送的日志
-    std::vector<LogEntry> entries;
-    if (!is_heartbeat)
-    {
-        entries = log_array_.get_entries_from(next_idx);
-    }
-
-    // 构造AppendEntries消息
-    uint32_t prev_idx = (next_idx > 0) ? next_idx - 1 : 0;
-    uint32_t prev_term = log_array_.get_term(prev_idx);
-    uint32_t commit = persistent_state_.commit_index_.load();
+    // 准备 RPC 参数
+    uint32_t prev_log_index = (next_idx > 0) ? next_idx - 1 : 0;
+    uint32_t prev_log_term = log_array_.get_term(prev_log_index);
+    uint32_t leader_commit = persistent_state_.commit_index_.load();
+    uint32_t term = persistent_state_.current_term_.load();
 
     RaftMessage msg;
-    if (is_heartbeat)
+
+    // 如果 Follower 落后于 Leader (next_idx <= last_log_idx)，则携带日志
+    // 否则，发送空日志（纯心跳）
+    if (next_idx <= last_log_idx)
     {
-        msg = RaftMessage::append_entries(persistent_state_.current_term_.load(), prev_idx, prev_term, commit);
+        // 限制单次发送数量，防止包过大阻塞网络（例如每次最多发 100 条）
+        std::vector<LogEntry> entries = log_array_.get_entries_from(next_idx, 100);
+
+        std::set<LogEntry> entry_set(entries.begin(), entries.end());
+        msg = RaftMessage::append_entries_with_data(term, prev_log_index, prev_log_term, entry_set, leader_commit);
+
+        LOG_DEBUG("Sending logs to %d: count=%zu, prev_idx=%u", sock, entries.size(), prev_log_index);
     }
     else
     {
-        // 批量发送日志
-        std::set<LogEntry> entry_set(entries.begin(), entries.end());
-        msg = RaftMessage::append_entries_with_data(persistent_state_.current_term_.load(), prev_idx, prev_term,
-                                                    entry_set, commit);
+        // 没有新日志，发送纯心跳
+        msg = RaftMessage::append_entries(term, prev_log_index, prev_log_term, leader_commit);
+        LOG_DEBUG("Sending heartbeat to %d", sock);
     }
-
-    LOG_DEBUG("Sending AppendEntries to %d (prev_idx=%u, prev_term=%u, entries=%zu, commit=%u)",
-              sock, prev_idx, prev_term, entries.size(), commit);
 
     int ret = send(msg, sock);
     if (ret < 0)
@@ -615,11 +706,17 @@ bool RaftNode::handle_append_entries(const RaftMessage &msg)
     // 5. 更新commit_index
     if (data.leader_commit > persistent_state_.commit_index_.load(std::memory_order_relaxed))
     {
-        uint32_t new_commit = std::min(data.leader_commit, log_array_.get_last_index());
-        persistent_state_.commit_index_.store(new_commit, std::memory_order_relaxed);
-        save_persistent_state();
-        LOG_INFO("Updated commit_index to %u", new_commit);
-        apply_committed_entries();
+        uint32_t last_index = log_array_.get_last_index(); // 获取本地最新日志
+        // commit_index 取 leader_commit 和 本地最新日志索引 的较小值
+        uint32_t new_commit = std::min(data.leader_commit, last_index);
+
+        if (new_commit > persistent_state_.commit_index_.load())
+        {
+            persistent_state_.commit_index_.store(new_commit, std::memory_order_relaxed);
+            save_persistent_state();
+            LOG_INFO("Follower updated commit_index to %u", new_commit);
+            apply_committed_entries(); // Follower 也要应用日志
+        }
     }
 
     return true;
@@ -685,49 +782,136 @@ bool RaftNode::handle_request_vote(const RaftMessage &msg, const socket_t &sock)
 // 应用已提交的日志到状态机
 void RaftNode::apply_committed_entries()
 {
-    while (persistent_state_.last_applied_.load() < persistent_state_.commit_index_.load())
+    std::lock_guard<std::mutex> lock(mutex_);
+    uint32_t commit_index = persistent_state_.commit_index_.load();
+    uint32_t last_applied = persistent_state_.last_applied_.load();
+
+    while (last_applied < commit_index)
     {
-        persistent_state_.last_applied_++;
+        last_applied++;
 
-        // 获取日志条目
         LogEntry entry;
-        if (log_array_.get(persistent_state_.last_applied_.load(), entry))
-        {
-            // 应用到状态机
-            Response result = execute_command(entry.cmd);
+        Response result;
 
-            LOG_INFO("Applied log %u, result: %s", persistent_state_.last_applied_.load(),
-                     result.code_ == 1 ? "success" : "failed");
+        if (log_array_.get(last_applied, entry))
+        {
+            // 执行实际的业务逻辑
+            result = execute_command(entry.cmd);
+            LOG_INFO("Applied log index %u, term %u", last_applied, entry.term);
+        }
+        else
+        {
+            LOG_ERROR("Failed to read log at apply index %u", last_applied);
+            result = Response::error("log read error");
+        }
+
+        persistent_state_.last_applied_.store(last_applied);
+
+        // Leader应通知等待的客户端
+        if (role_ == RaftRole::Leader)
+        {
+            notify_request_applied(last_applied, result);
         }
     }
+
+    // 批量保存一次状态（优化）
     save_persistent_state();
 }
 
 // 尝试提交日志
 void RaftNode::try_commit_entries()
 {
+    uint32_t commit_index = persistent_state_.commit_index_.load();
+    uint32_t last_log_index = log_array_.get_last_index();
+
+    // 如果没有新日志，不需要计算
+    if (commit_index >= last_log_index)
+        return;
+
+    // 1. 收集所有节点的 match_index
+    // 包括 Leader 自己 (match_index = last_log_index)
+    std::vector<uint32_t> match_indexes;
+    match_indexes.push_back(last_log_index);
+
+    for (const auto &pair : match_index_)
+    {
+        match_indexes.push_back(pair.second);
+    }
+
+    // 2. 排序（降序）
+    std::sort(match_indexes.begin(), match_indexes.end(), std::greater<uint32_t>());
+
+    // 3. 找到中间位置的索引 (Majority Index)
+    // 例如 3 个节点，indices[1] 是中位数; 5 个节点，indices[2] 是中位数
+    // cluster_size 包括 leader 和 followers
+    size_t cluster_size = match_indexes.size();
+    uint32_t majority_index = match_indexes[cluster_size / 2];
+
+    // 4. 检查条件：
+    // a. N > commitIndex
+    // b. log[N].term == currentTerm (Raft 安全限制：只能提交当前任期的日志)
+    if (majority_index > commit_index)
+    {
+        uint32_t log_term = log_array_.get_term(majority_index);
+        if (log_term == persistent_state_.current_term_.load())
+        {
+            LOG_INFO("Commit index advanced from %u to %u", commit_index, majority_index);
+
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                persistent_state_.commit_index_.store(majority_index);
+            }
+            save_persistent_state(); // 持久化
+
+            // 应用日志到状态机
+            apply_committed_entries();
+        }
+    }
 }
 
-// 提交指定索引的日志
-void RaftNode::commit_entry(uint32_t index)
+void RaftNode::notify_request_applied(uint32_t index, const Response &response)
 {
+    std::lock_guard<std::mutex> lock(pending_requests_mutex_);
+    auto it = pending_requests_.find(index);
+    if (it != pending_requests_.end())
+    {
+        // 设置 Promise 的值，唤醒 submit_command
+        try
+        {
+            it->second->promise.set_value(response);
+        }
+        catch (...)
+        {
+            LOG_WARN("Failed to set promise value for index %u", index);
+        }
+        pending_requests_.erase(it);
+    }
 }
-
-// 计算可达节点数
-int RaftNode::count_reachable_nodes()
-{
-    int count = 0;
-    // TODO: 实现实际的可达性检查
-    return count;
-}
-
 // 停止接受写请求
-void RaftNode::stop_accepting_writes()
+bool RaftNode::stop_accepting_writes()
 {
     LOG_INFO("Stopping write requests");
-    // TODO: 实现写请求拒绝逻辑
+    if (role_ != RaftRole::Leader)
+    {
+        LOG_ERROR("Not a leader, cannot stop accepting writes");
+        return false;
+    }
+    writable.store(false, std::memory_order_relaxed);
+    return true;
 }
 
+// 开始允许写操作
+bool RaftNode::start_accepting_writes()
+{
+    LOG_INFO("Stopping write requests");
+    if (role_ != RaftRole::Leader)
+    {
+        LOG_ERROR("Not a leader, cannot stop accepting writes");
+        return false;
+    }
+    writable.store(true, std::memory_order_relaxed);
+    return true;
+}
 // 处理探查leader请求
 void RaftNode::handle_query_leader(const RaftMessage &msg, const socket_t &client_sock)
 {
@@ -827,8 +1011,11 @@ void RaftNode::handle_append_entries_response(const RaftMessage &msg, const sock
     if (response.success)
     {
         // 复制成功，更新match_index和next_index
-        match_index_[sock] = log_array_.get_last_index();
-        next_index_[sock] = match_index_[sock] + 1;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            match_index_[sock] = std::max(match_index_[sock], response.log_index);
+            next_index_[sock] = match_index_[sock] + 1;
+        }
 
         // 检查是否可以提交
         try_commit_entries();
@@ -836,13 +1023,16 @@ void RaftNode::handle_append_entries_response(const RaftMessage &msg, const sock
     else
     {
         // 复制失败，回退next_index
-        if (next_index_[sock] > 0)
         {
-            next_index_[sock]--;
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (next_index_[sock] > 0)
+            {
+                next_index_[sock]--;
+            }
         }
 
         // 重试
-        send_append_entries(sock, false);
+        send_append_entries(sock);
     }
 }
 
@@ -905,37 +1095,55 @@ Response RaftNode::submit_command(const std::string &cmd)
         }
         else if (role_ != RaftRole::Leader)
         {
-            response = Response::error("not the leader node,cannot write");
+            response = Response::redirect(persistent_state_.cluster_metadata_.current_leader_.to_string());
         }
         else
         {
-            // 主节点的写操作需要两阶段执行
-            // 创建日志条目
+            std::shared_ptr<PendingRequest> pending_req = std::make_shared<PendingRequest>();
+            uint32_t log_index = 0;
+
+            // 1. 本地写入日志 (Phase 1 Start)
             LogEntry entry;
-            uint32_t last_index = log_array_.get_last_index();
             entry.term = persistent_state_.current_term_.load();
             entry.cmd = cmd;
             entry.timestamp = get_current_timestamp();
-            entry.command_type = 0; // 普通命令类型
+            entry.command_type = 0;
 
-            // [阶段1] 预写日志
             if (!log_array_.append(entry))
             {
                 LOG_ERROR("Failed to append log entry");
                 return Response::error("execute failed");
             }
+            uint32_t log_index = entry.index;
+            LOG_INFO("Leader appended log index %u, term %u, waiting for commit...", log_index, entry.term);
 
-            LOG_INFO("Pre-wrote command at index %u, term %u", entry.index, entry.term);
-
-            // [阶段2] 触发日志复制（异步）
+            // 2. 注册等待通知
             {
-                std::shared_lock<std::shared_mutex> lock(follower_sockets_mutex_);
-                for (const auto &sock : follower_sockets_)
-                {
-                    send_append_entries(sock, false);
-                }
+                std::lock_guard<std::mutex> pending_lock(pending_requests_mutex_);
+                pending_requests_[log_index] = pending_req;
             }
-            response = Response::success(std::to_string(entry.index));
+
+            // 3. 广播给 Followers
+            std::shared_lock<std::shared_mutex> sock_lock(follower_sockets_mutex_);
+            for (const auto &sock : follower_sockets_)
+            {
+                send_append_entries(sock);
+            }
+
+            // 4. 阻塞等待结果
+            std::future_status status = pending_req->future.wait_for(std::chrono::milliseconds(raft_msg_timeout_));
+
+            if (status == std::future_status::ready)
+            {
+                return pending_req->future.get();
+            }
+            else
+            {
+                // 超时处理
+                std::lock_guard<std::mutex> pending_lock(pending_requests_mutex_);
+                pending_requests_.erase(log_index);
+                return Response::error("command timeout");
+            }
         }
     }
     return response;
@@ -1086,6 +1294,12 @@ void RaftNode::handle_request(ProtocolBody *body, socket_t client_sock)
     case RaftMessageType::QUERY_LEADER:
         handle_query_leader(*msg, client_sock);
         break;
+    case RaftMessageType::APPEND_ENTRIES_RESPONSE:
+        handle_append_entries_response(*msg, client_sock);
+        break;
+    case RaftMessageType::REQUEST_VOTE:
+        handle_request_vote(*msg, client_sock);
+        break;
     }
     delete body;
 }
@@ -1143,6 +1357,9 @@ void RaftNode::close_socket(socket_t sock)
     {
         std::lock_guard<std::shared_mutex> lock(follower_sockets_mutex_);
         follower_sockets_.erase(sock);
+        Address node_to_remove;
+        get_opposite_address(sock, node_to_remove);
+        follower_address_map_.erase(node_to_remove);
     }
 }
 

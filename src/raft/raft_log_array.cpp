@@ -404,7 +404,25 @@ std::vector<LogEntry> RaftLogArray::get_entries_from(uint32_t start_index) const
 
     return result;
 }
+std::vector<LogEntry> RaftLogArray::get_entries_from(uint32_t start_index, int max_count) const
+{
+    std::shared_lock<std::shared_mutex> lock(mutex_);
+    std::vector<LogEntry> result;
 
+    if (start_index < base_index_)
+    {
+        return result;
+    }
+
+    size_t array_index = start_index - base_index_;
+    size_t end_index = array_index + max_count;
+    for (size_t i = array_index; i < entries_.size() && i < end_index; ++i)
+    {
+        result.push_back(entries_[i]);
+    }
+
+    return result;
+}
 bool RaftLogArray::recover()
 {
     std::unique_lock<std::shared_mutex> lock(mutex_);

@@ -12,6 +12,7 @@
 #include <memory>
 #include <cstring>
 #include <shared_mutex>
+#include <future>
 #include "common/base/export.h"
 #include "raft/protocol/protocol.h"
 #include "common/socket/cs/client.h"
@@ -162,7 +163,7 @@ public:
 
     // 获取从指定索引开始的所有日志 (用于快照同步)
     std::vector<LogEntry> get_entries_from(uint32_t start_index) const;
-
+    std::vector<LogEntry> get_entries_from(uint32_t start_index, int max_count) const;
     // 从磁盘恢复 (Recover 机制，使用 Index 加速)
     bool recover();
 
@@ -239,6 +240,8 @@ private:
     FILE *metadata_file_ = nullptr;
     std::string root_dir_; // 数据根目录
 
+    // 是否允许写（主节点有效，从节点本身不可写）
+    std::atomic<bool> writable{true};
     // 单例
     static std::unique_ptr<RaftNode> instance_;
     static bool is_init_;
@@ -247,6 +250,25 @@ private:
     std::unordered_set<socket_t> follower_sockets_;
     std::shared_mutex follower_sockets_mutex_;
     std::unordered_map<Address, socket_t> follower_address_map_;
+
+    struct PendingRequest
+    {
+        std::promise<Response> promise;
+        std::future<Response> future;
+
+        PendingRequest()
+        {
+            future = promise.get_future();
+        }
+    };
+
+    // 映射 Log Index -> PendingRequest
+    // 当日志被应用时，通过这个 map 找到对应的 promise 通知 submit_command 返回
+    std::unordered_map<uint32_t, std::shared_ptr<PendingRequest>> pending_requests_;
+    std::mutex pending_requests_mutex_;
+
+    // 辅助方法：通知等待的请求
+    void notify_request_applied(uint32_t index, const Response &response);
 
     RaftNode(const std::string root_dir, const std::string &ip, const u_short port, const uint32_t max_follower_count = 3, const std::string password = "");
     ProtocolBody *new_body()
@@ -274,9 +296,9 @@ private:
     void handle_join_cluster(const RaftMessage &msg, const socket_t &client_sock);     // 处理新节点加入请求
 
     // 日志复制和提交方法
-    void send_append_entries(const socket_t &sock, bool is_heartbeat = false); // 发送AppendEntries
-    void send_heartbeat_to_all();                                              // 向所有节点发送心跳
-    void send_request_vote();                                                  // 发送RequestVote
+    void send_append_entries(const socket_t &sock); // 发送AppendEntries
+    void send_heartbeat_to_all();                   // 向所有节点发送心跳
+    void send_request_vote();                       // 发送RequestVote
     void handle_append_entries_response(const std::string &follower, bool success,
                                         uint32_t conflict_index, uint32_t match_index); // 处理响应
     void try_commit_entries();                                                          // 尝试提交日志
@@ -286,8 +308,8 @@ private:
     // 辅助方法
     uint32_t get_current_timestamp(); // 获取当前时间戳
     int count_reachable_nodes();      // 计算可达节点数
-    void stop_accepting_writes();     // 停止接受写请求
-
+    bool stop_accepting_writes();     // 停止接受写请求
+    bool start_accepting_writes();
     // 广播消息到所有从节点
     void broadcast_to_followers(const RaftMessage &msg);
 
@@ -322,7 +344,9 @@ private:
     void heartbeat_loop();
     // Follower客户端线程主循环
     void follower_client_loop();
-
+    void handle_leader_message(const RaftMessage &msg);
+    void handle_new_node_join(const RaftMessage &msg);
+    void handle_leave_node(const RaftMessage &msg);
     // 转换为Follower
     bool become_follower(const Address &leader_addr, uint32_t term = 0, bool is_reconnect = false, const uint32_t commit_index = 0, const std::string &password = "");
 

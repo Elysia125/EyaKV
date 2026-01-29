@@ -68,7 +68,12 @@ public:
     }
     int receive(ProtocolBody &body, uint32_t timeout = 0)
     {
-        return TCPBase::receive(body, socket_guard_.get(), timeout);
+        int ret = TCPBase::receive(body, socket_guard_.get(), timeout);
+        if (ret == -2)
+        {
+            socket_guard_.reset(INVALID_SOCKET_VALUE);
+        }
+        return ret;
     }
 };
 

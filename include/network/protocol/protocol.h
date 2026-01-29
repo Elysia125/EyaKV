@@ -14,7 +14,12 @@ using ResponseData = std::variant<std::monostate,                               
                                   std::vector<std::pair<std::string, EyaValue>>, // kRange,kHEntries,kZRangeByRank,kZRangeByScore,kLRange
                                   EyaValue                                       // kGet
                                   >;
-
+namespace ReturnCode
+{
+    constexpr int ERROR = 0;
+    constexpr int SUCCESS = 1;
+    constexpr int REDIRECT = 2; // 重定向
+}
 struct Response : public ProtocolBody
 {
     int code_;
@@ -22,18 +27,18 @@ struct Response : public ProtocolBody
     std::string error_msg_;
     Response(int code, ResponseData data, const std::string &error_msg)
         : code_(code), data_(data), error_msg_(error_msg) {}
-    Response() : code_(0), data_(std::monostate()), error_msg_("") {}
+    Response() : code_(ReturnCode::ERROR), data_(std::monostate()), error_msg_("") {}
     static Response success(ResponseData data, const std::string error_msg = "")
     {
-        return Response{1, data, error_msg};
+        return Response{ReturnCode::SUCCESS, data, error_msg};
     }
     static Response success(bool success, const std::string error_msg = "")
     {
-        return Response{1, std::string(success ? "1" : "0"), error_msg};
+        return Response{ReturnCode::SUCCESS, std::string(success ? "1" : "0"), error_msg};
     }
     static Response success(size_t data, const std::string error_msg = "")
     {
-        return Response{1, std::to_string(data), error_msg};
+        return Response{ReturnCode::SUCCESS, std::to_string(data), error_msg};
     }
     /**
      * @brief 创建一个包含错误信息的Result对象
@@ -43,7 +48,12 @@ struct Response : public ProtocolBody
      */
     static Response error(const std::string error_msg)
     {
-        return Response{0, std::monostate{}, error_msg};
+        return Response{ReturnCode::ERROR, std::monostate{}, error_msg};
+    }
+
+    static Response redirect(const std::string &redirect_addr)
+    {
+        return Response{ReturnCode::REDIRECT, redirect_addr, ""};
     }
     std::string serialize() const
     {
