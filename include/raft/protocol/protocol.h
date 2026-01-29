@@ -39,7 +39,8 @@ enum RaftMessageType
     SNAPSHOT_INSTALL = 15,          // 快照安装
     SNAPSHOT_INSTALL_RESPONSE = 16, // 快照安装响应
     LOG_SYNC_REQUEST = 17,          // 日志同步请求
-    LOG_SYNC_RESPONSE = 18          // 日志同步响应
+    LOG_SYNC_RESPONSE = 18,         // 日志同步响应
+    LEAVE_NODE = 19                 // 节点移除
 };
 // 日志条目结构体（根据设计文档更新）
 struct LogEntry
@@ -311,9 +312,9 @@ struct NewNodeJoinData
 // 集群元数据结构
 struct ClusterMetadata
 {
-    std::vector<Address> cluster_nodes_; // 集群所有节点地址列表
-    Address current_leader_;             // 当前leader地址 (可能为空)
-    uint32_t cluster_version_;           // 集群配置版本号 (用于联合共识)
+    std::unordered_set<Address> cluster_nodes_; // 集群所有节点地址列表
+    Address current_leader_;                    // 当前leader地址 (可能为空)
+    uint32_t cluster_version_;                  // 集群配置版本号 (用于联合共识)
 
     ClusterMetadata() : cluster_nodes_(), current_leader_(), cluster_version_(0) {}
 
@@ -350,7 +351,7 @@ struct ClusterMetadata
         node_count = ntohl(node_count);
         for (uint32_t i = 0; i < node_count; ++i)
         {
-            metadata.cluster_nodes_.push_back(Address::deserialize(data, offset));
+            metadata.cluster_nodes_.insert(Address::deserialize(data, offset));
         }
         return metadata;
     }
@@ -372,6 +373,24 @@ struct QueryLeaderResponseData
     {
         Address addr = Address::deserialize(data, offset);
         return QueryLeaderResponseData(addr);
+    }
+};
+struct LeaveNodeData
+{
+    Address node_address;
+
+    LeaveNodeData() : node_address() {}
+    LeaveNodeData(const Address &addr) : node_address(addr) {}
+
+    std::string serialize() const
+    {
+        return node_address.serialize();
+    }
+
+    static LeaveNodeData deserialize(const char *data, size_t &offset)
+    {
+        Address addr = Address::deserialize(data, offset);
+        return LeaveNodeData(addr);
     }
 };
 
@@ -617,7 +636,16 @@ struct RaftMessage : public ProtocolBody
     std::optional<SnapshotInstallData> snapshot_install_data;                  // 快照安装数据
     std::optional<SnapshotInstallResponseData> snapshot_install_response_data; // 快照安装响应数据
     std::optional<NewNodeJoinData> new_node_join_data;                         // 新连接数据
+    std::optional<LeaveNodeData> leave_node_data;                              // 节点移除数据
     RaftMessage() = default;
+
+    static RaftMessage leave_node(const Address &addr)
+    {
+        RaftMessage msg;
+        msg.type = RaftMessageType::LEAVE_NODE;
+        msg.leave_node_data = LeaveNodeData(addr);
+        return msg;
+    }
 
     static RaftMessage heart_beat(uint32_t term, uint32_t leader_commit)
     {

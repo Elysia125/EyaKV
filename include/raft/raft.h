@@ -204,8 +204,8 @@ private:
     std::string password_;       // 认证密码(空表示不认证，主节点有效)
 
     //  易失性状态（仅 Leader）
-    std::unordered_map<Address, uint32_t> next_index_;  // 每个Follower下一个要发送的日志索引
-    std::unordered_map<Address, uint32_t> match_index_; // 每个Follower已匹配的日志索引
+    std::unordered_map<socket_t, uint32_t> next_index_;  // 每个Follower下一个要发送的日志索引
+    std::unordered_map<socket_t, uint32_t> match_index_; // 每个Follower已匹配的日志索引
 
     //  集群配置
     std::string leader_password_; // Leader密码
@@ -214,7 +214,7 @@ private:
     int election_timeout_min_ = 150; // 选举超时最小值
     int election_timeout_max_ = 300; // 选举超时最大值
     int heartbeat_interval_ = 30;    // 心跳间隔
-    int raft_msg_timeout_ = 1000;     // raft消息超时
+    int raft_msg_timeout_ = 1000;    // raft消息超时
     //  随机数生成（用于选举超时）
     std::mt19937 rng_;
     int election_timeout_;
@@ -242,18 +242,19 @@ private:
     static std::unique_ptr<RaftNode> instance_;
     static bool is_init_;
 
-    RaftNode(const std::string root_dir, const std::string &ip, const u_short port, const uint32_t max_follower_count = 3, const std::string password = "");
+    // 存储从节点socket(已初始化)
+    std::unordered_set<socket_t> follower_sockets_;
+    std::shared_mutex follower_sockets_mutex_;
+    std::unordered_map<Address, socket_t> follower_address_map_;
 
+    RaftNode(const std::string root_dir, const std::string &ip, const u_short port, const uint32_t max_follower_count = 3, const std::string password = "");
     ProtocolBody *new_body()
     {
         return new RaftMessage();
     }
 
-    void handle_request(ProtocolBody *body, socket_t client_sock)
-    {
-        // TODO 处理请求
-    }
-
+    void handle_request(ProtocolBody *body, socket_t client_sock) override;
+    void close_socket(socket_t sock) override;
     // 初始化相关方法
     void load_persistent_state();       // 加载持久化状态
     void save_persistent_state();       // 保存持久化状态
@@ -268,13 +269,13 @@ private:
     bool handle_request_vote(const RaftMessage &msg);                                     // 处理RequestVote请求
     void handle_append_entries_response(const Address &follower, const RaftMessage &msg); // 处理AppendEntries响应
     void handle_request_vote_response(const Address &voter, const RaftMessage &msg);      // 处理RequestVote响应
-    void handle_query_leader(const RaftMessage &msg);                                     // 处理探查leader请求
-    void handle_join_cluster(const RaftMessage &msg);                                     // 处理新节点加入请求
+    void handle_query_leader(const RaftMessage &msg, const socket_t &client_sock);        // 处理探查leader请求
+    void handle_join_cluster(const RaftMessage &msg, const socket_t &client_sock);        // 处理新节点加入请求
 
     // 日志复制和提交方法
-    void send_append_entries(const Address &follower, bool is_heartbeat = false); // 发送AppendEntries
-    void send_heartbeat_to_all();                                                 // 向所有节点发送心跳
-    void send_request_vote();                                                     // 发送RequestVote
+    void send_append_entries(const socket_t &sock, bool is_heartbeat = false); // 发送AppendEntries
+    void send_heartbeat_to_all();                                              // 向所有节点发送心跳
+    void send_request_vote();                                                  // 发送RequestVote
     void handle_append_entries_response(const std::string &follower, bool success,
                                         uint32_t conflict_index, uint32_t match_index); // 处理响应
     void try_commit_entries();                                                          // 尝试提交日志
@@ -286,6 +287,9 @@ private:
     int count_reachable_nodes();                               // 计算可达节点数
     void stop_accepting_writes();                              // 停止接受写请求
     void on_active_connect(const std::string &target_address); // 主动连接处理
+
+    // 广播消息到所有从节点
+    void broadcast_to_followers(const RaftMessage &msg);
 
     // 生成随机选举超时时间
     int generate_election_timeout()
@@ -320,7 +324,7 @@ private:
     void follower_client_loop();
 
     // 转换为Follower
-    void become_follower(uint32_t term);
+    bool become_follower(const Address &leader_addr, uint32_t term = 0, bool is_reconnect = false, const uint32_t commit_index = 0, const std::string &password = "");
 
     // 转换为Candidate
     void become_candidate();
@@ -333,9 +337,6 @@ private:
     // 发送RequestVote请求
     void send_request_vote();
 
-    // 发送AppendEntries（心跳或日志复制）- 改为使用string类型的地址
-    void send_append_entries(const std::string &follower, bool is_heartbeat = false);
-
     // 应用已提交的日志到状态机
     void apply_committed_entries();
 
@@ -346,6 +347,7 @@ private:
 
     void add_new_connection(socket_t client_sock, const sockaddr_in &client_addr) override;
 
+    bool remove_node(const Address& addr);
 public:
     ~RaftNode();
 

@@ -22,6 +22,9 @@ typedef SOCKET socket_t;
 #define SOCKET_ERROR_VALUE SOCKET_ERROR
 #define CLOSE_SOCKET closesocket
 #define GET_SOCKET_ERROR WSAGetLastError
+#define SHUT_RD SD_RECEIVE
+#define SHUT_WR SD_SEND
+#define SHUT_RDWR SD_BOTH
 inline std::string socket_error_to_string(int error) { return std::to_string(error); }
 #else
 typedef int socket_t;

@@ -589,7 +589,7 @@ public:
             }
             else if (bytes_received != 0)
             {
-                // TODO: 处理请求
+                // 处理请求
                 handle_request(body, client_sock);
             }
             delete body;
@@ -604,6 +604,18 @@ public:
 
     virtual void close_socket(socket_t sock)
     {
+        int ret = shutdown(sock, SHUT_WR);
+#ifdef _WIN32
+        if (ret == SOCKET_ERROR)
+        {
+            LOG_ERROR("Shutdown error on fd %d: %s", sock, socket_error_to_string(errno));
+        }
+#else
+        if (ret == -1)
+        {
+            LOG_ERROR("Shutdown error on fd %d: %s", sock, socket_error_to_string(errno));
+        }
+#endif
         CLOSE_SOCKET(sock);
 #ifdef __APPLE__
 #elif _WIN32
