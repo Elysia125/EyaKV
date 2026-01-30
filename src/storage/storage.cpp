@@ -797,11 +797,6 @@ Response Storage::execute(uint8_t type, std::vector<std::string> &args)
                 return Response::error("unknown command");
             }
         }
-        if (isWriteOperation(type) && response.is_success())
-        {
-            snapshot_cache_valid_.store(false, std::memory_order_relaxed);
-            snapshot_cache_path_ = "";
-        }
         return response;
     }
     catch (const std::runtime_error &e)
@@ -816,29 +811,20 @@ Response Storage::execute(uint8_t type, std::vector<std::string> &args)
 
 bool Storage::create_checkpoint(std::string &output_tar_path)
 {
-    LOG_INFO("Starting checkpoint creation to: %s", snapshot_dir.c_str());
+    LOG_INFO("Starting checkpoint creation");
     bool was_running = background_flush_thread_running_;
 
     try
     {
         // 1. 准备快照目录
         std::string snapshot_dir = PathUtils::combine_path(data_dir_, "snapshot");
-        if (fs::exists(snapshot_dir))
+        if (!fs::exists(snapshot_dir))
         {
-            // 如果目录已存在且非空，选择清空以便覆盖
-            fs::remove_all(snapshot_dir);
+            fs::create_directories(snapshot_dir);
         }
-        fs::create_directories(snapshot_dir);
 
         // 2. 暂停写入并强制刷盘
         std::unique_lock<std::shared_mutex> write_lock(write_mutex_);
-        // 判断是否有旧的可行的快照
-        if (snapshot_cache_valid_.load(std::memory_order_relaxed) && snapshot_cache_path_ != "")
-        {
-            // 使用缓存的快照路径
-            output_tar_path = snapshot_cache_path_;
-            return true;
-        }
         // 停止后台 Flush 线程，避免我们在复制文件时 Compaction 删除了文件
         // 这是一个简单的防止 Compaction 冲突的方法
         if (was_running)
@@ -848,11 +834,11 @@ bool Storage::create_checkpoint(std::string &output_tar_path)
 
         // 强制将 MemTable 和 Immutable MemTables 刷入 SSTable
         force_flush();
-
+        auto timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
         // 3. 复制 SSTable 文件
         // SSTable 目录结构通常是 data_dir/sstable
         fs::path src_sst_dir(sstable_dir_);
-        fs::path dest_sst_dir = fs::path(snapshot_dir) / "sstable";
+        fs::path dest_sst_dir = fs::path(snapshot_dir) / ("sstable_" + std::to_string(timestamp));
 
         if (!fs::exists(dest_sst_dir))
         {
@@ -880,13 +866,11 @@ bool Storage::create_checkpoint(std::string &output_tar_path)
             }
         }
         // 4. 压缩目录为tar
-        output_tar_path = PathUtils::combine_path(snapshot_dir, "checkpoint_" + std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() + ".tar.gz");
+        output_tar_path = PathUtils::combine_path(snapshot_dir, "checkpoint_" + std::to_string(timestamp) + ".tar.gz");
         compress_dir_to_targz(dest_sst_dir.string(), output_tar_path);
         // 5. 删除临时目录
         fs::remove(dest_sst_dir);
-        LOG_INFO("Checkpoint created successfully at: %s", snapshot_dir.c_str());
-        snapshot_cache_valid_.store(true, std::memory_order_relaxed);
-        snapshot_cache_path_ = output_tar_path;
+        LOG_INFO("Checkpoint created successfully at: %s", output_tar_path.c_str());
         // 6. 恢复后台线程
         if (was_running)
         {
@@ -909,11 +893,11 @@ bool Storage::create_checkpoint(std::string &output_tar_path)
 
 bool Storage::restore_from_checkpoint(const std::string &snapshot_tar_path)
 {
-    LOG_INFO("Starting restore from checkpoint: %s", snapshot_dir.c_str());
+    LOG_INFO("Starting restore from checkpoint: %s", snapshot_tar_path.c_str());
 
-    if (!fs::exists(snapshot_dir))
+    if (!fs::exists(snapshot_tar_path))
     {
-        LOG_ERROR("Snapshot directory does not exist: %s", snapshot_dir.c_str());
+        LOG_ERROR("Snapshot file does not exist: %s", snapshot_tar_path.c_str());
         return false;
     }
     bool was_running = background_flush_thread_running_;
@@ -972,11 +956,6 @@ bool Storage::remove_snapshot(const std::string &snapshot_path)
 {
     try
     {
-        if (snapshot_path == snapshot_cache_path_ && snapshot_cache_valid_.load(std::memory_order_relaxed))
-        {
-            LOG_WARN("Snapshot file is in use, cannot remove");
-            return false;
-        }
         fs::path snapshot_dir(PathUtils::combine_path(data_dir_, "snapshot"));
         fs::path ssp(snapshot_path);
         if (fs::exists(ssp) && ssp.parent_path() == snapshot_dir)

@@ -6,6 +6,7 @@
 #include "common/types/operation_type.h"
 #include "common/util/path_utils.h"
 #include "common/util/ip_utils.h"
+#include "common/util/file_utils.h"
 #ifdef _WIN32
 #include <io.h>
 #include <direct.h>
@@ -215,12 +216,47 @@ void RaftNode::handle_leader_message(const RaftMessage &msg)
     case RaftMessageType::QUERY_LEADER_RESPONSE:
         handle_query_leader_response(msg);
         break;
+    case RaftMessageType::JOIN_CLUSTER_RESPONSE:
+        handle_join_cluster_response(msg);
+        break;
+    case RaftMessageType::SNAPSHOT_INSTALL:
+        handle_install_snapshot(msg);
+        break;
     default:
         LOG_WARN("Unknown message type: %d", static_cast<int>(msg.type));
         break;
     }
 }
-
+void RaftNode::handle_join_cluster_response(const RaftMessage &msg)
+{
+    LOG_INFO("Received Join cluster response");
+    if (!msg.join_cluster_response_data.has_value())
+    {
+        LOG_WARN("Join cluster response data is empty");
+        return;
+    }
+    if (role_ != RaftRole::FOLLOWER)
+    {
+        LOG_WARN("Join cluster response received in non-follower role: %d", static_cast<int>(role_));
+        return;
+    }
+    uint32_t term = msg.term;
+    auto &data = *msg.join_cluster_response_data;
+    if (data.success)
+    {
+        LOG_INFO("Join cluster success");
+        std::lock_guard<std::mutex> lock(mutex_);
+        persistent_state_.current_term = term;
+        persistent_state_.cluster_metadata_ = data.cluster_metadata;
+        save_persistent_state();
+    }
+    else
+    {
+        LOG_ERROR("Join cluster failed: %s", data.error_msg.c_str());
+        // 变为leader
+        become_leader();
+    }
+}
 void RaftNode::handle_query_leader_response(const RaftMessage &msg)
 {
     LOG_INFO("Received Query leader response");
@@ -402,22 +438,6 @@ void RaftNode::start_background_threads()
     LOG_INFO("Background threads started");
 }
 
-// 同步集群配置
-void RaftNode::sync_cluster_metadata()
-{
-    std::lock_guard<std::mutex> lock(mutex_);
-    // TODO: 实现集群配置同步
-    LOG_INFO("Syncing cluster metadata from leader");
-}
-
-// 同步缺失日志
-void RaftNode::sync_missing_logs()
-{
-    std::lock_guard<std::mutex> lock(mutex_);
-    // TODO: 实现日志同步
-    LOG_INFO("Syncing missing logs from leader");
-}
-
 // 获取当前时间戳
 uint32_t RaftNode::get_current_timestamp()
 {
@@ -444,7 +464,6 @@ bool RaftNode::become_follower(const Address &leader_addr, uint32_t term, bool i
         if (ret < 0)
         {
             LOG_ERROR("Follower client failed to receive init message response");
-            delete msg;
             // 设置follower状态
             follower_client_ = nullptr;
             follower_client_thread_running_ = false;
@@ -455,53 +474,71 @@ bool RaftNode::become_follower(const Address &leader_addr, uint32_t term, bool i
         }
         else
         {
-            role_ = RaftRole::Follower;
-            LOG_INFO("Follower client received init message response");
-            // 更新任期
-            persistent_state_.cluster_metadata_.current_leader_ = leader_addr;
-            persistent_state_.cluster_metadata_.cluster_nodes_.clear();
-            persistent_state_.commit_index_ = commit_index;
-            if (term > persistent_state_.current_term_)
+            RaftMessage *response_msg = dynamic_cast<RaftMessage *>(msg);
+            if (response_msg->type != RaftMessageType::JOIN_CLUSTER_RESPONSE || response_msg->type != RaftMessageType::QUERY_LEADER_RESPONSE)
             {
-                persistent_state_.current_term_ = term;
-                persistent_state_.voted_for_ = ""; // 重置投票
+                LOG_ERROR("Follower client received invalid init message response");
+                // 设置follower状态
+                follower_client_ = nullptr;
+                follower_client_thread_running_ = false;
+                if (follower_client_thread_.joinable())
+                {
+                    follower_client_thread_.join();
+                }
             }
-            save_persistent_state();
+            else
+            {
+                role_ = RaftRole::Follower;
+                LOG_INFO("Follower client received init message response");
+                // 更新任期
+                persistent_state_.cluster_metadata_.current_leader_ = leader_addr;
+                persistent_state_.cluster_metadata_.cluster_nodes_.clear();
+                persistent_state_.commit_index_ = commit_index;
+                if (term > persistent_state_.current_term_)
+                {
+                    persistent_state_.current_term_ = term;
+                    persistent_state_.voted_for_ = ""; // 重置投票
+                }
+                save_persistent_state();
 
-            // 清空leader状态
-            next_index_.clear();
-            match_index_.clear();
-            {
-                std::lock_guard<std::shared_mutex> lock(follower_sockets_mutex_);
-                // 关闭所有follower_sockets_
-                for (auto &socket : follower_sockets_)
+                // 清空leader状态
+                next_index_.clear();
+                match_index_.clear();
                 {
-                    // 给当前的follower_sockets_发送QueryLeaderResponse消息,让他们也去连接leader
-                    RaftMessage response = RaftMessage::query_leader_response(leader_addr);
-                    send(response, socket);
-                    close_socket(socket);
+                    std::lock_guard<std::shared_mutex> lock(follower_sockets_mutex_);
+                    // 关闭所有follower_sockets_
+                    for (auto &socket : follower_sockets_)
+                    {
+                        // 给当前的follower_sockets_发送QueryLeaderResponse消息,让他们也去连接leader
+                        RaftMessage response = RaftMessage::query_leader_response(leader_addr);
+                        send(response, socket);
+                        close_socket(socket);
+                    }
+                    // 清空follower_sockets_和follower_address_map_
+                    follower_sockets_.clear();
+                    follower_address_map_.clear();
                 }
-                // 清空follower_sockets_和follower_address_map_
-                follower_sockets_.clear();
-                follower_address_map_.clear();
-            }
-            if (heartbeat_thread_running_)
-            {
-                heartbeat_thread_running_ = false;
-                if (heartbeat_thread_.joinable())
+                if (heartbeat_thread_running_)
                 {
-                    heartbeat_thread_.join();
+                    heartbeat_thread_running_ = false;
+                    if (heartbeat_thread_.joinable())
+                    {
+                        heartbeat_thread_.join();
+                    }
                 }
+                reset_election_timeout();
+                // 启动接收线程
+                follower_client_thread_running_ = true;
+                std::thread receive_thread(&RaftNode::follower_client_loop, this);
+                receive_thread.detach();
+                // TODO：处理接收到的消息
+                handle_leader_message(*response_msg);
+                delete msg;
+                return true;
             }
-            reset_election_timeout();
-            // 启动接收线程
-            follower_client_thread_running_ = true;
-            std::thread receive_thread(&RaftNode::follower_client_loop, this);
-            receive_thread.detach();
-            // TODO 处理收到的集群同步消息
-            return true;
         }
     }
+    delete msg;
     role_ = RaftRole::Leader;
     return false;
 }
@@ -544,22 +581,12 @@ void RaftNode::become_leader()
     // 更新角色
     role_ = RaftRole::Leader;
 
-    // 初始化Leader专用状态
-    next_index_.clear();
-    match_index_.clear();
-    {
-        std::unique_lock<std::shared_mutex> lock(follower_sockets_mutex_);
-        for (const auto &sock : follower_sockets_)
-        {
-            close_socket(sock);
-        }
-        follower_sockets_.clear();
-        follower_address_map_.clear();
-    }
-
     // 启动心跳线程
-    heartbeat_thread_running_ = true;
-    heartbeat_thread_ = std::thread(&RaftNode::heartbeat_loop, this);
+    if (!heartbeat_thread_running_)
+    {
+        heartbeat_thread_running_ = true;
+        heartbeat_thread_ = std::thread(&RaftNode::heartbeat_loop, this);
+    }
 
     LOG_INFO("Became leader, term: %u", persistent_state_.current_term_.load());
 }
@@ -989,6 +1016,8 @@ void RaftNode::handle_join_cluster(const RaftMessage &msg, const socket_t &clien
     if (role_ != RaftRole::Leader)
     {
         LOG_WARN("Only leader can handle JoinCluster");
+        RaftMessage response_msg = RaftMessage::query_leader_response(persistent_state_.cluster_metadata_.current_leader_);
+        send(response_msg, client_sock);
         close_socket(client_sock);
         return;
     }
@@ -1004,6 +1033,7 @@ void RaftNode::handle_join_cluster(const RaftMessage &msg, const socket_t &clien
 
     RaftMessage response_msg;
     response_msg.type = RaftMessageType::JOIN_CLUSTER_RESPONSE;
+    response_msg.term = persistent_state_.current_term_.load();
     JoinClusterResponseData response;
     response.success = false;
     response_msg.join_cluster_response_data = response;
@@ -1032,7 +1062,7 @@ void RaftNode::handle_join_cluster(const RaftMessage &msg, const socket_t &clien
             match_index_[client_sock] = 0;
 
             // 记录该 Socket 的快照发送状态
-            snapshot_state_[client_sock] = {0, false}; // offset = 0, is_sending = false
+            snapshot_state_[client_sock] = {0, false, persistent_state_.last_applied_}; // offset = 0, is_sending = false
         }
         response.success = true;
         response.cluster_metadata = persistent_state_.cluster_metadata_; // 发送最新集群配置
@@ -1087,7 +1117,7 @@ void RaftNode::trigger_log_sync(socket_t sock)
         send_append_entries(sock);
     }
 }
-
+// 发送快照块
 void RaftNode::send_snapshot_chunk(socket_t sock)
 {
     // 注意：这里需要更精细的锁控制，避免长时间持有 mutex_ 读取文件
@@ -1100,7 +1130,19 @@ void RaftNode::send_snapshot_chunk(socket_t sock)
     if (!state->is_sending)
     {
         // 第一次发送，打开文件
-        std::string snapshot_path = PathUtils::combine_path(root_dir_, "snapshot.bin"); // 假设快照路径
+        std::string snapshot_path;
+        // 生成快照文件
+        if (!Storage::is_init())
+        {
+            LOG_ERROR("Storage is not initialized");
+            exit(1);
+        }
+        static Storage *storage_ = Storage::get_instance();
+        if (!storage_->create_checkpoint(snapshot_path))
+        {
+            LOG_ERROR("Failed to create storage checkpoint");
+            return;
+        }
         state->fp = fopen(snapshot_path.c_str(), "rb");
         if (!state->fp)
         {
@@ -1144,6 +1186,116 @@ void RaftNode::send_snapshot_chunk(socket_t sock)
     LOG_INFO("Sent snapshot chunk to %d: offset=%lu, size=%zu, done=%d",
              sock, state->offset - bytes_read, bytes_read, done);
 }
+
+void RaftNode::handle_install_snapshot(const RaftMessage &msg)
+{
+    const auto &data = *msg.snapshot_install_data;
+
+    // 1. 定义临时文件路径
+    std::string temp_path = PathUtils::combine_path(root_dir_, "snapshot.tar.gz");
+
+    // 2. 核心优化：判断offset是否小于文件大小，满足则直接发送响应返回
+    uint64_t file_size = get_file_size(temp_path);
+    if (data.offset < file_size)
+    {
+        LOG_INFO("Offset %lu is less than file size %lu, skip writing and send response directly",
+                 data.offset, file_size);
+        RaftMessage response = RaftMessage::snapshot_install_response(true, data.offset);
+        send(response, follower_client_->get_socket());
+        return;
+    }
+
+    // 3. 写入临时文件（使用智能指针RAII管理文件句柄，避免泄漏/重复关闭）
+    UniqueFilePtr fp;
+    if (data.offset == 0)
+    {
+        // 第一块，覆盖写
+        fp = UniqueFilePtr(fopen(temp_path.c_str(), "wb"), FileCloser());
+    }
+    else
+    {
+        // 后续块，追加写
+        fp = UniqueFilePtr(fopen(temp_path.c_str(), "ab"), FileCloser());
+    }
+
+    if (!fp)
+    {
+        LOG_ERROR("Failed to open snapshot temp file for writing: %s", temp_path.c_str());
+        return;
+    }
+
+    // 写入数据
+    size_t written_size = fwrite(data.snapshot_data.data(), 1, data.snapshot_data.size(), fp.get());
+    if (written_size != data.snapshot_data.size())
+    {
+        LOG_ERROR("Failed to write all data to temp file, expected %zu, written %zu",
+                  data.snapshot_data.size(), written_size);
+        return;
+    }
+
+    // 4. 发送响应（智能指针会自动关闭文件句柄，无需手动fclose）
+    RaftMessage response = RaftMessage::snapshot_install_response(true, data.offset);
+    send(response, follower_client_->get_socket());
+
+    // 5. 如果 done == true，应用快照
+    if (data.done)
+    {
+        if (!Storage::is_init())
+        {
+            LOG_ERROR("Storage is not initialized");
+            exit(1);
+        }
+        static Storage *storage_ = Storage::get_instance();
+        if (storage_->restore_from_checkpoint(temp_path))
+        {
+            LOG_INFO("Restore from checkpoint success: %s", temp_path.c_str());
+        }
+        else
+        {
+            LOG_ERROR("Failed to restore from checkpoint: %s", temp_path.c_str());
+        }
+        // 无需手动fclose(fp)！智能指针会自动释放，避免原代码的重复关闭问题
+    }
+}
+
+void RaftNode::handle_snapshot_response(const RaftMessage &msg, socket_t sock)
+{
+    const auto &resp = *msg.snapshot_install_response_data;
+    std::unique_lock<std::mutex> lock(mutex_);
+    if (snapshot_state_.count(sock) == 0)
+    {
+        return;
+    }
+    auto &snapshot_state = snapshot_state_[sock];
+    if (resp.success && resp.offset == snapshot_state.offset)
+    {
+        if (snapshot_state.is_sending)
+        {
+            // 收到上一块的成功确认，发送下一块
+            // 释放锁后再发送，避免IO阻塞锁
+            lock.unlock();
+            send_snapshot_chunk(sock);
+        }
+        else
+        {
+            // 快照彻底发送完毕，更新 next_index
+            // 假设快照包含了到 snapshot_index 的所有数据
+            next_index_[sock] = snapshot_state.log_last_applied + 1;
+            if (snapshot_state.fp != nullptr)
+            {
+                fclose(snapshot_state.fp);
+                snapshot_state.fp = nullptr;
+            }
+            snapshot_state_.erase(sock);
+            LOG_INFO("Snapshot sync completed for node %d", sock);
+        }
+    }
+    else
+    {
+        LOG_ERROR("Snapshot chunk failed or offset mismatch for node %d", sock);
+    }
+}
+
 // 处理AppendEntries响应
 void RaftNode::handle_append_entries_response(const RaftMessage &msg, const socket_t &sock)
 {
@@ -1459,6 +1611,9 @@ void RaftNode::handle_request(ProtocolBody *body, socket_t client_sock)
         break;
     case RaftMessageType::REQUEST_VOTE:
         handle_request_vote(*msg, client_sock);
+        break;
+    case RaftMessageType::SNAPSHOT_INSTALL_RESPONSE:
+        handle_snapshot_response(*msg, client_sock);
         break;
     }
     delete body;

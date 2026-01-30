@@ -217,9 +217,6 @@ private:
     std::condition_variable flush_cv_;
     std::mutex flush_mutex_;
 
-    // 数据快照缓存
-    std::string snapshot_cache_path_;
-    std::atomic_bool snapshot_cache_valid_{false};
     // 是否已经初始化
     static bool is_init_;
 

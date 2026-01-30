@@ -265,7 +265,8 @@ private:
     {
         uint64_t offset = 0;
         bool is_sending = false;
-        FILE *fp = nullptr; // 或者使用 std::ifstream
+        uint32_t log_last_applied = 0;
+        FILE *fp = nullptr; 
     };
     std::unordered_map<socket_t, SnapshotTransferState> snapshot_state_;
 
@@ -286,8 +287,6 @@ private:
     void init_as_follower();            // 场景1: 作为follower启动
     void init_with_cluster_discovery(); // 场景3: 探查集群
     void start_background_threads();    // 启动后台线程
-    void sync_cluster_metadata();       // 同步集群配置
-    void sync_missing_logs();           // 同步缺失日志
 
     // 消息处理方法
     bool handle_append_entries(const RaftMessage &msg);                                // 处理AppendEntries请求
@@ -299,6 +298,9 @@ private:
     void handle_join_cluster(const RaftMessage &msg, const socket_t &client_sock); // 处理新节点加入请求
     void trigger_log_sync(socket_t sock);
     void send_snapshot_chunk(socket_t sock);
+    void handle_install_snapshot(const RaftMessage &msg);
+    void handle_join_cluster_response(const RaftMessage &msg);
+    void handle_snapshot_response(const RaftMessage &msg, socket_t sock);
     // 日志复制和提交方法
     void send_append_entries(const socket_t &sock); // 发送AppendEntries
     void send_heartbeat_to_all();                   // 向所有节点发送心跳

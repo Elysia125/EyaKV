@@ -7,6 +7,30 @@
 #include <archive_entry.h>
 
 namespace fs = std::filesystem;
+// 自定义文件句柄删除器
+struct FileCloser
+{
+    void operator()(FILE *fp) const
+    {
+        if (fp != nullptr)
+        {
+            fclose(fp);
+        }
+    }
+};
+using UniqueFilePtr = std::unique_ptr<FILE, FileCloser>;
+
+// 辅助函数：获取文件大小（文件不存在返回0）
+inline uint64_t get_file_size(const std::string &file_path)
+{
+    struct stat file_stat{};
+    if (stat(file_path.c_str(), &file_stat) != 0)
+    {
+        // 文件不存在或获取失败，返回0
+        return 0;
+    }
+    return static_cast<uint64_t>(file_stat.st_size);
+}
 
 // 封装跨平台的创建目录函数（对外接口统一）
 inline bool create_directory(const std::string &dir_name)

@@ -38,18 +38,25 @@ set(ZLIB_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(ZLIB_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(zlib)
 
-# 下载libarchive 库
 FetchContent_Declare(
   libarchive
-  # 方式1：从 GitHub 仓库下载指定版本（推荐，可指定 tag/commit/branch）
   GIT_REPOSITORY https://github.com/libarchive/libarchive.git
-  GIT_TAG 3.7.2  # 指定版本/tag，避免自动更新到最新版
-  # 方式2：从 URL 下载压缩包（备选）
-  # URL https://github.com/libarchive/libarchive/archive/refs/tags/v3.7.2.tar.gz
-  # URL_HASH SHA256=xxxxxxx  # 可选：校验文件哈希，防止下载损坏
+  GIT_TAG 3.7.2  # 锁定版本，避免兼容性问题
+  # ========== 新增：指定 DOWNLOAD_EXTRACT_TIMESTAMP，消除警告 ==========
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+  # ========== 新增：MinGW 下禁用不必要的依赖，避免编译失败 ==========
+  GIT_SHALLOW TRUE  # 浅克隆，加快下载速度
 )
 
-# 下载并构建 libarchive（自动处理依赖、编译）
+# ========== 新增：适配 MinGW 构建 libarchive 的配置 ==========
+# 禁用 libarchive 的不必要功能，减少依赖
+set(libarchive_ENABLE_OPENSSL OFF CACHE BOOL "" FORCE)
+set(libarchive_ENABLE_LZMA OFF CACHE BOOL "" FORCE)
+set(libarchive_ENABLE_ZSTD OFF CACHE BOOL "" FORCE)
+set(libarchive_ENABLE_BZIP2 OFF CACHE BOOL "" FORCE)
+set(libarchive_ENABLE_CNG OFF CACHE BOOL "" FORCE) # Windows 特有，MinGW 不支持
+
+# 下载并构建 libarchive
 FetchContent_MakeAvailable(libarchive)
 
 # Module 1: Common - 基础工具库

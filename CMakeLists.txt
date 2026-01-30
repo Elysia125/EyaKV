@@ -21,7 +21,7 @@ set(EYAKV_INCLUDE_DIR ${PROJECT_SOURCE_DIR}/include)
 # ------------------------------------------------------------------------------
 # Dependencies
 # ------------------------------------------------------------------------------
-include(FetchContent)
+include(FetchContent) 
 enable_testing()
 
 # GTest
