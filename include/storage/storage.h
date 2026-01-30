@@ -6,6 +6,7 @@
 #include <optional>
 #include <vector>
 #include <shared_mutex>
+#include <filesystem>
 #include "storage/memtable.h"
 #include "storage/sstable.h"
 #include "storage/wal.h"
@@ -152,6 +153,36 @@ public:
      */
     void close();
 
+    /**
+     * @brief 创建全量物理快照 (Checkpoint)。
+     *
+     * 将当前所有内存数据刷盘，并将底层的 SSTable 文件和元数据
+     * 复制到指定的快照目录。
+     *
+     * @param ssnapshot_tar_path 快照文件路径(输出参数)
+     * @return 成功返回 true
+     */
+    bool create_checkpoint(std::string &output_tar_path);
+
+    /**
+     * @brief 从快照恢复数据。
+     *
+     * 警告：这将覆盖当前的所有数据！
+     * 此操作会先关闭引擎，替换数据文件，然后重新加载。
+     *
+     * @param ssnapshot_tar_path 快照文件路径
+     * @return 成功返回 true
+     */
+    bool restore_from_checkpoint(const std::string &snapshot_tar_path);
+
+    /**
+     * @brief 删除快照。
+     *
+     * @param snapshot_path 快照文件路径
+     * @return 成功返回 true
+     */
+    bool remove_snapshot(const std::string &snapshot_path);
+
 private:
     std::string data_dir_;
     std::string sstable_dir_;
@@ -162,7 +193,7 @@ private:
     // Immutable MemTables（等待 Flush 到 SSTable）
     std::map<std::string, std::unique_ptr<MemTable>> immutable_memtables_;
     mutable std::shared_mutex immutable_mutex_; // 保护 immutable_memtables_
-
+    mutable std::shared_mutex write_mutex_;
     // SSTable 管理器
     std::unique_ptr<SSTableManager> sstable_manager_;
 
@@ -185,7 +216,13 @@ private:
     std::thread flush_thread_;
     std::condition_variable flush_cv_;
     std::mutex flush_mutex_;
+
+    // 数据快照缓存
+    std::string snapshot_cache_path_;
+    std::atomic_bool snapshot_cache_valid_{false};
+    // 是否已经初始化
     static bool is_init_;
+
     // 静态单例
     static std::unique_ptr<Storage> instance_;
     /**

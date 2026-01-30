@@ -25,6 +25,33 @@ elseif(UNIX)
     set(PLATFORM_LIBS pthread)
 endif()
 
+# 下载并配置zlib（指定版本，避免兼容性问题）
+FetchContent_Declare(
+    zlib
+    GIT_REPOSITORY https://github.com/madler/zlib.git
+    GIT_TAG v1.3.1  # 稳定版本，可替换为最新版
+    GIT_SHALLOW TRUE
+)
+
+# 编译zlib（跳过zlib的测试/示例，加速编译）
+set(ZLIB_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(ZLIB_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(zlib)
+
+# 下载libarchive 库
+FetchContent_Declare(
+  libarchive
+  # 方式1：从 GitHub 仓库下载指定版本（推荐，可指定 tag/commit/branch）
+  GIT_REPOSITORY https://github.com/libarchive/libarchive.git
+  GIT_TAG 3.7.2  # 指定版本/tag，避免自动更新到最新版
+  # 方式2：从 URL 下载压缩包（备选）
+  # URL https://github.com/libarchive/libarchive/archive/refs/tags/v3.7.2.tar.gz
+  # URL_HASH SHA256=xxxxxxx  # 可选：校验文件哈希，防止下载损坏
+)
+
+# 下载并构建 libarchive（自动处理依赖、编译）
+FetchContent_MakeAvailable(libarchive)
+
 # Module 1: Common - 基础工具库
 add_library(eyakv_common STATIC
     common/util/path_utils.cpp
@@ -66,48 +93,11 @@ target_include_directories(eyakv_storage PUBLIC
 )
 
 # Storage 依赖 Common
-target_link_libraries(eyakv_storage PRIVATE eyakv_logger eyakv_common Threads::Threads)
+target_link_libraries(eyakv_storage PRIVATE eyakv_logger eyakv_common Threads::Threads archive)
 
 
 
-# Module 3: Network - 网络库
-add_library(eyakv_network STATIC
-    network/tcp_server.cpp
-)
-
-if(WIN32)
-    target_link_libraries(eyakv_network PUBLIC ${PLATFORM_LIBS})
-else()
-    target_link_libraries(eyakv_network PUBLIC ${PLATFORM_LIBS})
-endif()
-
-target_include_directories(eyakv_network PUBLIC
-    ${EYAKV_INCLUDE_DIR}
-    ${CMAKE_CURRENT_BINARY_DIR}
-)
-
-# Network 依赖 Storage 和 Common
-target_link_libraries(eyakv_network PRIVATE
-    eyakv_logger
-    eyakv_storage
-    eyakv_common
-    Threads::Threads
-)
-
-# Module 4: Raft - 共识算法库
-# 下载并配置zlib（指定版本，避免兼容性问题）
-FetchContent_Declare(
-    zlib
-    GIT_REPOSITORY https://github.com/madler/zlib.git
-    GIT_TAG v1.3.1  # 稳定版本，可替换为最新版
-    GIT_SHALLOW TRUE
-)
-
-# 编译zlib（跳过zlib的测试/示例，加速编译）
-set(ZLIB_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-set(ZLIB_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(zlib)
-
+# Module 4: Raft - 共识算法
 add_library(eyakv_raft STATIC
     raft/raft.cpp
     raft/raft_log_array.cpp
@@ -128,10 +118,35 @@ target_include_directories(eyakv_raft PUBLIC
 target_link_libraries(eyakv_raft PRIVATE
     eyakv_logger
     eyakv_common
+    eyakv_storage
     Threads::Threads
     ZLIB::ZLIB
+    archive
 )
 
+# Module 3: Network - 网络库
+add_library(eyakv_network STATIC
+    network/tcp_server.cpp
+)
+
+if(WIN32)
+    target_link_libraries(eyakv_network PUBLIC ${PLATFORM_LIBS})
+else()
+    target_link_libraries(eyakv_network PUBLIC ${PLATFORM_LIBS})
+endif()
+
+target_include_directories(eyakv_network PUBLIC
+    ${EYAKV_INCLUDE_DIR}
+    ${CMAKE_CURRENT_BINARY_DIR}
+)
+
+# Network 依赖 Storage 和 Common
+target_link_libraries(eyakv_network PRIVATE
+    eyakv_logger
+    eyakv_raft
+    eyakv_common
+    Threads::Threads
+)
 
 # Module 5: Starter - 启动器库
 add_library(eyakv_starter STATIC
@@ -149,6 +164,7 @@ target_link_libraries(eyakv_starter PRIVATE
     eyakv_network
     eyakv_common
     eyakv_storage
+    eyakv_raft
 )
 
 # Executables have been moved to apps/ directory.

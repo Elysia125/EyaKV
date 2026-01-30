@@ -1006,7 +1006,7 @@ void RaftNode::handle_join_cluster(const RaftMessage &msg, const socket_t &clien
     response_msg.type = RaftMessageType::JOIN_CLUSTER_RESPONSE;
     JoinClusterResponseData response;
     response.success = false;
-
+    response_msg.join_cluster_response_data = response;
     // 添加新节点到集群
     Address new_node_addr;
     if (get_opposite_address(client_sock, new_node_addr))
@@ -1023,12 +1023,32 @@ void RaftNode::handle_join_cluster(const RaftMessage &msg, const socket_t &clien
         // 广播有新节点加入
         auto broadcast_msg = RaftMessage::new_node_join_broadcast(new_node_addr);
         broadcast_to_followers(broadcast_msg);
+        // 发送集群必要信息
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            // 根据 Follower 汇报的 last_index 设置 next_index
+            // Follower 说它有到 index 100 的日志，那我们下一次尝试发 101
+            next_index_[client_sock] = data.last_index + 1;
+            match_index_[client_sock] = 0;
+
+            // 记录该 Socket 的快照发送状态
+            snapshot_state_[client_sock] = {0, false}; // offset = 0, is_sending = false
+        }
         response.success = true;
-        // TODO: 发送集群必要信息以及判断缺失日志（增量更新 or 全量更新）
+        response.cluster_metadata = persistent_state_.cluster_metadata_; // 发送最新集群配置
+        response.sync_from_index = next_index_[client_sock];
         send(response_msg, client_sock);
+        // 3. 触发一次同步检测
+        // 异步触发，不要阻塞当前线程
+        std::thread([this, client_sock]()
+                    { this->trigger_log_sync(client_sock); })
+            .detach();
         // 更新集群配置
-        persistent_state_.cluster_metadata_.cluster_nodes_.insert(new_node_addr);
-        save_persistent_state();
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            persistent_state_.cluster_metadata_.cluster_nodes_.insert(new_node_addr);
+            save_persistent_state();
+        }
         // 添加到follower_sockets
         {
             std::unique_lock<std::shared_mutex> lock(follower_sockets_mutex_);
@@ -1048,7 +1068,82 @@ void RaftNode::handle_join_cluster(const RaftMessage &msg, const socket_t &clien
         return;
     }
 }
+void RaftNode::trigger_log_sync(socket_t sock)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
 
+    uint32_t next_idx = next_index_[sock];
+    uint32_t base_idx = log_array_.get_base_index();
+
+    if (next_idx < base_idx)
+    {
+        // 场景：Follower 落后太多，日志已被 Leader 截断
+        // 必须通过快照同步
+        send_snapshot_chunk(sock);
+    }
+    else
+    {
+        // 场景：日志存在，走正常的 AppendEntries
+        send_append_entries(sock);
+    }
+}
+
+void RaftNode::send_snapshot_chunk(socket_t sock)
+{
+    // 注意：这里需要更精细的锁控制，避免长时间持有 mutex_ 读取文件
+    SnapshotTransferState *state = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        state = &snapshot_state_[sock];
+    }
+
+    if (!state->is_sending)
+    {
+        // 第一次发送，打开文件
+        std::string snapshot_path = PathUtils::combine_path(root_dir_, "snapshot.bin"); // 假设快照路径
+        state->fp = fopen(snapshot_path.c_str(), "rb");
+        if (!state->fp)
+        {
+            LOG_ERROR("Failed to open snapshot file");
+            return;
+        }
+        state->is_sending = true;
+        state->offset = 0;
+    }
+
+    // 缓冲区大小
+    const size_t CHUNK_SIZE = 1024 * 64;
+    std::vector<char> buffer(CHUNK_SIZE);
+
+    // 定位文件指针
+    fseek(state->fp, state->offset, SEEK_SET);
+    size_t bytes_read = fread(buffer.data(), 1, CHUNK_SIZE, state->fp);
+
+    bool done = false;
+    if (bytes_read < CHUNK_SIZE)
+    {
+        // 读到了文件末尾
+        done = true;
+        fclose(state->fp);
+        state->fp = nullptr;
+        state->is_sending = false; // 发送完毕
+    }
+
+    // 构造 InstallSnapshot 消息
+    std::string data_chunk(buffer.data(), bytes_read);
+
+    RaftMessage msg = RaftMessage::snapshot_install(
+        data_chunk,
+        state->offset,
+        done);
+
+    // 更新 offset 用于下一块
+    state->offset += bytes_read;
+
+    send(msg, sock);
+    LOG_INFO("Sent snapshot chunk to %d: offset=%lu, size=%zu, done=%d",
+             sock, state->offset - bytes_read, bytes_read, done);
+}
 // 处理AppendEntries响应
 void RaftNode::handle_append_entries_response(const RaftMessage &msg, const socket_t &sock)
 {

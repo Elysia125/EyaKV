@@ -5,6 +5,8 @@
 #include "storage/processors/structure_processors.h"
 #include "storage/storage.h"
 #include "common/types/operation_type.h"
+#include "common/util/file_utils.h"
+namespace fs = std::filesystem;
 
 const auto remove_evalue = [](EValue &value) -> EValue &
 {
@@ -699,15 +701,26 @@ Response Storage::execute(uint8_t type, std::vector<std::string> &args)
     {
         return Response::error("read only");
     }
+    if (closed_.exchange(true))
+    {
+        return Response::error("error:storage closed");
+    }
+    std::optional<std::unique_lock<std::shared_mutex>> write_lock;
+    if (isWriteOperation(type))
+    {
+        // 直接构造锁对象并放入 optional，无拷贝操作
+        write_lock.emplace(write_mutex_);
+    }
     try
     {
+        Response response;
         if (type == OperationType::kRemove)
         {
             if (args.empty())
             {
                 return Response::error("missing key");
             }
-            return Response::success(std::to_string(remove(args)));
+            response = Response::success(std::to_string(remove(args)));
         }
         else if (type == OperationType::kExists)
         {
@@ -719,7 +732,7 @@ Response Storage::execute(uint8_t type, std::vector<std::string> &args)
             {
                 return Response::error("too many arguments");
             }
-            return Response::success(std::string(contains(args[0]) ? "1" : "0"));
+            response = Response::success(std::string(contains(args[0]) ? "1" : "0"));
         }
         else if (type == OperationType::kRange)
         {
@@ -731,7 +744,7 @@ Response Storage::execute(uint8_t type, std::vector<std::string> &args)
             {
                 return Response::error("too many arguments");
             }
-            return Response::success(range(args[0], args[1]));
+            response = Response::success(range(args[0], args[1]));
         }
         else if (type == OperationType::kExpire)
         {
@@ -745,7 +758,7 @@ Response Storage::execute(uint8_t type, std::vector<std::string> &args)
             }
             uint64_t expire_time = std::stoull(args[1]);
             set_expire(args[0], expire_time);
-            return Response::success(std::string("1"));
+            response = Response::success(std::string("1"));
         }
         else if (type == OperationType::kGet)
         {
@@ -763,7 +776,7 @@ Response Storage::execute(uint8_t type, std::vector<std::string> &args)
             {
                 data = value.value();
             }
-            return Response::success(data);
+            response = Response::success(data);
         }
         else
         {
@@ -772,15 +785,24 @@ Response Storage::execute(uint8_t type, std::vector<std::string> &args)
             {
                 try
                 {
-                    return processor->execute(this, type, args);
+                    response = processor->execute(this, type, args);
                 }
                 catch (const std::exception &e)
                 {
                     return Response::error(e.what());
                 }
             }
-            return Response::error("unknown command");
+            else
+            {
+                return Response::error("unknown command");
+            }
         }
+        if (isWriteOperation(type) && response.is_success())
+        {
+            snapshot_cache_valid_.store(false, std::memory_order_relaxed);
+            snapshot_cache_path_ = "";
+        }
+        return response;
     }
     catch (const std::runtime_error &e)
     {
@@ -789,5 +811,188 @@ Response Storage::execute(uint8_t type, std::vector<std::string> &args)
     catch (const std::exception &e)
     {
         return Response::error("unknown error");
+    }
+}
+
+bool Storage::create_checkpoint(std::string &output_tar_path)
+{
+    LOG_INFO("Starting checkpoint creation to: %s", snapshot_dir.c_str());
+    bool was_running = background_flush_thread_running_;
+
+    try
+    {
+        // 1. 准备快照目录
+        std::string snapshot_dir = PathUtils::combine_path(data_dir_, "snapshot");
+        if (fs::exists(snapshot_dir))
+        {
+            // 如果目录已存在且非空，选择清空以便覆盖
+            fs::remove_all(snapshot_dir);
+        }
+        fs::create_directories(snapshot_dir);
+
+        // 2. 暂停写入并强制刷盘
+        std::unique_lock<std::shared_mutex> write_lock(write_mutex_);
+        // 判断是否有旧的可行的快照
+        if (snapshot_cache_valid_.load(std::memory_order_relaxed) && snapshot_cache_path_ != "")
+        {
+            // 使用缓存的快照路径
+            output_tar_path = snapshot_cache_path_;
+            return true;
+        }
+        // 停止后台 Flush 线程，避免我们在复制文件时 Compaction 删除了文件
+        // 这是一个简单的防止 Compaction 冲突的方法
+        if (was_running)
+        {
+            stop_background_flush_thread();
+        }
+
+        // 强制将 MemTable 和 Immutable MemTables 刷入 SSTable
+        force_flush();
+
+        // 3. 复制 SSTable 文件
+        // SSTable 目录结构通常是 data_dir/sstable
+        fs::path src_sst_dir(sstable_dir_);
+        fs::path dest_sst_dir = fs::path(snapshot_dir) / "sstable";
+
+        if (!fs::exists(dest_sst_dir))
+        {
+            fs::create_directories(dest_sst_dir);
+        }
+
+        if (fs::exists(src_sst_dir))
+        {
+            for (const auto &entry : fs::directory_iterator(src_sst_dir))
+            {
+                if (entry.is_regular_file())
+                {
+                    // 尝试创建硬链接以提高速度（秒级快照）
+                    // 硬链接不占用额外磁盘空间，且速度极快
+                    try
+                    {
+                        fs::create_hard_link(entry.path(), dest_sst_dir / entry.path().filename());
+                    }
+                    catch (const fs::filesystem_error &)
+                    {
+                        // 如果硬链接失败（例如跨分区），回退到普通复制
+                        fs::copy_file(entry.path(), dest_sst_dir / entry.path().filename(), fs::copy_options::overwrite_existing);
+                    }
+                }
+            }
+        }
+        // 4. 压缩目录为tar
+        output_tar_path = PathUtils::combine_path(snapshot_dir, "checkpoint_" + std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() + ".tar.gz");
+        compress_dir_to_targz(dest_sst_dir.string(), output_tar_path);
+        // 5. 删除临时目录
+        fs::remove(dest_sst_dir);
+        LOG_INFO("Checkpoint created successfully at: %s", snapshot_dir.c_str());
+        snapshot_cache_valid_.store(true, std::memory_order_relaxed);
+        snapshot_cache_path_ = output_tar_path;
+        // 6. 恢复后台线程
+        if (was_running)
+        {
+            start_background_flush_thread();
+        }
+
+        return true;
+    }
+    catch (const std::exception &e)
+    {
+        LOG_ERROR("Failed to create checkpoint: %s", e.what());
+        // 尝试恢复后台线程
+        if (was_running)
+        {
+            start_background_flush_thread();
+        }
+        return false;
+    }
+}
+
+bool Storage::restore_from_checkpoint(const std::string &snapshot_tar_path)
+{
+    LOG_INFO("Starting restore from checkpoint: %s", snapshot_dir.c_str());
+
+    if (!fs::exists(snapshot_dir))
+    {
+        LOG_ERROR("Snapshot directory does not exist: %s", snapshot_dir.c_str());
+        return false;
+    }
+    bool was_running = background_flush_thread_running_;
+
+    try
+    {
+        std::unique_lock<std::shared_mutex> lock(write_mutex_);
+        // 1. 强制将当前数据刷盘
+        force_flush();
+        // 2. 关闭后台线程
+        if (was_running)
+        {
+            stop_background_flush_thread();
+        }
+        // 3. 将sstable_manager置为空（关闭文件句柄）
+        sstable_manager_ = nullptr;
+        // 4. 清理当前数据目录
+        LOG_INFO("Cleaning current data directory: %s", data_dir_.c_str());
+        if (fs::exists(data_dir_))
+        {
+            fs::rename(data_dir_, data_dir_ + "_bak");
+        }
+        fs::create_directories(data_dir_);
+
+        // 5. 将快照文件解压到数据目录
+        decompress_targz(snapshot_tar_path, data_dir_);
+        // 6. 重新初始化sstable_manager
+        sstable_manager_ = std::make_unique<SSTableManager>(sstable_dir_,
+                                                            sstable_merge_strategy,
+                                                            sstable_merge_threshold,
+                                                            sstable_zero_level_size,
+                                                            sstable_level_size_ratio);
+
+        // 重启后台线程
+        if (was_running)
+        {
+            start_background_flush_thread();
+        }
+
+        LOG_INFO("Restore from checkpoint completed successfully.");
+        return true;
+    }
+    catch (const std::exception &e)
+    {
+        LOG_ERROR("Failed to restore from checkpoint: %s", e.what());
+        // 尝试重启以保持某种状态，虽然数据可能已损坏
+        if (was_running)
+        {
+            start_background_flush_thread();
+        }
+        return false;
+    }
+}
+
+bool Storage::remove_snapshot(const std::string &snapshot_path)
+{
+    try
+    {
+        if (snapshot_path == snapshot_cache_path_ && snapshot_cache_valid_.load(std::memory_order_relaxed))
+        {
+            LOG_WARN("Snapshot file is in use, cannot remove");
+            return false;
+        }
+        fs::path snapshot_dir(PathUtils::combine_path(data_dir_, "snapshot"));
+        fs::path ssp(snapshot_path);
+        if (fs::exists(ssp) && ssp.parent_path() == snapshot_dir)
+        {
+            fs::remove(ssp);
+            LOG_INFO("Snapshot file removed: %s", snapshot_path.c_str());
+        }
+        else
+        {
+            LOG_WARN("Snapshot file does not exist or not in snapshot directory: %s", snapshot_path.c_str());
+        }
+        return true;
+    }
+    catch (const std::exception &e)
+    {
+        LOG_ERROR("Failed to remove snapshot file: %s, error: %s", snapshot_path.c_str(), e.what());
+        return false;
     }
 }

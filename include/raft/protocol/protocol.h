@@ -503,37 +503,19 @@ struct JoinClusterResponseData
 // 快照安装消息
 struct SnapshotInstallData
 {
-    uint32_t term;
-    std::string leader_id;
-    uint32_t last_included_index;
-    uint32_t last_included_term;
-    std::string snapshot_data;
-    uint32_t offset;
-    bool done;
+    std::string snapshot_data; // 本次传输的数据块
+    uint32_t offset;           // 文件偏移量
+    bool done;                 // 是否是当前文件快照的最后一块
 
-    SnapshotInstallData() : term(0), last_included_index(0), last_included_term(0), offset(0), done(false) {}
+    SnapshotInstallData() : offset(0), done(false) {}
 
     std::string serialize() const
     {
         std::string result;
-        uint32_t net_term = htonl(term);
-        uint32_t net_last_index = htonl(last_included_index);
-        uint32_t net_last_term = htonl(last_included_term);
         uint32_t net_offset = htonl(offset);
         uint8_t net_done = static_cast<uint8_t>(done ? 1 : 0);
 
-        result.append(reinterpret_cast<const char *>(&net_term), sizeof(net_term));
-
-        uint32_t leader_len = htonl(static_cast<uint32_t>(leader_id.size()));
-        result.append(reinterpret_cast<const char *>(&leader_len), sizeof(leader_len));
-        result.append(leader_id);
-
-        result.append(reinterpret_cast<const char *>(&net_last_index), sizeof(net_last_index));
-        result.append(reinterpret_cast<const char *>(&net_last_term), sizeof(net_last_term));
-
-        uint32_t data_len = htonl(static_cast<uint32_t>(snapshot_data.size()));
-        result.append(reinterpret_cast<const char *>(&data_len), sizeof(data_len));
-        result.append(snapshot_data);
+        result.append(Serializer::serialize(snapshot_data));
 
         result.append(reinterpret_cast<const char *>(&net_offset), sizeof(net_offset));
         result.append(reinterpret_cast<const char *>(&net_done), sizeof(net_done));
@@ -544,35 +526,9 @@ struct SnapshotInstallData
     static SnapshotInstallData deserialize(const char *data, size_t &offset)
     {
         SnapshotInstallData snapshot;
-        uint32_t net_term, net_last_index, net_last_term, net_offset;
+        uint32_t net_offset;
         uint8_t net_done;
-
-        std::memcpy(&net_term, data + offset, sizeof(net_term));
-        offset += sizeof(net_term);
-        snapshot.term = ntohl(net_term);
-
-        uint32_t leader_len;
-        std::memcpy(&leader_len, data + offset, sizeof(leader_len));
-        offset += sizeof(leader_len);
-        leader_len = ntohl(leader_len);
-        snapshot.leader_id.assign(data + offset, leader_len);
-        offset += leader_len;
-
-        std::memcpy(&net_last_index, data + offset, sizeof(net_last_index));
-        offset += sizeof(net_last_index);
-        snapshot.last_included_index = ntohl(net_last_index);
-
-        std::memcpy(&net_last_term, data + offset, sizeof(net_last_term));
-        offset += sizeof(net_last_term);
-        snapshot.last_included_term = ntohl(net_last_term);
-
-        uint32_t data_len;
-        std::memcpy(&data_len, data + offset, sizeof(data_len));
-        offset += sizeof(data_len);
-        data_len = ntohl(data_len);
-        snapshot.snapshot_data.assign(data + offset, data_len);
-        offset += data_len;
-
+        snapshot.snapshot_data = Serializer::deserializeString(data, offset);
         std::memcpy(&net_offset, data + offset, sizeof(net_offset));
         offset += sizeof(net_offset);
         snapshot.offset = ntohl(net_offset);
@@ -589,18 +545,18 @@ struct SnapshotInstallData
 struct SnapshotInstallResponseData
 {
     bool success;
-    uint32_t term;
+    uint32_t offset;
 
-    SnapshotInstallResponseData() : success(false), term(0) {}
-    SnapshotInstallResponseData(bool succ, uint32_t t) : success(succ), term(t) {}
+    SnapshotInstallResponseData() : success(false), offset(0) {}
+    SnapshotInstallResponseData(bool succ, uint32_t off) : success(succ), offset(off) {}
 
     std::string serialize() const
     {
         std::string result;
         uint8_t net_success = static_cast<uint8_t>(success ? 1 : 0);
-        uint32_t net_term = htonl(term);
+        uint32_t net_offset = htonl(offset);
         result.append(reinterpret_cast<const char *>(&net_success), sizeof(net_success));
-        result.append(reinterpret_cast<const char *>(&net_term), sizeof(net_term));
+        result.append(reinterpret_cast<const char *>(&net_offset), sizeof(net_offset));
         return result;
     }
 
@@ -608,15 +564,15 @@ struct SnapshotInstallResponseData
     {
         SnapshotInstallResponseData response;
         uint8_t net_success;
-        uint32_t net_term;
+        uint32_t net_offset;
 
         std::memcpy(&net_success, data + offset, sizeof(net_success));
         offset += sizeof(net_success);
         response.success = (net_success != 0);
 
-        std::memcpy(&net_term, data + offset, sizeof(net_term));
-        offset += sizeof(net_term);
-        response.term = ntohl(net_term);
+        std::memcpy(&net_offset, data + offset, sizeof(net_offset));
+        offset += sizeof(net_offset);
+        response.offset = ntohl(net_offset);
         return response;
     }
 };
@@ -757,28 +713,22 @@ struct RaftMessage : public ProtocolBody
         return msg;
     }
 
-    static RaftMessage snapshot_install(uint32_t term, const std::string &leader_id,
-                                        uint32_t last_index, uint32_t last_term,
-                                        const std::string &data, uint32_t offset, bool done)
+    static RaftMessage snapshot_install(const std::string &data, uint32_t offset, bool done)
     {
         RaftMessage msg;
         msg.type = RaftMessageType::SNAPSHOT_INSTALL;
         msg.snapshot_install_data = SnapshotInstallData();
-        msg.snapshot_install_data->term = term;
-        msg.snapshot_install_data->leader_id = leader_id;
-        msg.snapshot_install_data->last_included_index = last_index;
-        msg.snapshot_install_data->last_included_term = last_term;
         msg.snapshot_install_data->snapshot_data = data;
         msg.snapshot_install_data->offset = offset;
         msg.snapshot_install_data->done = done;
         return msg;
     }
 
-    static RaftMessage snapshot_install_response(bool success, uint32_t term)
+    static RaftMessage snapshot_install_response(bool success, uint32_t offset)
     {
         RaftMessage msg;
         msg.type = RaftMessageType::SNAPSHOT_INSTALL_RESPONSE;
-        msg.snapshot_install_response_data = SnapshotInstallResponseData(success, term);
+        msg.snapshot_install_response_data = SnapshotInstallResponseData(success, offset);
         return msg;
     }
 

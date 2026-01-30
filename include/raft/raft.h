@@ -261,6 +261,14 @@ private:
     std::unordered_map<uint32_t, std::shared_ptr<PendingRequest>> pending_requests_;
     std::mutex pending_requests_mutex_;
 
+    struct SnapshotTransferState
+    {
+        uint64_t offset = 0;
+        bool is_sending = false;
+        FILE *fp = nullptr; // 或者使用 std::ifstream
+    };
+    std::unordered_map<socket_t, SnapshotTransferState> snapshot_state_;
+
     // 辅助方法：通知等待的请求
     void notify_request_applied(uint32_t index, const Response &response);
 
@@ -289,7 +297,8 @@ private:
     void handle_query_leader(const RaftMessage &msg, const socket_t &client_sock);
     void handle_query_leader_response(const RaftMessage &msg);
     void handle_join_cluster(const RaftMessage &msg, const socket_t &client_sock); // 处理新节点加入请求
-
+    void trigger_log_sync(socket_t sock);
+    void send_snapshot_chunk(socket_t sock);
     // 日志复制和提交方法
     void send_append_entries(const socket_t &sock); // 发送AppendEntries
     void send_heartbeat_to_all();                   // 向所有节点发送心跳
@@ -388,7 +397,7 @@ public:
         return is_init_;
     }
 
-    static void init(const std::string root_dir, const std::string &ip, const u_short port, const std::unordered_set<std::string> &trusted_nodes={}, const uint32_t max_follower_count = 5)
+    static void init(const std::string root_dir, const std::string &ip, const u_short port, const std::unordered_set<std::string> &trusted_nodes = {}, const uint32_t max_follower_count = 5)
     {
         if (is_init_)
         {

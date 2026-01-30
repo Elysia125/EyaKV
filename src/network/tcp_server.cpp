@@ -2,7 +2,6 @@
 #include "logger/logger.h"
 #include <iostream>
 #include <cstring>
-#include "storage/storage.h"
 #include "common/util/utils.h"
 #include "common/types/operation_type.h"
 #include "raft/raft.h"

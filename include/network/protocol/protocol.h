@@ -14,6 +14,7 @@ using ResponseData = std::variant<std::monostate,                               
                                   std::vector<std::pair<std::string, EyaValue>>, // kRange,kHEntries,kZRangeByRank,kZRangeByScore,kLRange
                                   EyaValue                                       // kGet
                                   >;
+#undef ERROR // 避免与 ERROR 冲突
 namespace ReturnCode
 {
     constexpr int ERROR = 0;
@@ -54,6 +55,10 @@ struct Response : public ProtocolBody
     static Response redirect(const std::string &redirect_addr)
     {
         return Response{ReturnCode::REDIRECT, redirect_addr, ""};
+    }
+    bool is_success() const
+    {
+        return code_ == ReturnCode::SUCCESS;
     }
     std::string serialize() const
     {
