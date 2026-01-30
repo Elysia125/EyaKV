@@ -28,7 +28,7 @@ RaftLogArray::RaftLogArray(const std::string &log_dir)
         throw std::runtime_error("Failed to create log directory: " + log_dir_);
     }
     // 打开 WAL 文件 (append 模式)
-    wal_path_ = PathUtils::CombinePath(log_dir_, "raft_wal.log");
+    wal_path_ = PathUtils::combine_path(log_dir_, "raft_wal.log");
     wal_file_ = fopen(wal_path_.c_str(), "ab+");
     if (wal_file_ == nullptr)
     {
@@ -37,7 +37,7 @@ RaftLogArray::RaftLogArray(const std::string &log_dir)
     }
 
     // 打开索引文件
-    index_path_ = PathUtils::CombinePath(log_dir_, "raft_index.idx");
+    index_path_ = PathUtils::combine_path(log_dir_, "raft_index.idx");
     index_file_ = fopen(index_path_.c_str(), "ab+");
     if (index_file_ == nullptr)
     {

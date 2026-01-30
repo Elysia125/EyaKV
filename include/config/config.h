@@ -32,6 +32,8 @@ enum class SSTableMergeStrategy
 };
 #define DEFAULT_PORT 5210
 #define DEFAULT_IP "0.0.0.0"
+#define DEFAULT_RAFT_PORT 5211
+#define DEFAULT_RAFT_TRUST_IP "127.0.0.1"
 #define DEFAULT_READ_ONLY false
 #define DEFAULT_LOG_LEVEL LogLevel::DEBUG
 #define DEFAULT_LOG_ROTATE_SIZE 1024 * 5 // 日志轮转阈值，避免日志文件过大
@@ -58,6 +60,8 @@ enum class SSTableMergeStrategy
 
 #define PORT_KEY "port"
 #define IP_KEY "ip"
+#define RAFT_PORT_KEY "raft_port"
+#define RAFT_TRUST_IP_KEY "raft_trust_ip"
 #define READ_ONLY_KEY "read_only"
 #define LOG_LEVEL_KEY "log_level"
 #define LOG_ROTATE_SIZE_KEY "log_rotate_size"
@@ -89,7 +93,7 @@ enum class SSTableMergeStrategy
 class EyaKVConfig
 {
 private:
-    std::string config_file_ = PathUtils::GetTargetFilePath("conf/eyakv.conf");
+    std::string config_file_ = PathUtils::get_target_file_path("conf/eyakv.conf");
     std::unordered_map<std::string, std::string> config_map_;
     EyaKVConfig()
     {
@@ -136,18 +140,20 @@ private:
 
     void load_default_config()
     {
-        config_map_[LOG_DIR_KEY] = PathUtils::GetTargetFilePath("logs");
+        config_map_[LOG_DIR_KEY] = PathUtils::get_target_file_path("logs");
         config_map_[LOG_LEVEL_KEY] = std::to_string(static_cast<int>(DEFAULT_LOG_LEVEL));
         config_map_[LOG_ROTATE_SIZE_KEY] = std::to_string(DEFAULT_LOG_ROTATE_SIZE);
         config_map_[IP_KEY] = DEFAULT_IP;
         config_map_[PORT_KEY] = std::to_string(DEFAULT_PORT);
+        config_map_[RAFT_PORT_KEY] = std::to_string(DEFAULT_RAFT_PORT);
+        config_map_[RAFT_TRUST_IP_KEY] = DEFAULT_RAFT_TRUST_IP;
         config_map_[READ_ONLY_KEY] = std::to_string(DEFAULT_READ_ONLY);
         config_map_[SKIPLIST_MAX_LEVEL_KEY] = std::to_string(DEFAULT_SKIPLIST_MAX_LEVEL);
         config_map_[SKIPLIST_PROBABILITY_KEY] = std::to_string(DEFAULT_SKIPLIST_PROBABILITY);
         config_map_[SKIPLIST_MAX_NODE_COUNT_KEY] = std::to_string(DEFAULT_SKIPLIST_MAX_NODE_COUNT);
         config_map_[MEMTABLE_SIZE_KEY] = std::to_string(DEFAULT_MEMTABLE_SIZE);
         config_map_[WAL_ENABLE_KEY] = std::to_string(DEFAULT_WAL_ENABLE);
-        config_map_[WAL_DIR_KEY] = PathUtils::CombinePath(PathUtils::GetTargetFilePath("data"), "wal");
+        config_map_[WAL_DIR_KEY] = PathUtils::combine_path(PathUtils::get_target_file_path("data"), "wal");
         config_map_[WAL_FILE_SIZE_KEY] = std::to_string(DEFAULT_WAL_FILE_SIZE);
         config_map_[WAL_FILE_MAX_COUNT_KEY] = std::to_string(DEFAULT_WAL_FILE_MAX_COUNT);
         config_map_[SSTABLE_MERGE_THRESHOLD_KEY] = std::to_string(DEFAULT_SSTABLE_MERGE_THRESHOLD);
@@ -160,7 +166,7 @@ private:
         config_map_[MEMORY_POOL_SIZE_KEY] = std::to_string(DEFAULT_MEMORY_POOL_SIZE);
         config_map_[WAITING_QUEUE_SIZE_KEY] = std::to_string(DEFAULT_WAITING_QUEUE_SIZE);
         config_map_[MAX_WAITING_TIME_KEY] = std::to_string(DEFAULT_MAX_WAITING_TIME);
-        config_map_[DATA_DIR_KEY] = PathUtils::GetTargetFilePath("data");
+        config_map_[DATA_DIR_KEY] = PathUtils::get_target_file_path("data");
         config_map_[PASSWORD_KEY] = "";
         config_map_[WORKER_THREAD_COUNT_KEY] = std::to_string(DEFAULT_WORKER_THREAD_COUNT);
         config_map_[WORKER_QUEUE_SIZE_KEY] = std::to_string(DEFAULT_WORKER_QUEUE_SIZE);

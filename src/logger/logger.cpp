@@ -55,7 +55,7 @@ void Logger::CreateDir(const std::string &dir)
 // 辅助：打开指定的日志文件
 FILE *Logger::OpenLogFile(const std::string &filename)
 {
-    std::string full_path = PathUtils::CombinePath(log_dir_, filename);
+    std::string full_path = PathUtils::combine_path(log_dir_, filename);
     FILE *fp = fopen(full_path.c_str(), "a");
     if (fp == nullptr)
     {
@@ -111,9 +111,9 @@ void Logger::RotateLogFile(FILE **old_file, const std::string &old_filename)
     fflush(*old_file);
     fclose(*old_file);
 
-    std::string full_path = PathUtils::CombinePath(log_dir_, old_filename);
+    std::string full_path = PathUtils::combine_path(log_dir_, old_filename);
     std::string new_filename = old_filename + ".1";
-    std::string full_new_path = PathUtils::CombinePath(log_dir_, new_filename);
+    std::string full_new_path = PathUtils::combine_path(log_dir_, new_filename);
     std::filesystem::rename(full_path, full_new_path);
     *old_file = OpenLogFile(old_filename);
 }

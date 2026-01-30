@@ -25,7 +25,7 @@ private:
 public:
         // 获取可执行文件的绝对路径（跨平台通用）
 #ifdef _WIN32
-        static std::string GetExeAbsolutePath()
+        static std::string get_exe_absolute_path()
         {
                 std::lock_guard<std::mutex> lock(cache_mutex_);
                 char buffer[MAX_PATH];
@@ -45,7 +45,7 @@ public:
 #elif __linux__
 #include <unistd.h>
 #include <limits.h>
-        static std::string GetExeAbsolutePath()
+        static std::string get_exe_absolute_path()
         {
                 std::lock_guard<std::mutex> lock(cache_mutex_);
                 char buffer[PATH_MAX];
@@ -65,7 +65,7 @@ public:
         }
 #elif __APPLE__
 #include <mach-o/dyld.h>
-        static std::string GetExeAbsolutePath()
+        static std::string get_exe_absolute_path()
         {
                 std::lock_guard<std::mutex> lock(cache_mutex_);
                 // Use PATH_MAX for consistency and larger buffer
@@ -89,13 +89,13 @@ public:
 #endif
 
         // 获取可执行文件所在的目录（去掉可执行文件名）
-        static std::string GetExeDir()
+        static std::string get_exe_dir()
         {
                 if (exe_dir_.has_value())
                 {
                         return exe_dir_.value();
                 }
-                std::string exe_path = GetExeAbsolutePath();
+                std::string exe_path = get_exe_absolute_path();
                 if (exe_path.empty())
                 {
                         return "./"; // 失败时降级为当前目录
@@ -138,15 +138,15 @@ public:
 
         // 核心函数：拼接目标文件的绝对路径（基于可执行文件目录）
         // 参数：relative_path - 相对于可执行文件目录的路径（比如"../log/kv_db.log"）
-        static std::string GetTargetFilePath(const std::string &relative_path)
+        static std::string get_target_file_path(const std::string &relative_path)
         {
-                std::string exe_dir = GetExeDir();
+                std::string exe_dir = get_exe_dir();
                 // 拼接路径（自动处理重复的分隔符，比如/opt/kvdb/bin/ + ../log → /opt/kvdb/log）
-                return CombinePath(exe_dir, relative_path);
+                return combine_path(exe_dir, relative_path);
         }
 
         // 拼接两个路径，处理分隔符问题
-        static std::string CombinePath(const std::string &dir, const std::string &file)
+        static std::string combine_path(const std::string &dir, const std::string &file)
         {
                 if (dir.empty())
                         return file;

@@ -6,11 +6,13 @@
 #include "network/tcp_server.h"
 #include "config/config.h"
 #include "logger/logger.h"
-
+#include "raft/raft.h"
 EyaKVConfig &config = EyaKVConfig::get_instance();
 
 EyaServer *EyaKVStarter::server = nullptr;
 std::atomic<bool> EyaKVStarter::should_shutdown(false);
+std::unique_ptr<std::thread> EyaKVStarter::raft_thread = nullptr;
+
 void EyaKVStarter::print_banner()
 {
     // 定义颜色（粉色/洋红色）
@@ -32,11 +34,12 @@ void EyaKVStarter::print_banner()
 
 void EyaKVStarter::initialize()
 {
+    register_signal_handlers();
     print_banner();
     initialize_logger();
     initialize_storage();
+    initialize_raft();
     initialize_server();
-    register_signal_handlers();
 }
 
 void EyaKVStarter::initialize_logger()
@@ -131,7 +134,56 @@ void EyaKVStarter::initialize_storage()
                   sstable_merge_threshold,
                   sstable_zero_level_size,
                   sstable_level_size_ratio);
-    std::cout << "Storage initialized. Data directory: " << data_dir.value() << std::endl;
+    if (Storage::get_instance() != nullptr)
+    {
+        std::cout << "Storage initialized. Data directory: " << data_dir.value() << std::endl;
+    }
+    else
+    {
+        std::cerr << "Failed to initialize storage." << std::endl;
+        throw std::runtime_error("Failed to initialize storage.");
+    }
+}
+
+void EyaKVStarter::initialize_raft()
+{
+    std::cout << "Initializing Raft consensus..." << std::endl;
+    std::optional<std::string> ip_str = config.get_config(IP_KEY);
+    if (!ip_str.has_value() || ip_str->empty())
+    {
+        throw std::runtime_error("IP not configured.");
+    }
+    std::string ip = ip_str.value();
+    std::optional<std::string> port_str = config.get_config(RAFT_PORT_KEY);
+    if (!port_str.has_value())
+    {
+        throw std::runtime_error("Port not configured.");
+    }
+    uint16_t port = static_cast<uint16_t>(std::stoi(port_str.value()));
+    std::optional<std::string> raft_trust_ip_str = config.get_config(RAFT_TRUST_IP_KEY);
+    std::unordered_set<std::string> raft_trust_ip;
+    if (raft_trust_ip_str.has_value() && !raft_trust_ip_str->empty())
+    {
+        std::vector<std::string> ret = split(raft_trust_ip_str.value(), ',');
+        for (const auto &addr : ret)
+        {
+            raft_trust_ip.insert(addr);
+        }
+    }
+    RaftNode::init(PathUtils::get_exe_dir(), ip, port, raft_trust_ip);
+    if (RaftNode::get_instance() != nullptr)
+    {
+        std::cout << "Raft consensus initialized successfully." << std::endl;
+    }
+    else
+    {
+        std::cerr << "Failed to initialize Raft consensus." << std::endl;
+        throw std::runtime_error("Failed to initialize Raft consensus.");
+    }
+    RaftNode::get_instance()->start();
+    raft_thread = std::make_unique<std::thread>([]()
+                                                { RaftNode::get_instance()->run(); });
+    raft_thread->detach();
 }
 
 void EyaKVStarter::initialize_server()
@@ -222,7 +274,13 @@ void EyaKVStarter::shutdown()
 
     should_shutdown.store(true);
     LOG_INFO("Initiating graceful shutdown...");
-
+    // 停止raft
+    if (RaftNode::get_instance() != nullptr)
+    {
+        LOG_INFO("Stopping Raft node...");
+        RaftNode::get_instance()->stop();
+        LOG_INFO("Raft node stopped");
+    }
     // 停止服务器
     if (server != nullptr)
     {
@@ -232,11 +290,6 @@ void EyaKVStarter::shutdown()
         server = nullptr;
         LOG_INFO("Server stopped");
     }
-
-    // 清理存储资源
-    LOG_INFO("Cleaning up storage...");
-    Storage::release_instance();
-    LOG_INFO("Storage cleaned up");
 
     LOG_INFO("Graceful shutdown completed");
     exit(EXIT_SUCCESS);

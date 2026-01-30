@@ -186,7 +186,7 @@ bool Wal::recover(std::function<void(std::string, uint8_t, std::string, std::str
 
 bool Wal::clear(const std::string &filename)
 {
-    std::string filepath = PathUtils::CombinePath(wal_dir_, filename);
+    std::string filepath = PathUtils::combine_path(wal_dir_, filename);
     if (wal_file_name_ == filename && wal_file_ != nullptr)
     {
         sync();
@@ -255,7 +255,7 @@ void Wal::open_wal_file(std::string &filename)
     {
         filename = generate_unique_filename();
     }
-    std::string filepath = PathUtils::CombinePath(wal_dir_, filename);
+    std::string filepath = PathUtils::combine_path(wal_dir_, filename);
     wal_file_ = fopen(filepath.c_str(), "ab+");
     if (wal_file_ == nullptr)
     {

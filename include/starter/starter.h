@@ -3,6 +3,7 @@
 
 #include "common/base/export.h"
 #include <atomic>
+#include <thread>
 class Storage;
 class EyaServer;
 
@@ -14,7 +15,7 @@ class EYAKV_STARTER_API EyaKVStarter
 private:
     static EyaServer *server;
     static std::atomic<bool> should_shutdown;
-
+    static std::unique_ptr<std::thread> raft_thread;
     EyaKVStarter() = default;
     static void print_banner();
 
@@ -23,6 +24,8 @@ private:
     static void initialize_logger();
 
     static void initialize_storage();
+
+    static void initialize_raft();
 
     static void initialize_server();
 

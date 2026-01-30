@@ -34,7 +34,6 @@ struct PersistentState
     std::string voted_for_ = "";                  // 本任期投票给的节点地址字符串
     ClusterMetadata cluster_metadata_;            // 集群配置
     std::atomic<uint32_t> log_snapshot_index_{0}; // 最后快照索引 (用于日志清理)
-    std::string leader_password_ = "";            // 领导者密码(用于重连)
     std::atomic<uint32_t> commit_index_{0};       // 已提交的最高日志索引
     std::atomic<uint32_t> last_applied_{0};       // 已应用到状态机的最高日志索引
     PersistentState() {}
@@ -45,7 +44,6 @@ struct PersistentState
         voted_for_ = other.voted_for_;
         cluster_metadata_ = other.cluster_metadata_;
         log_snapshot_index_.store(other.log_snapshot_index_.load(std::memory_order_relaxed), std::memory_order_relaxed);
-        leader_password_ = other.leader_password_;
         commit_index_.store(other.commit_index_.load(std::memory_order_relaxed), std::memory_order_relaxed);
         last_applied_.store(other.last_applied_.load(std::memory_order_relaxed), std::memory_order_relaxed);
     }
@@ -56,7 +54,6 @@ struct PersistentState
         voted_for_ = other.voted_for_;
         cluster_metadata_ = other.cluster_metadata_;
         log_snapshot_index_.store(other.log_snapshot_index_.load(std::memory_order_relaxed), std::memory_order_relaxed);
-        leader_password_ = other.leader_password_;
         commit_index_.store(other.commit_index_.load(std::memory_order_relaxed), std::memory_order_relaxed);
         last_applied_.store(other.last_applied_.load(std::memory_order_relaxed), std::memory_order_relaxed);
         return *this;
@@ -74,7 +71,6 @@ struct PersistentState
         data.append(Serializer::serialize(voted_for_));
         data.append(cluster_metadata_.serialize());
         data.append(reinterpret_cast<const char *>(&log_snapshot_index), sizeof(log_snapshot_index));
-        data.append(Serializer::serialize(leader_password_));
         data.append(reinterpret_cast<const char *>(&commit_index), sizeof(commit_index));
         data.append(reinterpret_cast<const char *>(&last_applied), sizeof(last_applied));
         return data;
@@ -91,7 +87,6 @@ struct PersistentState
         state.cluster_metadata_ = ClusterMetadata::deserialize(data, offset);
         std::memcpy(&log_snapshot_index, data + offset, sizeof(log_snapshot_index));
         offset += sizeof(log_snapshot_index);
-        state.leader_password_ = Serializer::deserializeString(data, offset);
         std::memcpy(&commit_index, data + offset, sizeof(commit_index));
         offset += sizeof(commit_index);
         std::memcpy(&last_applied, data + offset, sizeof(last_applied));
@@ -203,14 +198,13 @@ private:
 
     //  易失性状态
     std::atomic<RaftRole> role_; // 角色
-    std::string password_;       // 认证密码(空表示不认证，主节点有效)
 
     //  易失性状态（仅 Leader）
     std::unordered_map<socket_t, uint32_t> next_index_;  // 每个Follower下一个要发送的日志索引
     std::unordered_map<socket_t, uint32_t> match_index_; // 每个Follower已匹配的日志索引
 
-    //  集群配置
-    std::string leader_password_; // Leader密码
+    // 受信任的ip+端口(应该支持模糊匹配)
+    std::unordered_set<std::string> trusted_nodes_;
 
     //  超时配置（毫秒）
     int election_timeout_min_ = 150; // 选举超时最小值
@@ -270,7 +264,7 @@ private:
     // 辅助方法：通知等待的请求
     void notify_request_applied(uint32_t index, const Response &response);
 
-    RaftNode(const std::string root_dir, const std::string &ip, const u_short port, const uint32_t max_follower_count = 3, const std::string password = "");
+    RaftNode(const std::string root_dir, const std::string &ip, const u_short port, const std::unordered_set<std::string> &trusted_nodes = {}, const uint32_t max_follower_count = 3);
     ProtocolBody *new_body()
     {
         return new RaftMessage();
@@ -292,8 +286,9 @@ private:
     bool handle_request_vote(const RaftMessage &msg, const socket_t &sock);            // 处理RequestVote请求
     void handle_append_entries_response(const RaftMessage &msg, const socket_t &sock); // 处理AppendEntries响应
     void handle_request_vote_response(const RaftMessage &msg, const socket_t &sock);   // 处理RequestVote响应
-    void handle_query_leader(const RaftMessage &msg, const socket_t &client_sock);     // 处理探查leader请求
-    void handle_join_cluster(const RaftMessage &msg, const socket_t &client_sock);     // 处理新节点加入请求
+    void handle_query_leader(const RaftMessage &msg, const socket_t &client_sock);
+    void handle_query_leader_response(const RaftMessage &msg);
+    void handle_join_cluster(const RaftMessage &msg, const socket_t &client_sock); // 处理新节点加入请求
 
     // 日志复制和提交方法
     void send_append_entries(const socket_t &sock); // 发送AppendEntries
@@ -348,7 +343,7 @@ private:
     void handle_new_node_join(const RaftMessage &msg);
     void handle_leave_node(const RaftMessage &msg);
     // 转换为Follower
-    bool become_follower(const Address &leader_addr, uint32_t term = 0, bool is_reconnect = false, const uint32_t commit_index = 0, const std::string &password = "");
+    bool become_follower(const Address &leader_addr, uint32_t term = 0, bool is_reconnect = false, const uint32_t commit_index = 0);
 
     // 转换为Candidate
     void become_candidate();
@@ -373,6 +368,8 @@ private:
 
     bool remove_node(const Address &addr);
 
+    bool is_trust(const Address &addr);
+
 public:
     ~RaftNode();
 
@@ -391,13 +388,13 @@ public:
         return is_init_;
     }
 
-    static void init(const std::string root_dir, const std::string &ip, const u_short port, const uint32_t max_follower_count = 3, const std::string password = "")
+    static void init(const std::string root_dir, const std::string &ip, const u_short port, const std::unordered_set<std::string> &trusted_nodes={}, const uint32_t max_follower_count = 5)
     {
         if (is_init_)
         {
             throw std::runtime_error("RaftNode already initialized");
         }
-        instance_ = std::make_unique<RaftNode>(root_dir, ip, port, max_follower_count, password);
+        instance_ = std::make_unique<RaftNode>(root_dir, ip, port, max_follower_count);
     }
 };
 

@@ -721,7 +721,7 @@ std::string SSTableManager::generate_filename()
     // 使用序列号生成文件名
     std::ostringstream oss;
     oss << std::setfill('0') << std::setw(16) << next_sequence_number_++;
-    return PathUtils::CombinePath(data_dir_, oss.str() + ".sst");
+    return PathUtils::combine_path(data_dir_, oss.str() + ".sst");
 }
 
 bool SSTableManager::load_all()
@@ -786,7 +786,7 @@ bool SSTableManager::load_all()
 void SSTableManager::normalize_sstables()
 {
     // 读取数据目录下面的.smeta文件
-    std::string smeta_file = PathUtils::CombinePath(data_dir_, ".smeta");
+    std::string smeta_file = PathUtils::combine_path(data_dir_, ".smeta");
     if (!std::filesystem::exists(smeta_file))
     {
         LOG_INFO("SSTableManager: .smeta file not found, merge all sstables to max level");

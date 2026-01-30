@@ -41,7 +41,7 @@ Storage::Storage(const std::string &data_dir,
     }
 
     // 设置 SSTable 目录
-    sstable_dir_ = PathUtils::CombinePath(data_dir_, "sstable");
+    sstable_dir_ = PathUtils::combine_path(data_dir_, "sstable");
     if (!std::filesystem::exists(sstable_dir_))
     {
         std::filesystem::create_directories(sstable_dir_);
@@ -106,10 +106,7 @@ void Storage::close()
     stop_background_flush_thread();
 
     // 强制刷新所有数据到磁盘
-    if (!read_only_)
-    {
-        force_flush();
-    }
+    force_flush();
 
     // 关闭 WAL
     if (wal_)
@@ -431,12 +428,6 @@ void Storage::rotate_memtable()
 
 void Storage::force_flush()
 {
-    if (read_only_)
-    {
-        LOG_ERROR("Storage is in read-only mode. Flush operation is not allowed.");
-        return;
-    }
-
     // 将当前 MemTable 转换为 Immutable（如果有数据）
     if (memtable_->size() > 0)
     {
@@ -617,11 +608,6 @@ void Storage::init_command_handlers()
 
 void Storage::set_expire(const std::string &key, uint64_t alive_time)
 {
-    if (read_only_)
-    {
-        LOG_ERROR("Storage is in read-only mode. Set expire operation is not allowed.");
-        throw std::runtime_error("Storage is in read-only mode. Set expire operation is not allowed.");
-    }
     uint64_t expire_time = alive_time == 0 ? 0 : std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count() + alive_time;
     if (enable_wal_ && wal_)
     {
@@ -667,11 +653,6 @@ void Storage::set_key_expire(const std::string &key, uint64_t expire_time)
 
 uint32_t Storage::remove(std::vector<std::string> &keys)
 {
-    if (read_only_)
-    {
-        LOG_WARN("Storage: remove failed, read only mode");
-        throw std::runtime_error("Remove key failed, read only mode");
-    }
     if (keys.empty())
     {
         throw std::runtime_error("Remove key failed, missing key");
@@ -710,8 +691,14 @@ Response Storage::execute(uint8_t type, std::vector<std::string> &args)
 {
     std::string args_str;
     for (const auto &arg : args)
+    {
         args_str += arg + " ";
+    }
     LOG_DEBUG("Storage::execute: type=%d, args=[%s]", type, args_str.c_str());
+    if (isWriteOperation(type) && read_only_)
+    {
+        return Response::error("read only");
+    }
     try
     {
         if (type == OperationType::kRemove)

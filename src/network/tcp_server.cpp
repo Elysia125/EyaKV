@@ -5,6 +5,7 @@
 #include "storage/storage.h"
 #include "common/util/utils.h"
 #include "common/types/operation_type.h"
+#include "raft/raft.h"
 #define HEADER_SIZE Header::PROTOCOL_HEADER_SIZE
 #define HEADER_SIZE_LIMIT 1024 * 1024
 #ifdef __linux__
@@ -308,6 +309,18 @@ void EyaServer::send_connection_state(ConnectionState state, socket_t client_soc
 
 void EyaServer::close_socket(socket_t sock)
 {
+    int ret = shutdown(sock, SHUT_WR);
+#ifdef _WIN32
+    if (ret == SOCKET_ERROR)
+    {
+        LOG_ERROR("Shutdown error on fd %d: %s", sock, socket_error_to_string(errno));
+    }
+#else
+    if (ret == -1)
+    {
+        LOG_ERROR("Shutdown error on fd %d: %s", sock, socket_error_to_string(errno));
+    }
+#endif
     CLOSE_SOCKET(sock);
 #ifdef __APPLE__
 #elif _WIN32
@@ -422,23 +435,12 @@ void EyaServer::handle_request(ProtocolBody *body, socket_t client_sock)
             }
             else
             {
-                if(!Storage::is_init()){
-                    LOG_ERROR("Storage is not initialized");
+                if(!RaftNode::is_init()){
+                    LOG_ERROR("Raft is not initialized");
                     exit(1);
                 }
-                static Storage* storage_=Storage::get_instance();
-                // 解析命令并执行
-                std::vector<std::string> command_parts = split(request->command, ' ');
-                if (command_parts.empty())
-                {
-                    response = Response::error("Invalid command");
-                }
-                else
-                {
-                    uint8_t operation = stringToOperationType(command_parts[0]);
-                    command_parts.erase(command_parts.begin());
-                    response = storage_->execute(operation, command_parts);
-                }
+                static RaftNode*raft_node=RaftNode::get_instance();
+                response=raft_node->submit_command(request->command);
             }
         }
         else

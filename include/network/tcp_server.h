@@ -184,7 +184,7 @@ private:
      *
      * @param sock 要关闭的 socket 描述符
      */
-    void close_socket(socket_t sock);
+    void close_socket(socket_t sock) override;
 
     /**
      * @brief 处理客户端请求（在线程池中执行）
