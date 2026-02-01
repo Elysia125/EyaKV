@@ -3,9 +3,9 @@
 #include <fstream>
 #include <cstring>
 #include <sys/stat.h>
-#include <zlib.h>
 #include "common/util/path_utils.h"
 #include "common/util/file_utils.h"
+#include "common/util/checksum_utils.h"
 #ifdef _WIN32
 #include <io.h>
 #include <windows.h>
@@ -70,7 +70,8 @@ RaftLogArray::~RaftLogArray()
 
 uint32_t RaftLogArray::compute_checksum(const std::string &data) const
 {
-    return static_cast<uint32_t>(crc32(0, reinterpret_cast<const Bytef *>(data.c_str()), data.length()));
+    ChecksumCalculator cc;
+    return cc.fromString(data);
 }
 
 bool RaftLogArray::write_entry_to_wal(const LogEntry &entry, uint64_t &offset)
@@ -184,8 +185,8 @@ bool RaftLogArray::read_entry_from_wal(uint64_t offset, LogEntry &entry) const
     }
 
     // 反序列化
-    size_t offset = 0;
-    entry = LogEntry::deserialize(data.c_str(), offset);
+    size_t off = 0;
+    entry = LogEntry::deserialize(data.c_str(), off);
     fseek(wal_file_, current_pos, SEEK_SET); // 恢复位置
     return false;
 }
@@ -705,7 +706,7 @@ uint32_t RaftLogArray::get_term(uint32_t index) const
 bool RaftLogArray::reset(uint32_t new_start_index)
 {
     std::unique_lock<std::shared_mutex> lock(mutex_);
-    
+
     LOG_INFO("Resetting LogArray to start from index %u", new_start_index);
 
     // 1. 清空内存
@@ -714,8 +715,10 @@ bool RaftLogArray::reset(uint32_t new_start_index)
     base_index_ = new_start_index;
 
     // 2. 关闭文件
-    if (wal_file_) fclose(wal_file_);
-    if (index_file_) fclose(index_file_);
+    if (wal_file_)
+        fclose(wal_file_);
+    if (index_file_)
+        fclose(index_file_);
 
     // 3. 删除旧文件 (直接删除再重建是最高效的清空方式)
     remove_file(wal_path_);
@@ -725,7 +728,8 @@ bool RaftLogArray::reset(uint32_t new_start_index)
     wal_file_ = fopen(wal_path_.c_str(), "wb+");
     index_file_ = fopen(index_path_.c_str(), "wb+");
 
-    if (!wal_file_ || !index_file_) {
+    if (!wal_file_ || !index_file_)
+    {
         LOG_ERROR("Failed to recreate log files during reset");
         return false;
     }

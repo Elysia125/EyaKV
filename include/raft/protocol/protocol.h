@@ -103,7 +103,13 @@ struct LogEntry
 
     bool operator==(const LogEntry &other) const
     {
-        return term == other.term && index == other.index && cmd == other.cmd&& request_id == other.request_id;
+        return term == other.term && index == other.index && cmd == other.cmd && request_id == other.request_id;
+    }
+
+    // 用于 std::set 比较，使用 index 作为主要排序键
+    bool operator<(const LogEntry &other) const
+    {
+        return index < other.index;
     }
 };
 
@@ -147,23 +153,27 @@ struct HeartBeatData
 struct RequestVoteData
 {
     uint32_t last_log_index; // 候选人最后一条日志的索引
-
-    RequestVoteData(uint32_t last_idx = 0) : last_log_index(last_idx) {}
+    uint32_t last_log_term;  // 候选人最后一条日志的任期
+    RequestVoteData(uint32_t last_idx = 0, uint32_t last_term = 0) : last_log_index(last_idx), last_log_term(last_term) {}
 
     std::string serialize() const
     {
         std::string result;
         uint32_t net_last_log_index = htonl(last_log_index);
         result.append(reinterpret_cast<const char *>(&net_last_log_index), sizeof(net_last_log_index));
+        uint32_t net_last_log_term = htonl(last_log_term);
+        result.append(reinterpret_cast<const char *>(&net_last_log_term), sizeof(net_last_log_term));
         return result;
     }
 
     static RequestVoteData deserialize(const char *data, size_t &offset)
     {
-        uint32_t net_last_log_index;
+        uint32_t net_last_log_index, net_last_log_term;
         std::memcpy(&net_last_log_index, data + offset, sizeof(net_last_log_index));
         offset += sizeof(net_last_log_index);
-        return RequestVoteData(ntohl(net_last_log_index));
+        std::memcpy(&net_last_log_term, data + offset, sizeof(net_last_log_term));
+        offset += sizeof(net_last_log_term);
+        return RequestVoteData(ntohl(net_last_log_index), ntohl(net_last_log_term));
     }
 };
 
@@ -627,12 +637,12 @@ struct RaftMessage : public ProtocolBody
         return msg;
     }
 
-    static RaftMessage request_vote(uint32_t term, uint32_t last_log_index)
+    static RaftMessage request_vote(uint32_t term, uint32_t last_log_index, uint32_t last_log_term)
     {
         RaftMessage msg;
         msg.type = RaftMessageType::REQUEST_VOTE;
         msg.term = term;
-        msg.request_vote_data = RequestVoteData(last_log_index);
+        msg.request_vote_data = RequestVoteData(last_log_index, last_log_term);
         return msg;
     }
 

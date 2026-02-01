@@ -1,10 +1,12 @@
 #ifndef FILE_UTILS_H_
 #define FILE_UTILS_H_
 
+#include <iostream>
 #include <string>
+#include <vector>
 #include <filesystem>
-#include <archive.h>
-#include <archive_entry.h>
+#include <cstdlib>
+#include <memory>
 
 namespace fs = std::filesystem;
 // 自定义文件句柄删除器
@@ -23,15 +25,12 @@ using UniqueFilePtr = std::unique_ptr<FILE, FileCloser>;
 // 辅助函数：获取文件大小（文件不存在返回0）
 inline uint64_t get_file_size(const std::string &file_path)
 {
-    struct stat file_stat{};
-    if (stat(file_path.c_str(), &file_stat) != 0)
+    if (!fs::exists(file_path))
     {
-        // 文件不存在或获取失败，返回0
         return 0;
     }
-    return static_cast<uint64_t>(file_stat.st_size);
+    return fs::file_size(file_path);
 }
-
 // 封装跨平台的创建目录函数（对外接口统一）
 inline bool create_directory(const std::string &dir_name)
 {
@@ -56,213 +55,192 @@ inline bool remove_file(const std::string &path)
 {
     return fs::remove(path);
 }
-
-// 错误处理辅助函数
-static void check_archive_error(int r, struct archive *a, const std::string &msg)
-{
-    if (r != ARCHIVE_OK && r != ARCHIVE_EOF)
-    {
-        throw std::runtime_error(msg + ": " + archive_error_string(a));
-    }
-}
-
 /**
- * 压缩目录为 tar.gz
- * @param src_dir 待压缩的源目录（绝对/相对路径,压缩后不保留根目录）
- * @param dest_targz 输出的 tar.gz 文件路径（如 "output.tar.gz"）
+ * @brief 压缩与解压缩策略接口
  */
-inline void compress_dir_to_targz(const std::string &src_dir, const std::string &dest_targz)
+// 1. 抽象策略接口
+class ICompressionStrategy
 {
-    // 检查源目录是否存在
-    if (!fs::is_directory(src_dir))
+public:
+    virtual ~ICompressionStrategy() = default;
+
+    /**
+     * 压缩目录
+     * @param sourceDir 需要压缩的源目录
+     * @param destTarGzFile 生成的 .tar.gz 文件路径
+     * @return 成功返回 true
+     */
+    virtual bool compress(const std::string &sourceDir, const std::string &destTarGzFile) = 0;
+
+    /**
+     * 解压缩文件
+     * @param sourceTarGzFile .tar.gz 源文件路径
+     * @param destDir 解压的目标目录
+     * @return 成功返回 true
+     */
+    virtual bool decompress(const std::string &sourceTarGzFile, const std::string &destDir) = 0;
+};
+
+// 2. 具体策略：系统命令策略
+//    利用 Windows/Linux/MacOS 自带的 tar 命令
+class SystemTarGzStrategy : public ICompressionStrategy
+{
+private:
+    // 辅助函数：处理路径中的空格，给路径加引号
+    std::string quote(const std::string &path)
     {
-        throw std::invalid_argument("Source directory does not exist: " + src_dir);
+        return "\"" + path + "\"";
     }
 
-    struct archive *a = archive_write_new();
-    if (!a)
+    /**
+     * 检查 tar 命令是否可用
+     */
+    bool isTarAvailable()
     {
-        throw std::runtime_error("Failed to create archive writer");
+        // 执行 tar --version，如果返回 0 表示命令存在
+        // > NUL (Windows) 或 > /dev/null (Linux/Mac) 用于屏蔽输出
+#ifdef _WIN32
+        int ret = std::system("tar --version > NUL 2>&1");
+#else
+        int ret = std::system("tar --version > /dev/null 2>&1");
+#endif
+        return ret == 0;
     }
 
-    try
+public:
+    bool compress(const std::string &sourceDir, const std::string &destTarGzFile) override
     {
-        // 启用 gzip 压缩 + tar 格式
-        check_archive_error(
-            archive_write_add_filter_gzip(a),
-            a,
-            "Failed to add gzip filter");
-        check_archive_error(
-            archive_write_set_format_pax_restricted(a), // 兼容大部分 tar 工具
-            a,
-            "Failed to set tar format");
-        // 打开输出文件
-        check_archive_error(
-            archive_write_open_filename(a, dest_targz.c_str()),
-            a,
-            "Failed to open output file: " + dest_targz);
-
-        // 递归遍历目录
-        fs::path src_path = fs::absolute(src_dir);
-        for (const auto &entry : fs::recursive_directory_iterator(src_path))
+        if (!isTarAvailable())
         {
-            struct archive_entry *ae = archive_entry_new();
-            if (!ae)
-            {
-                throw std::runtime_error("Failed to create archive entry");
-            }
+            std::cerr << "Error: tar utility is not available on this system." << std::endl;
+            std::cerr << "Please install tar utility and try again." << std::endl;
+            return false;
+        }
+        fs::path srcPath(sourceDir);
+        fs::path destPath(destTarGzFile);
 
+        // 1. 检查源目录是否存在
+        if (!fs::exists(srcPath) || !fs::is_directory(srcPath))
+        {
+            std::cerr << "Error: Source directory does not exist or is not a directory: " << sourceDir << std::endl;
+            return false;
+        }
+
+        // 2. 获取绝对路径，防止 cd 切换目录后找不到文件
+        srcPath = fs::absolute(srcPath);
+        destPath = fs::absolute(destPath);
+
+        // 3. 构建命令
+        // 逻辑：cd 到源目录内部，然后压缩当前目录下的所有内容 (.) 到目标文件
+        // 这样可以避免压缩包内包含根目录层级
+        std::string cmd;
+
+#ifdef _WIN32
+        // Windows 命令: cd /d 确保可以跨盘符切换
+        cmd = "cd /d " + quote(srcPath.string()) + " && tar -czf " + quote(destPath.string()) + " .";
+#else
+        // Linux/MacOS 命令
+        cmd = "cd " + quote(srcPath.string()) + " && tar -czf " + quote(destPath.string()) + " .";
+#endif
+
+        std::cout << "Executing command: " << cmd << std::endl;
+
+        // 4. 执行命令
+        int ret = std::system(cmd.c_str());
+        return ret == 0;
+    }
+
+    bool decompress(const std::string &sourceTarGzFile, const std::string &destDir) override
+    {
+        if (!isTarAvailable())
+        {
+            std::cerr << "Error: tar utility is not available on this system." << std::endl;
+            std::cerr << "Please install tar utility and try again." << std::endl;
+            return false;
+        }
+        fs::path srcPath(sourceTarGzFile);
+        fs::path destPath(destDir);
+
+        // 1. 检查源文件
+        if (!fs::exists(srcPath))
+        {
+            std::cerr << "Error: Compressed file does not exist: " << sourceTarGzFile << std::endl;
+            return false;
+        }
+
+        // 2. 确保目标目录存在，不存在则创建
+        if (!fs::exists(destPath))
+        {
             try
             {
-                fs::path entry_path = entry.path();
-                // 计算归档内的相对路径
-                fs::path rel_path = fs::relative(entry_path, src_path);
-
-                // 设置归档条目属性
-                archive_entry_set_pathname(ae, rel_path.string().c_str());
-                archive_entry_set_size(ae, entry.is_regular_file() ? fs::file_size(entry_path) : 0);
-                archive_entry_set_filetype(ae, entry.is_directory() ? AE_IFDIR : AE_IFREG);
-                archive_entry_set_perm(ae, 0644); // 默认权限（可根据需求调整）
-
-                // 写入条目头
-                check_archive_error(
-                    archive_write_header(a, ae),
-                    a,
-                    "Failed to write header for: " + rel_path.string());
-
-                // 若为文件，写入文件内容
-                if (entry.is_regular_file())
-                {
-                    std::FILE *f = std::fopen(entry_path.string().c_str(), "rb");
-                    if (!f)
-                    {
-                        throw std::runtime_error("Failed to open file: " + entry_path.string());
-                    }
-
-                    char buf[8192];
-                    size_t bytes_read;
-                    while ((bytes_read = std::fread(buf, 1, sizeof(buf), f)) > 0)
-                    {
-                        check_archive_error(
-                            archive_write_data(a, buf, bytes_read),
-                            a,
-                            "Failed to write data for: " + rel_path.string());
-                    }
-                    std::fclose(f);
-                }
-
-                archive_entry_free(ae);
+                fs::create_directories(destPath);
             }
-            catch (...)
+            catch (const std::exception &e)
             {
-                archive_entry_free(ae);
-                throw;
+                std::cerr << "Failed to create destination directory: " << e.what() << std::endl;
+                return false;
             }
         }
 
-        // 完成写入并清理
-        check_archive_error(archive_write_close(a), a, "Failed to close archive");
-        archive_write_free(a);
-        std::cout << "Compressed successfully: " << dest_targz << std::endl;
-    }
-    catch (...)
-    {
-        archive_write_free(a);
-        throw;
-    }
-}
+        srcPath = fs::absolute(srcPath);
+        destPath = fs::absolute(destPath);
 
-/**
- * 解压缩 tar.gz 文件到指定目录
- * @param src_targz 待解压的 tar.gz 文件路径
- * @param dest_dir 解压目标目录（不存在则自动创建）
- */
-inline void decompress_targz(const std::string &src_targz, const std::string &dest_dir)
+        // 3. 构建命令
+        // -x: 解压, -z: gzip, -f: 文件, -C: 切换目录
+        std::string cmd;
+
+        // 注意：Windows 的 tar 也支持 -C 参数
+        cmd = "tar -xzf " + quote(srcPath.string()) + " -C " + quote(destPath.string());
+
+        std::cout << "Executing command: " << cmd << std::endl;
+
+        // 4. 执行
+        int ret = std::system(cmd.c_str());
+        return ret == 0;
+    }
+};
+
+// 3. 上下文类
+class Archiver
 {
-    // 检查源文件是否存在
-    if (!fs::is_regular_file(src_targz))
+private:
+    std::unique_ptr<ICompressionStrategy> strategy;
+
+public:
+    // 构造函数注入策略，默认为系统命令策略
+    Archiver(std::unique_ptr<ICompressionStrategy> strategy = nullptr)
     {
-        throw std::invalid_argument("Source tar.gz file does not exist: " + src_targz);
-    }
-
-    // 创建目标目录（递归创建）
-    fs::create_directories(dest_dir);
-
-    struct archive *a = archive_read_new();
-    if (!a)
-    {
-        throw std::runtime_error("Failed to create archive reader");
-    }
-
-    try
-    {
-        // 启用 gzip 解压 + tar 格式解析
-        check_archive_error(
-            archive_read_support_filter_gzip(a),
-            a,
-            "Failed to support gzip filter");
-        check_archive_error(
-            archive_read_support_format_tar(a),
-            a,
-            "Failed to support tar format");
-        // 打开输入文件
-        check_archive_error(
-            archive_read_open_filename(a, src_targz.c_str(), 8192),
-            a,
-            "Failed to open input file: " + src_targz);
-
-        struct archive_entry *ae;
-        // 遍历归档中的每个条目
-        while (archive_read_next_header(a, &ae) == ARCHIVE_OK)
+        if (strategy)
         {
-            // 拼接目标路径
-            fs::path dest_path = fs::path(dest_dir) / archive_entry_pathname(ae);
-
-            // 若为目录，创建目录
-            if (archive_entry_filetype(ae) == AE_IFDIR)
-            {
-                fs::create_directories(dest_path);
-                continue;
-            }
-
-            // 若为文件，写入文件内容
-            std::FILE *f = std::fopen(dest_path.string().c_str(), "wb");
-            if (!f)
-            {
-                throw std::runtime_error("Failed to create file: " + dest_path.string());
-            }
-
-            try
-            {
-                const void *buf;
-                size_t size;
-                int64_t offset;
-                // 读取条目数据并写入文件
-                while (archive_read_data_block(a, &buf, &size, &offset) == ARCHIVE_OK)
-                {
-                    std::fwrite(buf, 1, size, f);
-                }
-                std::fclose(f);
-            }
-            catch (...)
-            {
-                std::fclose(f);
-                throw;
-            }
-
-            // 设置文件权限（可选）
-            fs::permissions(dest_path, fs::perms::owner_read | fs::perms::owner_write);
+            this->strategy = std::move(strategy);
         }
+        else
+        {
+            // 默认策略
+            this->strategy = std::make_unique<SystemTarGzStrategy>();
+        }
+    }
 
-        // 完成读取并清理
-        check_archive_error(archive_read_close(a), a, "Failed to close archive");
-        archive_read_free(a);
-        std::cout << "Decompressed successfully to: " << dest_dir << std::endl;
-    }
-    catch (...)
+    void setStrategy(std::unique_ptr<ICompressionStrategy> newStrategy)
     {
-        archive_read_free(a);
-        throw;
+        this->strategy = std::move(newStrategy);
     }
-}
+
+    bool compressDir(const std::string &src, const std::string &dest)
+    {
+        if (!strategy)
+            return false;
+        std::cout << "[Archiver] Starting compression..." << std::endl;
+        return strategy->compress(src, dest);
+    }
+
+    bool extractTo(const std::string &src, const std::string &dest)
+    {
+        if (!strategy)
+            return false;
+        std::cout << "[Archiver] Starting extraction..." << std::endl;
+        return strategy->decompress(src, dest);
+    }
+};
+
 #endif

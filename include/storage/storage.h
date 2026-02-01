@@ -98,14 +98,14 @@ public:
     {
         if (instance_ == nullptr)
         {
-            instance_ = std::make_unique<Storage>(data_dir, wal_dir,
-                                                  read_only, enable_wal,
-                                                  wal_flush_interval,
-                                                  wal_flush_strategy,
-                                                  memtable_size, skiplist_max_level,
-                                                  skiplist_probability,
-                                                  sstable_merge_strategy, sstable_merge_threshold,
-                                                  sstable_zero_level_size, sstable_level_size_ratio);
+            instance_ = std::unique_ptr<Storage>(new Storage(data_dir, wal_dir,
+                                                          read_only, enable_wal,
+                                                          wal_flush_interval,
+                                                          wal_flush_strategy,
+                                                          memtable_size, skiplist_max_level,
+                                                          skiplist_probability,
+                                                          sstable_merge_strategy, sstable_merge_threshold,
+                                                          sstable_zero_level_size, sstable_level_size_ratio));
         }
     }
 

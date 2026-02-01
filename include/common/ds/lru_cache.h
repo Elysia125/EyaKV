@@ -11,7 +11,7 @@ template <typename T>
 class SerializeCommand
 {
 public:
-    virtual std::string serialize(T &value) = 0;
+    virtual std::string serialize(const T &value) = 0;
     virtual T deserialize(const char *data, size_t &offset) = 0;
     virtual ~SerializeCommand() = default;
 };

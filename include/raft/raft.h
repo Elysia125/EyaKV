@@ -19,6 +19,7 @@
 #include "common/socket/cs/server.h"
 #include "network/protocol/protocol.h"
 #include "common/ds/lru_cache.h"
+#include "common/concurrency/threadpool.h"
 //  Raft角色枚举
 enum RaftRole
 {
@@ -31,7 +32,7 @@ enum RaftRole
 struct PersistentState
 {
     std::atomic<uint32_t> current_term_{0};       // 当前任期
-    std::string voted_for_ = "";                  // 本任期投票给的节点地址字符串
+    Address voted_for_;                           // 本任期投票给的节点地址字符串
     ClusterMetadata cluster_metadata_;            // 集群配置
     std::atomic<uint32_t> log_snapshot_index_{0}; // 最后快照索引 (用于日志清理)
     std::atomic<uint32_t> commit_index_{0};       // 已提交的最高日志索引
@@ -68,7 +69,7 @@ struct PersistentState
         uint32_t last_applied = last_applied_.load(std::memory_order_relaxed);
         std::string data;
         data.append(reinterpret_cast<const char *>(&current_term), sizeof(current_term));
-        data.append(Serializer::serialize(voted_for_));
+        data.append(voted_for_.serialize());
         data.append(cluster_metadata_.serialize());
         data.append(reinterpret_cast<const char *>(&log_snapshot_index), sizeof(log_snapshot_index));
         data.append(reinterpret_cast<const char *>(&commit_index), sizeof(commit_index));
@@ -83,7 +84,7 @@ struct PersistentState
         uint32_t current_term, log_snapshot_index, commit_index, last_applied;
         std::memcpy(&current_term, data + offset, sizeof(current_term));
         offset += sizeof(current_term);
-        state.voted_for_ = Serializer::deserializeString(data, offset);
+        state.voted_for_ = Address::deserialize(data, offset);
         state.cluster_metadata_ = ClusterMetadata::deserialize(data, offset);
         std::memcpy(&log_snapshot_index, data + offset, sizeof(log_snapshot_index));
         offset += sizeof(log_snapshot_index);
@@ -276,7 +277,10 @@ private:
 
     // 命令缓存结果
     LRUCache<std::string, Response> result_cache_{10000};
+    int granted_votes_ = 0; // 当前收到的赞成票数
 
+    // 线程池
+    std::unique_ptr<ThreadPool> thread_pool_;
     // 辅助方法：通知等待的请求
     void notify_request_applied(uint32_t index, const Response &response);
 
@@ -299,7 +303,7 @@ private:
     bool handle_append_entries(const RaftMessage &msg);                                // 处理AppendEntries请求
     bool handle_request_vote(const RaftMessage &msg, const socket_t &sock);            // 处理RequestVote请求
     void handle_append_entries_response(const RaftMessage &msg, const socket_t &sock); // 处理AppendEntries响应
-    void handle_request_vote_response(const RaftMessage &msg, const socket_t &sock);   // 处理RequestVote响应
+    void handle_request_vote_response(const RaftMessage &msg);                         // 处理RequestVote响应
     void handle_query_leader(const RaftMessage &msg, const socket_t &client_sock);
     void handle_query_leader_response(const RaftMessage &msg);
     void handle_join_cluster(const RaftMessage &msg, const socket_t &client_sock); // 处理新节点加入请求
@@ -376,11 +380,6 @@ private:
 
     // 连接到主节点
     bool connect_to_leader(const Address &leader_addr);
-    // 发送RequestVote请求
-    void send_request_vote();
-
-    // 应用已提交的日志到状态机
-    void apply_committed_entries();
 
     // 执行命令
     Response execute_command(const std::string &cmd);
@@ -417,7 +416,7 @@ public:
         {
             throw std::runtime_error("RaftNode already initialized");
         }
-        instance_ = std::make_unique<RaftNode>(root_dir, ip, port, max_follower_count);
+        instance_ = std::unique_ptr<RaftNode>(new RaftNode(root_dir, ip, port, trusted_nodes, max_follower_count));
     }
 };
 

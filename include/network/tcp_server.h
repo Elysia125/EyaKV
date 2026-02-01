@@ -110,20 +110,6 @@ public:
     void start();
 
     /**
-     * @brief 进入事件循环
-     *
-     * 这是服务器的主循环，持续监听和处理网络事件：
-     * - Linux：使用 epoll_wait
-     * - macOS：使用 kevent
-     * - Windows：使用 select
-     *
-     * 循环在 is_running_ 为 true 时持续运行。
-     * 新连接到达时调用 handle_accept()
-     * 有数据可读时调用 handle_client()
-     */
-    void run();
-
-    /**
      * @brief 停止服务器
      *
      * 设置停止标志，优雅关闭服务器：
@@ -138,17 +124,6 @@ private:
     {
         return new Request();
     }
-
-    /**
-     * @brief 设置 socket 为非阻塞模式
-     *
-     * 非阻塞模式下的 socket 操作不会阻塞调用线程，
-     * 如果没有数据可读写，会立即返回错误。
-     * 这对于 IO 复用（epoll/kqueue/select）是必需的。
-     *
-     * @param sock 要设置的 socket 描述符
-     */
-    void set_non_blocking(socket_t sock);
 
     /**
      * @brief 处理新连接

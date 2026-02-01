@@ -7,5 +7,5 @@ macro(add_eyakv_test test_name source_file)
     gtest_discover_tests(${test_name})
 endmacro()
 
-
-gtest_discover_tests(test_raft)
+# 添加测试示例:
+# add_eyakv_test(test_raft test_raft.cpp)

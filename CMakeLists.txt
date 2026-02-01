@@ -5,6 +5,11 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# 修改动态库前缀（Windows 下去掉 lib 前缀）
+if(WIN32)
+    set(CMAKE_SHARED_LIBRARY_PREFIX "")
+endif()
+
 # Setting build output directories
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
@@ -51,9 +56,7 @@ if (NOT glog_FOUND)
     FetchContent_MakeAvailable(glog)
 endif()
 
-# ------------------------------------------------------------------------------
-# Subdirectories
-# ------------------------------------------------------------------------------
+# 子目录
 add_subdirectory(src)
 add_subdirectory(apps)
 add_subdirectory(tests)

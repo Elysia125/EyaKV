@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <cstring>
 #include <chrono>
+#include <iostream>
+#include <functional>
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>

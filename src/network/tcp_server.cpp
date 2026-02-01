@@ -5,7 +5,6 @@
 #include "common/util/string_utils.h"
 #include "common/types/operation_type.h"
 #include "raft/raft.h"
-#define HEADER_SIZE Header::PROTOCOL_HEADER_SIZE
 #define HEADER_SIZE_LIMIT 1024 * 1024
 #ifdef __linux__
 #define INITIAL_BUFFER_SIZE 8096
@@ -439,7 +438,7 @@ void EyaServer::handle_request(ProtocolBody *body, socket_t client_sock)
                     exit(1);
                 }
                 static RaftNode*raft_node=RaftNode::get_instance();
-                response=raft_node->submit_command(request->command);
+                response=raft_node->submit_command(request->request_id,request->command);
             }
         }
         else

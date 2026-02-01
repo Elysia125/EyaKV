@@ -819,7 +819,7 @@ Response Storage::execute(uint8_t type, std::vector<std::string> &args)
     }
 }
 
-bool Storage::create_checkpoint(std::string &output_tar_path, const std::string &extra_meta_data = "")
+bool Storage::create_checkpoint(std::string &output_tar_path, const std::string &extra_meta_data)
 {
     LOG_INFO("Starting checkpoint creation");
     bool was_running = background_flush_thread_running_;
@@ -891,7 +891,8 @@ bool Storage::create_checkpoint(std::string &output_tar_path, const std::string 
         }
         // 4. 压缩目录为tar
         output_tar_path = PathUtils::combine_path(snapshot_dir, "checkpoint_" + std::to_string(timestamp) + ".tar.gz");
-        compress_dir_to_targz(dest_dir.string(), output_tar_path);
+        Archiver archiver;
+        archiver.compressDir(dest_dir.string(), output_tar_path);
         // 5. 删除临时目录
         fs::remove_all(dest_dir);
         LOG_INFO("Checkpoint created successfully at: %s", output_tar_path.c_str());
@@ -951,7 +952,8 @@ bool Storage::restore_from_checkpoint(const std::string &snapshot_tar_path, std:
         fs::create_directories(data_dir_);
 
         // 5. 将快照文件解压到数据目录
-        decompress_targz(snapshot_tar_path, data_dir_);
+        Archiver archiver;
+        archiver.extractTo(snapshot_tar_path, data_dir_);
         // 6. 重新初始化sstable_manager
         sstable_manager_ = std::make_unique<SSTableManager>(sstable_dir_,
                                                             sstable_merge_strategy_,
