@@ -2,7 +2,7 @@
 #include "logger/logger.h"
 #include <iostream>
 #include <cstring>
-#include "common/util/utils.h"
+#include "common/util/string_utils.h"
 #include "common/types/operation_type.h"
 #include "raft/raft.h"
 #define HEADER_SIZE Header::PROTOCOL_HEADER_SIZE
@@ -37,7 +37,7 @@ EyaServer::EyaServer(const std::string &ip,
 #endif
     if (!password_.empty())
     {
-        auth_key_ = generate_general_key(32);
+        auth_key_ = generate_random_string(32);
     }
 }
 

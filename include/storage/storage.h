@@ -162,7 +162,7 @@ public:
      * @param ssnapshot_tar_path 快照文件路径(输出参数)
      * @return 成功返回 true
      */
-    bool create_checkpoint(std::string &output_tar_path);
+    bool create_checkpoint(std::string &output_tar_path, const std::string &extra_meta_data = "");
 
     /**
      * @brief 从快照恢复数据。
@@ -173,7 +173,7 @@ public:
      * @param ssnapshot_tar_path 快照文件路径
      * @return 成功返回 true
      */
-    bool restore_from_checkpoint(const std::string &snapshot_tar_path);
+    bool restore_from_checkpoint(const std::string &snapshot_tar_path, std::string &out_extra_meta_data);
 
     /**
      * @brief 删除快照。

@@ -45,15 +45,16 @@ enum RaftMessageType
 // 日志条目结构体（根据设计文档更新）
 struct LogEntry
 {
-    uint32_t term;         // 日志所属任期
-    uint32_t index;        // 日志索引（全局唯一）
-    uint32_t command_type; // 命令类型 (预留字段，用于区分普通命令、配置变更等)
-    std::string cmd;       // 客户端命令
-    uint64_t timestamp;    // 时间戳 (用于调试和超时检测)
+    uint32_t term;          // 日志所属任期
+    uint32_t index;         // 日志索引（全局唯一）
+    uint32_t command_type;  // 命令类型 (预留字段，用于区分普通命令、配置变更等)
+    std::string cmd;        // 客户端命令
+    uint64_t timestamp;     // 时间戳 (用于调试和超时检测)
+    std::string request_id; // 请求ID (用于幂等性)
 
     LogEntry() : term(0), index(0), command_type(0), timestamp(0) {}
-    LogEntry(uint32_t t, uint32_t i, const std::string &c, uint64_t ts = 0, uint32_t cmd_type = 0)
-        : term(t), index(i), command_type(cmd_type), cmd(c), timestamp(ts) {}
+    LogEntry(uint32_t t, uint32_t i, const std::string &c, const std::string &rid = "", uint64_t ts = 0, uint32_t cmd_type = 0)
+        : term(t), index(i), command_type(cmd_type), cmd(c), timestamp(ts), request_id(rid) {}
 
     // 序列化
     std::string serialize() const
@@ -70,6 +71,7 @@ struct LogEntry
         result.append(reinterpret_cast<const char *>(&net_timestamp), sizeof(net_timestamp));
         result.append(reinterpret_cast<const char *>(&net_timestamp_low), sizeof(net_timestamp_low));
         result.append(Serializer::serialize(cmd));
+        result.append(Serializer::serialize(request_id));
         return result;
     }
 
@@ -94,12 +96,14 @@ struct LogEntry
         entry.timestamp = (static_cast<uint64_t>(ntohl(net_timestamp)) << 32) | ntohl(net_timestamp_low);
         // 反序列化cmd字符串
         entry.cmd = Serializer::deserializeString(data, offset);
+        // 反序列化request_id
+        entry.request_id = Serializer::deserializeString(data, offset);
         return entry;
     }
 
     bool operator==(const LogEntry &other) const
     {
-        return term == other.term && index == other.index && cmd == other.cmd;
+        return term == other.term && index == other.index && cmd == other.cmd&& request_id == other.request_id;
     }
 };
 
@@ -503,30 +507,34 @@ struct JoinClusterResponseData
 // 快照安装消息
 struct SnapshotInstallData
 {
-    std::string snapshot_data; // 本次传输的数据块
-    uint32_t offset;           // 文件偏移量
-    bool done;                 // 是否是当前文件快照的最后一块
-
-    SnapshotInstallData() : offset(0), done(false) {}
+    std::string snapshot_data;    // 本次传输的数据块
+    uint32_t offset;              // 文件偏移量
+    bool done;                    // 是否是当前文件快照的最后一块
+    uint32_t last_included_index; // 快照包含的最后日志索引
+    uint32_t last_included_term;  // 快照包含的最后日志任期
+    SnapshotInstallData() : offset(0), done(false), last_included_index(0), last_included_term(0) {}
 
     std::string serialize() const
     {
         std::string result;
         uint32_t net_offset = htonl(offset);
+        uint32_t net_last_included_index = htonl(last_included_index);
+        uint32_t net_last_included_term = htonl(last_included_term);
         uint8_t net_done = static_cast<uint8_t>(done ? 1 : 0);
 
         result.append(Serializer::serialize(snapshot_data));
 
         result.append(reinterpret_cast<const char *>(&net_offset), sizeof(net_offset));
         result.append(reinterpret_cast<const char *>(&net_done), sizeof(net_done));
-
+        result.append(reinterpret_cast<const char *>(&net_last_included_index), sizeof(net_last_included_index));
+        result.append(reinterpret_cast<const char *>(&net_last_included_term), sizeof(net_last_included_term));
         return result;
     }
 
     static SnapshotInstallData deserialize(const char *data, size_t &offset)
     {
         SnapshotInstallData snapshot;
-        uint32_t net_offset;
+        uint32_t net_offset, net_last_included_index, net_last_included_term;
         uint8_t net_done;
         snapshot.snapshot_data = Serializer::deserializeString(data, offset);
         std::memcpy(&net_offset, data + offset, sizeof(net_offset));
@@ -536,6 +544,13 @@ struct SnapshotInstallData
         std::memcpy(&net_done, data + offset, sizeof(net_done));
         offset += sizeof(net_done);
         snapshot.done = (net_done != 0);
+        std::memcpy(&net_last_included_index, data + offset, sizeof(net_last_included_index));
+        offset += sizeof(net_last_included_index);
+        snapshot.last_included_index = ntohl(net_last_included_index);
+
+        std::memcpy(&net_last_included_term, data + offset, sizeof(net_last_included_term));
+        offset += sizeof(net_last_included_term);
+        snapshot.last_included_term = ntohl(net_last_included_term);
 
         return snapshot;
     }
@@ -713,7 +728,7 @@ struct RaftMessage : public ProtocolBody
         return msg;
     }
 
-    static RaftMessage snapshot_install(const std::string &data, uint32_t offset, bool done)
+    static RaftMessage snapshot_install(const std::string &data, uint32_t offset, bool done, uint32_t last_include_index, uint32_t last_include_term)
     {
         RaftMessage msg;
         msg.type = RaftMessageType::SNAPSHOT_INSTALL;
@@ -721,6 +736,8 @@ struct RaftMessage : public ProtocolBody
         msg.snapshot_install_data->snapshot_data = data;
         msg.snapshot_install_data->offset = offset;
         msg.snapshot_install_data->done = done;
+        msg.snapshot_install_data->last_included_index = last_include_index;
+        msg.snapshot_install_data->last_included_term = last_include_term;
         return msg;
     }
 

@@ -464,6 +464,17 @@ bool RaftLogArray::recover()
         return true;
     }
 
+    // 根据加载的第一条日志恢复 base_index_
+    if (!entries_.empty())
+    {
+        base_index_ = entries_.front().index;
+        LOG_INFO("Recovered base_index_: %u", base_index_);
+    }
+    else
+    {
+        base_index_ = 1;
+    }
+
     LOG_INFO("Recovered %zu log entries (index: %u-%u)",
              entries_.size(), base_index_, get_last_index());
 
@@ -687,4 +698,37 @@ uint32_t RaftLogArray::get_term(uint32_t index) const
 
     size_t array_index = index - base_index_;
     return entries_[array_index].term;
+}
+
+// 清空所有日志，并将 base_index 设置为 new_start_index
+// 通常用于 InstallSnapshot 之后
+bool RaftLogArray::reset(uint32_t new_start_index)
+{
+    std::unique_lock<std::shared_mutex> lock(mutex_);
+    
+    LOG_INFO("Resetting LogArray to start from index %u", new_start_index);
+
+    // 1. 清空内存
+    entries_.clear();
+    index_offsets_.clear();
+    base_index_ = new_start_index;
+
+    // 2. 关闭文件
+    if (wal_file_) fclose(wal_file_);
+    if (index_file_) fclose(index_file_);
+
+    // 3. 删除旧文件 (直接删除再重建是最高效的清空方式)
+    remove_file(wal_path_);
+    remove_file(index_path_);
+
+    // 4. 重新打开文件 (wb+ 模式会创建新文件)
+    wal_file_ = fopen(wal_path_.c_str(), "wb+");
+    index_file_ = fopen(index_path_.c_str(), "wb+");
+
+    if (!wal_file_ || !index_file_) {
+        LOG_ERROR("Failed to recreate log files during reset");
+        return false;
+    }
+
+    return true;
 }

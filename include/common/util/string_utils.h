@@ -9,12 +9,12 @@ inline size_t calculateStringSize(const std::string &str)
     return str.size() + sizeof(std::string);
 }
 
-inline std::string generate_general_key(size_t key_length)
+inline std::string generate_random_string(size_t length)
 {
     // 校验输入合法性
-    if (key_length == 0)
+    if (length == 0)
     {
-        throw std::invalid_argument("密钥长度不能为0");
+        throw std::invalid_argument("length must be greater than 0");
     }
 
     // 定义密钥字符集：大小写字母 + 数字 + 常用符号
@@ -30,10 +30,10 @@ inline std::string generate_general_key(size_t key_length)
     std::uniform_int_distribution<> distr(0, charset.size() - 1); // 均匀分布
 
     std::string key;
-    key.reserve(key_length); // 预分配内存，提升效率
+    key.reserve(length); // 预分配内存，提升效率
 
     // 循环生成密钥字符
-    for (size_t i = 0; i < key_length; ++i)
+    for (size_t i = 0; i < length; ++i)
     {
         key += charset[distr(gen)];
     }

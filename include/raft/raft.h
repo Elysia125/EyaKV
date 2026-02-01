@@ -18,7 +18,7 @@
 #include "common/socket/cs/client.h"
 #include "common/socket/cs/server.h"
 #include "network/protocol/protocol.h"
-
+#include "common/ds/lru_cache.h"
 //  Raft角色枚举
 enum RaftRole
 {
@@ -174,6 +174,8 @@ public:
     // 同步元数据到磁盘
     void sync_metadata();
 
+    bool reset(uint32_t new_start_index);
+
 private:
     // 内部辅助方法
     bool write_entry_to_wal(const LogEntry &entry, uint64_t &offset); // 写入 WAL
@@ -265,11 +267,15 @@ private:
     {
         uint64_t offset = 0;
         bool is_sending = false;
-        uint32_t log_last_applied = 0;
         FILE *fp = nullptr;
-        std::string snapshot_path;
+        std::string snapshot_path = "";
+        uint32_t last_included_index = 0;
+        uint32_t last_included_term = 0;
     };
     std::unordered_map<socket_t, SnapshotTransferState> snapshot_state_;
+
+    // 命令缓存结果
+    LRUCache<std::string, Response> result_cache_{10000};
 
     // 辅助方法：通知等待的请求
     void notify_request_applied(uint32_t index, const Response &response);
@@ -391,7 +397,7 @@ public:
     ~RaftNode();
 
     // 提交命令
-    Response submit_command(const std::string &cmd);
+    Response submit_command(const std::string &request_id, const std::string &cmd);
 
     // 获取当前角色
     RaftRole get_role() const { return role_.load(); }

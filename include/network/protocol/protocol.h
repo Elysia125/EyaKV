@@ -26,6 +26,7 @@ struct Response : public ProtocolBody
     int code_;
     ResponseData data_;
     std::string error_msg_;
+    std::string request_id_;
     Response(int code, ResponseData data, const std::string &error_msg)
         : code_(code), data_(data), error_msg_(error_msg) {}
     Response() : code_(ReturnCode::ERROR), data_(std::monostate()), error_msg_("") {}
@@ -63,6 +64,7 @@ struct Response : public ProtocolBody
     std::string serialize() const
     {
         std::string es;
+        es.append(Serializer::serialize(request_id_));
         // Serialize code
         int code = htonl(code_);
         es.append(reinterpret_cast<const char *>(&code), sizeof(code));
@@ -96,6 +98,7 @@ struct Response : public ProtocolBody
     }
     void deserialize(const char *data, size_t &offset)
     {
+        this->request_id_ = Serializer::deserializeString(data, offset);
         int code;
         std::memcpy(&code, data + offset, sizeof(code));
         offset += sizeof(code);
@@ -158,6 +161,7 @@ struct Response : public ProtocolBody
     std::string to_string() const
     {
         std::stringstream ss;
+        ss << request_id_ << ":";
         if (code_ == 1)
         {
             if (!std::holds_alternative<std::monostate>(data_))
@@ -224,23 +228,25 @@ enum RequestType
 };
 struct Request : public ProtocolBody
 {
+    std::string request_id;
     RequestType type;
     std::string command;
     std::string auth_key;
-    Request() : type(RequestType::NONE), command(""), auth_key("") {}
-    Request(RequestType t, const std::string &cmd, const std::string key = "") : type(t), command(cmd), auth_key(key) {}
-    static Request auth(const std::string &password)
+    Request() : type(RequestType::NONE) {}
+    Request(const std::string &request_id, RequestType t, const std::string &cmd, const std::string &key = "") : request_id(request_id), type(t), command(cmd), auth_key(key) {}
+    static Request auth(const std::string &request_id, const std::string &password)
     {
-        return Request(RequestType::AUTH, password);
+        return Request(request_id, RequestType::AUTH, password);
     }
-    static Request createCommand(const std::string &cmd, const std::string &key)
+    static Request createCommand(const std::string &request_id, const std::string &cmd, const std::string &key)
     {
-        return Request(RequestType::COMMAND, cmd, key);
+        return Request(request_id, RequestType::COMMAND, cmd, key);
     }
     std::string serialize() const
     {
         std::string s;
         uint8_t request_type = static_cast<uint8_t>(this->type);
+        s.append(Serializer::serialize(request_id));
         s.append(reinterpret_cast<const char *>(&request_type), sizeof(request_type));
         s.append(Serializer::serialize(command));
         s.append(Serializer::serialize(auth_key));
@@ -248,34 +254,26 @@ struct Request : public ProtocolBody
     }
     void deserialize(const char *data, size_t &offset)
     {
+        this->request_id = Serializer::deserializeString(data, offset);
         uint8_t type;
         std::memcpy(&type, data + offset, sizeof(type));
         offset += sizeof(type);
-        std::string command = Serializer::deserializeString(data, offset);
-        std::string auth_key = Serializer::deserializeString(data, offset);
+        this->command = Serializer::deserializeString(data, offset);
+        this->auth_key = Serializer::deserializeString(data, offset);
         this->type = static_cast<RequestType>(type);
-        this->command = command;
-        this->auth_key = auth_key;
     }
     std::string to_string() const
     {
         std::stringstream ss;
-        ss << "RequestType: " << type << ", Command: " << command << ", AuthKey: " << auth_key;
+        ss << "RequestId: " << request_id << ", RequestType: " << type << ", Command: " << command << ", AuthKey: " << auth_key;
         return ss.str();
     }
 };
 
 inline std::string serialize_request(RequestType t, const std::string &cmd, const std::string &key = "")
 {
-    Request req(t, cmd, key);
+    Request req(generate_random_string(16), t, cmd, key);
     std::string body = req.serialize();
-    ProtocolHeader header(static_cast<uint32_t>(body.size()));
-    return header.serialize() + body;
-}
-
-inline std::string serialize_response(const Response &resp)
-{
-    std::string body = resp.serialize();
     ProtocolHeader header(static_cast<uint32_t>(body.size()));
     return header.serialize() + body;
 }

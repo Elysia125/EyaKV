@@ -18,6 +18,33 @@
 std::unique_ptr<RaftNode> RaftNode::instance_ = nullptr;
 bool RaftNode::is_init_ = false;
 
+class StringSerializeCommand : public SerializeCommand<std::string>
+{
+public:
+    std::string serialize(std::string &value)
+    {
+        return Serializer::serialize(value);
+    }
+    std::string deserialize(const char *data, size_t &offset)
+    {
+        return Serializer::deserializeString(data, offset);
+    }
+};
+
+class ResponseSerializeCommand : public SerializeCommand<Response>
+{
+    std::string serialize(Response &value)
+    {
+        return value.serialize();
+    }
+    Response deserialize(const char *data, size_t &offset)
+    {
+        Response response;
+        response.deserialize(data, offset);
+        return response;
+    }
+};
+
 // RaftNode构造函数
 RaftNode::RaftNode(const std::string root_dir, const std::string &ip, const u_short port, const std::unordered_set<std::string> &trusted_nodes, const uint32_t max_follower_count)
     : TCPServer(ip, port, max_follower_count, 0, 0),
@@ -61,6 +88,11 @@ RaftNode::RaftNode(const std::string root_dir, const std::string &ip, const u_sh
     // 4. 启动后台线程
     start_background_threads();
 
+    // 5. 为LRU设置键值序列化器
+    std::shared_ptr<StringSerializeCommand> string_serialize_command = std::make_shared<StringSerializeCommand>();
+    std::shared_ptr<ResponseSerializeCommand> response_serialize_command = std::make_shared<ResponseSerializeCommand>();
+    result_cache_.set_key_serializer(string_serialize_command);
+    result_cache_.set_value_serializer(response_serialize_command);
     is_init_ = true;
     LOG_INFO("RaftNode initialized successfully, role: %d", static_cast<int>(role_.load()));
 }
@@ -872,19 +904,25 @@ void RaftNode::apply_committed_entries()
         LogEntry entry;
         Response result;
 
+        persistent_state_.last_applied_.store(last_applied);
+
         if (log_array_.get(last_applied, entry))
         {
             // 执行实际的业务逻辑
             result = execute_command(entry.cmd);
             LOG_INFO("Applied log index %u, term %u", last_applied, entry.term);
+            // 【新增】如果是写操作且带有 request_id，将结果写入缓存
+            if (!entry.request_id.empty())
+            {
+                // 插入缓存
+                result_cache_.put(entry.request_id, result);
+            }
         }
         else
         {
             LOG_ERROR("Failed to read log at apply index %u", last_applied);
             result = Response::error("log read error");
         }
-
-        persistent_state_.last_applied_.store(last_applied);
 
         // Leader应通知等待的客户端
         if (role_ == RaftRole::Leader)
@@ -1069,7 +1107,7 @@ void RaftNode::handle_join_cluster(const RaftMessage &msg, const socket_t &clien
             match_index_[client_sock] = 0;
 
             // 记录该 Socket 的快照发送状态
-            snapshot_state_[client_sock] = {0, false, persistent_state_.last_applied_}; // offset = 0, is_sending = false
+            snapshot_state_[client_sock] = {0, false}; // offset = 0, is_sending = false
         }
         response.success = true;
         response.cluster_metadata = persistent_state_.cluster_metadata_; // 发送最新集群配置
@@ -1140,7 +1178,7 @@ void RaftNode::send_snapshot_chunk(socket_t sock)
         // 第一次发送，打开文件
         std::string snapshot_path;
         // 生成快照文件
-        if (!storage_->create_checkpoint(snapshot_path))
+        if (!storage_->create_checkpoint(snapshot_path, result_cache_.serialize()))
         {
             LOG_ERROR("Failed to create storage checkpoint");
             return;
@@ -1156,10 +1194,30 @@ void RaftNode::send_snapshot_chunk(socket_t sock)
             LOG_ERROR("Failed to open snapshot file");
             return;
         }
+        // 捕获快照元数据
+        // 因为快照是基于当前状态机生成的，所以它对应的 Log Index 就是 last_applied_
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            state->last_included_index = persistent_state_.last_applied_.load();
+            state->last_included_term = log_array_.get_term(state->last_included_index);
+
+            // 如果日志已经被截断，get_term 可能失败。
+            // 但作为 Leader，生成当前快照时，通常意味着该 Index 的任期记录应该还存在，
+            // 或者我们可以取 current_term (如果刚好是最新)，或者从 persistent_state 记录的 snapshot_index 取。
+            // 这里为了健壮性，如果取不到，暂且取 persistent_state_.current_term_
+            if (state->last_included_term == 0 && state->last_included_index > 0)
+            {
+                LOG_WARN("Could not get term for snapshot index %u, using current term", state->last_included_index);
+                state->last_included_term = persistent_state_.current_term_.load();
+            }
+        }
+
         state->is_sending = true;
         state->offset = 0;
         state->snapshot_path = snapshot_path;
-        LOG_INFO("Started snapshot transfer to %d from file: %s", sock, snapshot_path.c_str());
+
+        LOG_INFO("Started snapshot transfer to %d. File: %s, Index: %u, Term: %u",
+                 sock, snapshot_path.c_str(), state->last_included_index, state->last_included_term);
     }
 
     // 缓冲区大小
@@ -1188,7 +1246,9 @@ void RaftNode::send_snapshot_chunk(socket_t sock)
     RaftMessage msg = RaftMessage::snapshot_install(
         data_chunk,
         state->offset,
-        done);
+        done,
+        state->last_included_index,
+        state->last_included_term);
 
     // 更新 offset 用于下一块
     state->offset += bytes_read;
@@ -1251,14 +1311,29 @@ void RaftNode::handle_install_snapshot(const RaftMessage &msg)
     // 5. 如果 done == true，应用快照
     if (data.done)
     {
-        if (!Storage::is_init())
-        {
-            LOG_ERROR("Storage is not initialized");
-            exit(1);
-        }
         static Storage *storage_ = Storage::get_instance();
-        if (storage_->restore_from_checkpoint(temp_path))
+        std::string result_cache;
+        if (storage_->restore_from_checkpoint(temp_path, result_cache))
         {
+            uint32_t snapshot_index = data.last_included_index;
+            uint32_t snapshot_term = data.last_included_term;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+
+                // 1. 更新持久化状态
+                persistent_state_.log_snapshot_index_ = snapshot_index;
+                persistent_state_.commit_index_ = snapshot_index;
+                persistent_state_.last_applied_ = snapshot_index;
+                save_persistent_state();
+
+                // 2. 重置日志数组，准备接收 snapshot_index + 1 的日志
+                log_array_.reset(snapshot_index + 1);
+            }
+            if (!result_cache.empty())
+            {
+                size_t offset = 0;
+                result_cache_.deserialize(result_cache.data(), offset);
+            }
             LOG_INFO("Restore from checkpoint success: %s", temp_path.c_str());
         }
         else
@@ -1290,8 +1365,8 @@ void RaftNode::handle_snapshot_response(const RaftMessage &msg, socket_t sock)
         else
         {
             // 快照彻底发送完毕，更新 next_index
-            // 假设快照包含了到 snapshot_index 的所有数据
-            next_index_[sock] = snapshot_state.log_last_applied + 1;
+            match_index_[sock] = snapshot_state.last_included_index;
+            next_index_[sock] = snapshot_state.last_included_index + 1;
             snapshot_state_.erase(sock);
             LOG_INFO("Snapshot sync completed for node %d", sock);
         }
@@ -1368,17 +1443,23 @@ Response RaftNode::execute_command(const std::string &cmd)
 }
 
 // 实现两阶段提交 - 提交命令
-Response RaftNode::submit_command(const std::string &cmd)
+Response RaftNode::submit_command(const std::string &request_id, const std::string &cmd)
 {
-    if (!Storage::is_init())
+    // 0. 参数校验
+    if (request_id.empty())
     {
-        LOG_ERROR("Storage is not initialized");
-        exit(1);
+        return Response::error("request_id cannot be empty");
+    }
+    Response response;
+    // 1. 幂等性检查：如果缓存里有，直接返回
+    if (result_cache_.get(request_id, response))
+    {
+        LOG_INFO("Duplicate request_id %s found, returning cached response", request_id.c_str());
+        return response;
     }
     static Storage *storage_ = Storage::get_instance();
     // 解析命令并执行
     std::vector<std::string> command_parts = split_by_spacer(cmd);
-    Response response;
     if (command_parts.empty())
     {
         response = Response::error("Invalid command");
@@ -1413,7 +1494,7 @@ Response RaftNode::submit_command(const std::string &cmd)
             entry.cmd = cmd;
             entry.timestamp = get_current_timestamp();
             entry.command_type = 0;
-
+            entry.request_id = request_id;
             if (!log_array_.append(entry))
             {
                 LOG_ERROR("Failed to append log entry");

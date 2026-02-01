@@ -11,7 +11,7 @@
 #include <memory>
 #include "common/ds/skip_list.h"
 #include "storage/node.h"
-#include "common/util/utils.h"
+#include "common/util/string_utils.h"
 #include "common/ds/bloom_filter.h"
 /**
  * @brief MemTable（内存表）负责在内存中存储 Key-Value 数据。

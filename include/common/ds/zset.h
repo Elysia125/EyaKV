@@ -8,7 +8,7 @@
 #include <mutex>
 #include <atomic>
 #include "common/base/export.h"
-#include "common/util/utils.h"
+#include "common/util/string_utils.h"
 
 inline int compare_double_strings(const std::string &a, const std::string &b)
 {

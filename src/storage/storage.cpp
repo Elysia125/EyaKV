@@ -819,7 +819,7 @@ Response Storage::execute(uint8_t type, std::vector<std::string> &args)
     }
 }
 
-bool Storage::create_checkpoint(std::string &output_tar_path)
+bool Storage::create_checkpoint(std::string &output_tar_path, const std::string &extra_meta_data = "")
 {
     LOG_INFO("Starting checkpoint creation");
     bool was_running = background_flush_thread_running_;
@@ -827,7 +827,7 @@ bool Storage::create_checkpoint(std::string &output_tar_path)
     try
     {
         std::unique_lock<std::shared_mutex> write_lock(write_mutex_);
-        if (snapshot_cache_valid_.load() && !snapshot_cache_path_.empty())
+        if (!extra_meta_data.empty() && snapshot_cache_valid_.load() && !snapshot_cache_path_.empty())
         {
             output_tar_path = snapshot_cache_path_;
             LOG_INFO("Using cached checkpoint at: %s", output_tar_path.c_str());
@@ -852,9 +852,10 @@ bool Storage::create_checkpoint(std::string &output_tar_path)
         force_flush();
         auto timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
         // 3. 复制 SSTable 文件
+        fs::path dest_dir = fs::path(snapshot_dir) / std::to_string(timestamp);
         // SSTable 目录结构通常是 data_dir/sstable
         fs::path src_sst_dir(sstable_dir_);
-        fs::path dest_sst_dir = fs::path(snapshot_dir) / ("sstable_" + std::to_string(timestamp));
+        fs::path dest_sst_dir = dest_dir;
 
         if (!fs::exists(dest_sst_dir))
         {
@@ -881,18 +882,29 @@ bool Storage::create_checkpoint(std::string &output_tar_path)
                 }
             }
         }
+        if (!extra_meta_data.empty())
+        {
+            fs::path meta_path = dest_dir / "extra_meta.bin";
+            std::ofstream out(meta_path);
+            out << extra_meta_data;
+            out.close();
+        }
         // 4. 压缩目录为tar
         output_tar_path = PathUtils::combine_path(snapshot_dir, "checkpoint_" + std::to_string(timestamp) + ".tar.gz");
-        compress_dir_to_targz(dest_sst_dir.string(), output_tar_path);
+        compress_dir_to_targz(dest_dir.string(), output_tar_path);
         // 5. 删除临时目录
-        fs::remove(dest_sst_dir);
+        fs::remove_all(dest_dir);
         LOG_INFO("Checkpoint created successfully at: %s", output_tar_path.c_str());
         // 6. 恢复后台线程
         if (was_running)
         {
             start_background_flush_thread();
         }
-
+        if (!extra_meta_data.empty())
+        {
+            snapshot_cache_path_ = output_tar_path;
+            snapshot_cache_valid_.store(true);
+        }
         return true;
     }
     catch (const std::exception &e)
@@ -907,7 +919,7 @@ bool Storage::create_checkpoint(std::string &output_tar_path)
     }
 }
 
-bool Storage::restore_from_checkpoint(const std::string &snapshot_tar_path)
+bool Storage::restore_from_checkpoint(const std::string &snapshot_tar_path, std::string &out_extra_meta_data)
 {
     LOG_INFO("Starting restore from checkpoint: %s", snapshot_tar_path.c_str());
 
@@ -952,7 +964,16 @@ bool Storage::restore_from_checkpoint(const std::string &snapshot_tar_path)
         {
             start_background_flush_thread();
         }
-
+        // 7. 读取额外元数据（如果有）
+        fs::path meta_path = fs::path(data_dir_) / "extra_meta.bin";
+        if (fs::exists(meta_path))
+        {
+            std::ifstream in(meta_path);
+            std::stringstream buffer;
+            buffer << in.rdbuf();
+            in.close();
+            out_extra_meta_data = buffer.str();
+        }
         LOG_INFO("Restore from checkpoint completed successfully.");
         return true;
     }
