@@ -104,12 +104,12 @@ void EyaKVStarter::initialize_storage()
     size_t memtable_size = static_cast<size_t>(std::stoul(config.get_config(MEMTABLE_SIZE_KEY).value()));
     size_t skiplist_max_level = static_cast<size_t>(std::stoul(config.get_config(SKIPLIST_MAX_LEVEL_KEY).value()));
     double skiplist_probability = std::stod(config.get_config(SKIPLIST_PROBABILITY_KEY).value());
-    unsigned int sstable_merge_threshold = static_cast<unsigned int>(std::stoul(config.get_config(SSTABLE_MERGE_THRESHOLD_KEY).value()));
+    uint32_t sstable_merge_threshold = static_cast<uint32_t>(std::stoul(config.get_config(SSTABLE_MERGE_THRESHOLD_KEY).value()));
     std::optional<std::string> wal_flush_interval_str = config.get_config(WAL_FLUSH_INTERVAL_KEY);
-    std::optional<unsigned int> wal_flush_interval = std::nullopt;
+    std::optional<uint32_t> wal_flush_interval = std::nullopt;
     if (wal_flush_interval_str.has_value())
     {
-        wal_flush_interval = static_cast<unsigned int>(std::stoul(wal_flush_interval_str.value()));
+        wal_flush_interval = static_cast<uint32_t>(std::stoul(wal_flush_interval_str.value()));
     }
     std::optional<std::string> wal_flush_strategy_str = config.get_config(WAL_FLUSH_STRATEGY_KEY);
     WALFlushStrategy wal_flush_strategy = WALFlushStrategy::BACKGROUND_THREAD;
@@ -119,7 +119,7 @@ void EyaKVStarter::initialize_storage()
         wal_flush_strategy = static_cast<WALFlushStrategy>(strategy_int);
     }
     SSTableMergeStrategy sstable_merge_strategy = static_cast<SSTableMergeStrategy>(std::stoi(config.get_config(SSTABLE_MERGE_STRATEGY_KEY).value()));
-    uint32_t sstable_zero_level_size = static_cast<uint32_t>(std::stoul(config.get_config(SSTABLE_ZERO_LEVEL_SIZE_KEY).value()));
+    uint64_t sstable_zero_level_size = static_cast<uint64_t>(std::stoull(config.get_config(SSTABLE_ZERO_LEVEL_SIZE_KEY).value()));
     uint32_t sstable_level_size_ratio = static_cast<uint32_t>(std::stoul(config.get_config(SSTABLE_LEVEL_SIZE_RATIO_KEY).value()));
     Storage::init(data_dir.value(),
                   wal_dir.value(),

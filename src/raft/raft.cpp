@@ -18,7 +18,7 @@
 std::unique_ptr<RaftNode> RaftNode::instance_ = nullptr;
 bool RaftNode::is_init_ = false;
 
-// RaftNode构造函数 - 实现完整的初始化流程
+// RaftNode构造函数
 RaftNode::RaftNode(const std::string root_dir, const std::string &ip, const u_short port, const std::unordered_set<std::string> &trusted_nodes, const uint32_t max_follower_count)
     : TCPServer(ip, port, max_follower_count, 0, 0),
       log_array_(PathUtils::combine_path(root_dir, ".raft")),
@@ -91,7 +91,14 @@ RaftNode::~RaftNode()
         fclose(metadata_file_);
         metadata_file_ = nullptr;
     }
-
+    for (auto &[sock, snapshot_state] : snapshot_state_)
+    {
+        if (snapshot_state.fp != nullptr)
+        {
+            fclose(snapshot_state.fp);
+            snapshot_state.fp = nullptr;
+        }
+    }
     LOG_INFO("RaftNode destroyed");
 }
 
@@ -235,7 +242,7 @@ void RaftNode::handle_join_cluster_response(const RaftMessage &msg)
         LOG_WARN("Join cluster response data is empty");
         return;
     }
-    if (role_ != RaftRole::FOLLOWER)
+    if (role_ != RaftRole::Follower)
     {
         LOG_WARN("Join cluster response received in non-follower role: %d", static_cast<int>(role_));
         return;
@@ -246,13 +253,13 @@ void RaftNode::handle_join_cluster_response(const RaftMessage &msg)
     {
         LOG_INFO("Join cluster success");
         std::lock_guard<std::mutex> lock(mutex_);
-        persistent_state_.current_term = term;
+        persistent_state_.current_term_ = term;
         persistent_state_.cluster_metadata_ = data.cluster_metadata;
         save_persistent_state();
     }
     else
     {
-        LOG_ERROR("Join cluster failed: %s", data.error_msg.c_str());
+        LOG_ERROR("Join cluster failed: %s", data.error_message.c_str());
         // 变为leader
         become_leader();
     }
@@ -531,14 +538,14 @@ bool RaftNode::become_follower(const Address &leader_addr, uint32_t term, bool i
                 follower_client_thread_running_ = true;
                 std::thread receive_thread(&RaftNode::follower_client_loop, this);
                 receive_thread.detach();
-                // TODO：处理接收到的消息
+                // 处理接收到的消息
                 handle_leader_message(*response_msg);
                 delete msg;
                 return true;
             }
         }
+        delete msg;
     }
-    delete msg;
     role_ = RaftRole::Leader;
     return false;
 }
@@ -1120,6 +1127,7 @@ void RaftNode::trigger_log_sync(socket_t sock)
 // 发送快照块
 void RaftNode::send_snapshot_chunk(socket_t sock)
 {
+    static Storage *storage_ = Storage::get_instance();
     // 注意：这里需要更精细的锁控制，避免长时间持有 mutex_ 读取文件
     SnapshotTransferState *state = nullptr;
     {
@@ -1132,15 +1140,14 @@ void RaftNode::send_snapshot_chunk(socket_t sock)
         // 第一次发送，打开文件
         std::string snapshot_path;
         // 生成快照文件
-        if (!Storage::is_init())
-        {
-            LOG_ERROR("Storage is not initialized");
-            exit(1);
-        }
-        static Storage *storage_ = Storage::get_instance();
         if (!storage_->create_checkpoint(snapshot_path))
         {
             LOG_ERROR("Failed to create storage checkpoint");
+            return;
+        }
+        if (snapshot_path.empty())
+        {
+            LOG_ERROR("Snapshot path is empty");
             return;
         }
         state->fp = fopen(snapshot_path.c_str(), "rb");
@@ -1151,6 +1158,8 @@ void RaftNode::send_snapshot_chunk(socket_t sock)
         }
         state->is_sending = true;
         state->offset = 0;
+        state->snapshot_path = snapshot_path;
+        LOG_INFO("Started snapshot transfer to %d from file: %s", sock, snapshot_path.c_str());
     }
 
     // 缓冲区大小
@@ -1169,6 +1178,8 @@ void RaftNode::send_snapshot_chunk(socket_t sock)
         fclose(state->fp);
         state->fp = nullptr;
         state->is_sending = false; // 发送完毕
+        // 删除快照文件
+        storage_->remove_snapshot(state->snapshot_path);
     }
 
     // 构造 InstallSnapshot 消息
@@ -1194,7 +1205,7 @@ void RaftNode::handle_install_snapshot(const RaftMessage &msg)
     // 1. 定义临时文件路径
     std::string temp_path = PathUtils::combine_path(root_dir_, "snapshot.tar.gz");
 
-    // 2. 核心优化：判断offset是否小于文件大小，满足则直接发送响应返回
+    // 2. 判断offset是否小于文件大小，满足则直接发送响应返回
     uint64_t file_size = get_file_size(temp_path);
     if (data.offset < file_size)
     {
@@ -1254,7 +1265,7 @@ void RaftNode::handle_install_snapshot(const RaftMessage &msg)
         {
             LOG_ERROR("Failed to restore from checkpoint: %s", temp_path.c_str());
         }
-        // 无需手动fclose(fp)！智能指针会自动释放，避免原代码的重复关闭问题
+        // 无需手动fclose(fp)！
     }
 }
 
@@ -1281,11 +1292,6 @@ void RaftNode::handle_snapshot_response(const RaftMessage &msg, socket_t sock)
             // 快照彻底发送完毕，更新 next_index
             // 假设快照包含了到 snapshot_index 的所有数据
             next_index_[sock] = snapshot_state.log_last_applied + 1;
-            if (snapshot_state.fp != nullptr)
-            {
-                fclose(snapshot_state.fp);
-                snapshot_state.fp = nullptr;
-            }
             snapshot_state_.erase(sock);
             LOG_INFO("Snapshot sync completed for node %d", sock);
         }

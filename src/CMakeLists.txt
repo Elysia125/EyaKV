@@ -38,26 +38,39 @@ set(ZLIB_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(ZLIB_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(zlib)
 
+# 先设置CMP0135策略，彻底消除DOWNLOAD_EXTRACT_TIMESTAMP警告
+cmake_policy(SET CMP0135 NEW)
+
 FetchContent_Declare(
   libarchive
   GIT_REPOSITORY https://github.com/libarchive/libarchive.git
-  GIT_TAG 3.7.2  # 锁定版本，避免兼容性问题
-  # ========== 新增：指定 DOWNLOAD_EXTRACT_TIMESTAMP，消除警告 ==========
+  # 使用有效的tag：v3.8.0（3.8系列最新稳定版）
+  GIT_TAG v3.8.0  
+  # 显式设置下载解压时间戳，配合CMP0135策略消除警告
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-  # ========== 新增：MinGW 下禁用不必要的依赖，避免编译失败 ==========
-  GIT_SHALLOW TRUE  # 浅克隆，加快下载速度
+  # 浅克隆，加快下载速度
+  GIT_SHALLOW TRUE  
 )
 
-# ========== 新增：适配 MinGW 构建 libarchive 的配置 ==========
-# 禁用 libarchive 的不必要功能，减少依赖
+# 适配 MinGW 构建 libarchive 的配置 
+# 禁用不必要的依赖，减少编译问题
 set(libarchive_ENABLE_OPENSSL OFF CACHE BOOL "" FORCE)
 set(libarchive_ENABLE_LZMA OFF CACHE BOOL "" FORCE)
 set(libarchive_ENABLE_ZSTD OFF CACHE BOOL "" FORCE)
 set(libarchive_ENABLE_BZIP2 OFF CACHE BOOL "" FORCE)
-set(libarchive_ENABLE_CNG OFF CACHE BOOL "" FORCE) # Windows 特有，MinGW 不支持
+set(libarchive_ENABLE_CNG OFF CACHE BOOL "" FORCE) # MinGW不支持Windows CNG
+# 额外增加MinGW下的兼容性配置
+set(libarchive_ENABLE_ACL OFF CACHE BOOL "" FORCE)
+set(libarchive_ENABLE_ICONV OFF CACHE BOOL "" FORCE)
+set(libarchive_ENABLE_PCRE2 OFF CACHE BOOL "" FORCE)
+set(libarchive_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE) # 编译静态库，避免MinGW动态库依赖问题
 
 # 下载并构建 libarchive
 FetchContent_MakeAvailable(libarchive)
+
+# 确保能找到libarchive的头文件和库文件
+include_directories(${libarchive_SOURCE_DIR}/libarchive)
+link_directories(${libarchive_BINARY_DIR})
 
 # Module 1: Common - 基础工具库
 add_library(eyakv_common STATIC

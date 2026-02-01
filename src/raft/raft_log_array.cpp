@@ -13,6 +13,8 @@
 #include <unistd.h>
 #endif
 
+#define LOG_SIZE_THRESHOLD 1000000 // 100万条目
+
 // 日志文件格式 (模仿 leveldb log format):
 // [Checksum (4 bytes)] [Length (4 bytes)] [Data (N bytes)]
 // Checksum = CRC32 of [Length][Data]
@@ -235,7 +237,11 @@ bool RaftLogArray::append(LogEntry &entry)
     {
         LOG_WARN("Failed to write index entry to file");
     }
-
+    if (entries_.size() > LOG_SIZE_THRESHOLD)
+    {
+        LOG_WARN("Raft log size exceeded threshold, truncating.");
+        truncate_from(entries_.size() / 4); // 截断前四分之一日志
+    }
     return true;
 }
 
@@ -259,7 +265,11 @@ bool RaftLogArray::append(const LogEntry &entry)
     {
         LOG_WARN("Failed to write index entry to file");
     }
-
+    if (entries_.size() > LOG_SIZE_THRESHOLD)
+    {
+        LOG_WARN("Raft log size exceeded threshold, truncating.");
+        truncate_from(entries_.size() / 4); // 截断前四分之一日志
+    }
     return true;
 }
 
@@ -291,7 +301,11 @@ bool RaftLogArray::batch_append(std::vector<LogEntry> &entries)
         index_offsets_.push_back(offset);
         offset += sizeof(uint32_t) * 2 + entry.serialize().size(); // 估算下一个偏移
     }
-
+    if (entries_.size() > LOG_SIZE_THRESHOLD)
+    {
+        LOG_WARN("Raft log size exceeded threshold, truncating.");
+        truncate_from(entries_.size() / 4); // 截断前四分之一日志
+    }
     return true;
 }
 
@@ -317,7 +331,11 @@ bool RaftLogArray::batch_append(const std::vector<LogEntry> &entries)
         index_offsets_.push_back(offset);
         offset += sizeof(uint32_t) * 2 + entry.serialize().size(); // 估算下一个偏移
     }
-
+    if (entries_.size() > LOG_SIZE_THRESHOLD)
+    {
+        LOG_WARN("Raft log size exceeded threshold, truncating.");
+        truncate_from(entries_.size() / 4); // 截断前四分之一日志
+    }
     return true;
 }
 

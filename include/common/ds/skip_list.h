@@ -126,7 +126,7 @@ private:
         // mt19937：梅森旋转算法，周期长（2^19937-1）、效率高
         static std::mt19937 engine(
             // 种子初始化：优先用硬件随机数生成器， fallback 到高精度时间
-            []() -> unsigned int
+            []() -> uint32_t
             {
                 std::random_device rd; // 硬件随机数（尽可能获取真随机）
                 if (rd.entropy() > 0)

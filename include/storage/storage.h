@@ -56,14 +56,14 @@ private:
                      const std::string &wal_dir,
                      const bool &read_only = false,
                      const bool &enable_wal = true,
-                     const std::optional<unsigned int> &wal_flush_interval = 1000,
+                     const std::optional<uint32_t> &wal_flush_interval = 1000,
                      const WALFlushStrategy &wal_flush_strategy = WALFlushStrategy::BACKGROUND_THREAD,
                      const size_t &memtable_size = 1024 * 1024 * 1024,
                      const size_t &skiplist_max_level = 16,
                      const double &skiplist_probability = 0.5,
                      const SSTableMergeStrategy &sstable_merge_strategy = SSTableMergeStrategy::SIZE_TIERED_COMPACTION,
-                     const unsigned int &sstable_merge_threshold = 5,
-                     const unsigned int &sstable_zero_level_size = 10,
+                     const uint32_t &sstable_merge_threshold = 5,
+                     const uint64_t &sstable_zero_level_size = 10,
                      const double &sstable_level_size_ratio = 10.0);
 
 public:
@@ -86,14 +86,14 @@ public:
                      const std::string &wal_dir,
                      const bool &read_only = false,
                      const bool &enable_wal = true,
-                     const std::optional<unsigned int> &wal_flush_interval = 1000,
+                     const std::optional<uint32_t> &wal_flush_interval = 1000,
                      const WALFlushStrategy &wal_flush_strategy = WALFlushStrategy::BACKGROUND_THREAD,
                      const size_t &memtable_size = 1024 * 1024 * 1024,
                      const size_t &skiplist_max_level = 16,
                      const double &skiplist_probability = 0.5,
                      const SSTableMergeStrategy &sstable_merge_strategy = SSTableMergeStrategy::SIZE_TIERED_COMPACTION,
-                     const unsigned int &sstable_merge_threshold = 5,
-                     const unsigned int &sstable_zero_level_size = 10,
+                     const uint32_t &sstable_merge_threshold = 5,
+                     const uint32_t &sstable_zero_level_size = 10,
                      const double &sstable_level_size_ratio = 10.0)
     {
         if (instance_ == nullptr)
@@ -202,13 +202,17 @@ private:
     // Processors
     std::unordered_map<uint8_t, std::shared_ptr<ValueProcessor>> processors_;
     // 配置
-    bool enable_wal_;
-    bool read_only_;
+    const bool enable_wal_;
+    const bool read_only_;
     size_t memtable_size_;
-    size_t skiplist_max_level_;
-    double skiplist_probability_;
-    WALFlushStrategy wal_flush_strategy_;
-    std::optional<unsigned int> wal_flush_interval_;
+    const size_t skiplist_max_level_;
+    const double skiplist_probability_;
+    const WALFlushStrategy wal_flush_strategy_;
+    std::optional<uint32_t> wal_flush_interval_;
+    const uint32_t sstable_merge_threshold_;
+    const uint64_t sstable_zero_level_size_;
+    const double sstable_level_size_ratio_;
+    const SSTableMergeStrategy sstable_merge_strategy_;
 
     // 后台线程控制
     std::atomic<bool> background_flush_thread_running_{false};
@@ -217,6 +221,9 @@ private:
     std::condition_variable flush_cv_;
     std::mutex flush_mutex_;
 
+    // 快照缓存
+    std::atomic<bool> snapshot_cache_valid_{false}; // 快照缓存是否有效
+    std::string snapshot_cache_path_;               // 快照缓存路径
     // 是否已经初始化
     static bool is_init_;
 

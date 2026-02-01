@@ -265,7 +265,7 @@ public:
                 LOG_ERROR("select error: %s", socket_error_to_string(activity));
             }
             // 遍历所有可能的socket
-            for (unsigned int i = 0; i < master_set_.fd_count; i++)
+            for (uint32_t i = 0; i < master_set_.fd_count; i++)
             {
                 socket_t sock = master_set_.fd_array[i];
                 if (FD_ISSET(sock, &readSet))

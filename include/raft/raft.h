@@ -266,7 +266,8 @@ private:
         uint64_t offset = 0;
         bool is_sending = false;
         uint32_t log_last_applied = 0;
-        FILE *fp = nullptr; 
+        FILE *fp = nullptr;
+        std::string snapshot_path;
     };
     std::unordered_map<socket_t, SnapshotTransferState> snapshot_state_;
 
@@ -296,26 +297,33 @@ private:
     void handle_query_leader(const RaftMessage &msg, const socket_t &client_sock);
     void handle_query_leader_response(const RaftMessage &msg);
     void handle_join_cluster(const RaftMessage &msg, const socket_t &client_sock); // 处理新节点加入请求
-    void trigger_log_sync(socket_t sock);
-    void send_snapshot_chunk(socket_t sock);
+
     void handle_install_snapshot(const RaftMessage &msg);
     void handle_join_cluster_response(const RaftMessage &msg);
     void handle_snapshot_response(const RaftMessage &msg, socket_t sock);
+    void handle_leader_message(const RaftMessage &msg);
+    void handle_new_node_join(const RaftMessage &msg);
+    void handle_leave_node(const RaftMessage &msg);
+    void handle_append_entries_response(const std::string &follower, bool success,
+                                        uint32_t conflict_index, uint32_t match_index); // 处理响应
     // 日志复制和提交方法
     void send_append_entries(const socket_t &sock); // 发送AppendEntries
     void send_heartbeat_to_all();                   // 向所有节点发送心跳
     void send_request_vote();                       // 发送RequestVote
-    void handle_append_entries_response(const std::string &follower, bool success,
-                                        uint32_t conflict_index, uint32_t match_index); // 处理响应
-    void try_commit_entries();                                                          // 尝试提交日志
-    void commit_entry(uint32_t index);                                                  // 提交指定索引的日志
-    void apply_committed_entries();                                                     // 应用已提交的日志到状态机
+    void send_snapshot_chunk(socket_t sock);
+    // 日志同步方法
+    void trigger_log_sync(socket_t sock);
+
+    void try_commit_entries();      // 尝试提交日志
+    void apply_committed_entries(); // 应用已提交的日志到状态机
 
     // 辅助方法
     uint32_t get_current_timestamp(); // 获取当前时间戳
-    int count_reachable_nodes();      // 计算可达节点数
-    bool stop_accepting_writes();     // 停止接受写请求
-    bool start_accepting_writes();
+
+    bool stop_accepting_writes(); // 停止接受写请求
+
+    bool start_accepting_writes(); // 开始接受写请求
+
     // 广播消息到所有从节点
     void broadcast_to_followers(const RaftMessage &msg);
 
@@ -350,9 +358,7 @@ private:
     void heartbeat_loop();
     // Follower客户端线程主循环
     void follower_client_loop();
-    void handle_leader_message(const RaftMessage &msg);
-    void handle_new_node_join(const RaftMessage &msg);
-    void handle_leave_node(const RaftMessage &msg);
+
     // 转换为Follower
     bool become_follower(const Address &leader_addr, uint32_t term = 0, bool is_reconnect = false, const uint32_t commit_index = 0);
 

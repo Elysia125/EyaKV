@@ -19,14 +19,14 @@ Storage::Storage(const std::string &data_dir,
                  const std::string &wal_dir,
                  const bool &read_only,
                  const bool &enable_wal,
-                 const std::optional<unsigned int> &wal_flush_interval,
+                 const std::optional<uint32_t> &wal_flush_interval,
                  const WALFlushStrategy &wal_flush_strategy,
                  const size_t &memtable_size,
                  const size_t &skiplist_max_level,
                  const double &skiplist_probability,
                  const SSTableMergeStrategy &sstable_merge_strategy,
-                 const unsigned int &sstable_merge_threshold,
-                 const unsigned int &sstable_zero_level_size,
+                 const uint32_t &sstable_merge_threshold,
+                 const uint64_t &sstable_zero_level_size,
                  const double &sstable_level_size_ratio) : data_dir_(data_dir),
                                                            enable_wal_(enable_wal),
                                                            read_only_(read_only),
@@ -34,7 +34,11 @@ Storage::Storage(const std::string &data_dir,
                                                            skiplist_max_level_(skiplist_max_level),
                                                            skiplist_probability_(skiplist_probability),
                                                            wal_flush_interval_(wal_flush_interval),
-                                                           wal_flush_strategy_(wal_flush_strategy)
+                                                           wal_flush_strategy_(wal_flush_strategy),
+                                                           sstable_merge_strategy_(sstable_merge_strategy),
+                                                           sstable_merge_threshold_(sstable_merge_threshold),
+                                                           sstable_zero_level_size_(sstable_zero_level_size),
+                                                           sstable_level_size_ratio_(sstable_level_size_ratio)
 {
     // 确保数据目录存在
     if (!std::filesystem::exists(data_dir_))
@@ -705,7 +709,7 @@ Response Storage::execute(uint8_t type, std::vector<std::string> &args)
     {
         return Response::error("error:storage closed");
     }
-    std::optional<std::unique_lock<std::shared_mutex>> write_lock;
+    std::optional<std::shared_lock<std::shared_mutex>> write_lock;
     if (isWriteOperation(type))
     {
         // 直接构造锁对象并放入 optional，无拷贝操作
@@ -797,6 +801,12 @@ Response Storage::execute(uint8_t type, std::vector<std::string> &args)
                 return Response::error("unknown command");
             }
         }
+        if (isWriteOperation(type) && response.is_success())
+        {
+            snapshot_cache_valid_.store(false);
+            remove_snapshot(snapshot_cache_path_);
+            snapshot_cache_path_.clear();
+        }
         return response;
     }
     catch (const std::runtime_error &e)
@@ -816,6 +826,13 @@ bool Storage::create_checkpoint(std::string &output_tar_path)
 
     try
     {
+        std::unique_lock<std::shared_mutex> write_lock(write_mutex_);
+        if (snapshot_cache_valid_.load() && !snapshot_cache_path_.empty())
+        {
+            output_tar_path = snapshot_cache_path_;
+            LOG_INFO("Using cached checkpoint at: %s", output_tar_path.c_str());
+            return true;
+        }
         // 1. 准备快照目录
         std::string snapshot_dir = PathUtils::combine_path(data_dir_, "snapshot");
         if (!fs::exists(snapshot_dir))
@@ -824,7 +841,6 @@ bool Storage::create_checkpoint(std::string &output_tar_path)
         }
 
         // 2. 暂停写入并强制刷盘
-        std::unique_lock<std::shared_mutex> write_lock(write_mutex_);
         // 停止后台 Flush 线程，避免我们在复制文件时 Compaction 删除了文件
         // 这是一个简单的防止 Compaction 冲突的方法
         if (was_running)
@@ -926,10 +942,10 @@ bool Storage::restore_from_checkpoint(const std::string &snapshot_tar_path)
         decompress_targz(snapshot_tar_path, data_dir_);
         // 6. 重新初始化sstable_manager
         sstable_manager_ = std::make_unique<SSTableManager>(sstable_dir_,
-                                                            sstable_merge_strategy,
-                                                            sstable_merge_threshold,
-                                                            sstable_zero_level_size,
-                                                            sstable_level_size_ratio);
+                                                            sstable_merge_strategy_,
+                                                            sstable_merge_threshold_,
+                                                            sstable_zero_level_size_,
+                                                            sstable_level_size_ratio_);
 
         // 重启后台线程
         if (was_running)
@@ -956,10 +972,19 @@ bool Storage::remove_snapshot(const std::string &snapshot_path)
 {
     try
     {
+        if (snapshot_path.empty())
+        {
+            return true;
+        }
         fs::path snapshot_dir(PathUtils::combine_path(data_dir_, "snapshot"));
         fs::path ssp(snapshot_path);
         if (fs::exists(ssp) && ssp.parent_path() == snapshot_dir)
         {
+            if (snapshot_path == snapshot_cache_path_ && snapshot_cache_valid_.load())
+            {
+                LOG_ERROR("Snapshot file is in use: %s", snapshot_path.c_str());
+                return false;
+            }
             fs::remove(ssp);
             LOG_INFO("Snapshot file removed: %s", snapshot_path.c_str());
         }

@@ -24,7 +24,7 @@
 
 #define DEFAULT_PORT 5210
 #define DEFAULT_HOST "127.0.0.1"
-const size_t HEADER_SIZE = Header::PROTOCOL_HEADER_SIZE;
+const size_t HEADER_SIZE = ProtocolHeader::PROTOCOL_HEADER_SIZE;
 
 // Platform specific macros
 #ifdef _WIN32
@@ -120,8 +120,8 @@ Response receive_server_response(socket_t client_socket)
         throw std::runtime_error("incomplete header received");
 
     size_t offset = 0;
-    Header response_header = Header::deserialize(head_buffer, offset);
-
+    ProtocolHeader response_header;
+    response_header.deserialize(head_buffer, offset);
     std::vector<char> body_buffer(response_header.length);
     if (response_header.length > 0)
     {
@@ -133,7 +133,9 @@ Response receive_server_response(socket_t client_socket)
     }
 
     offset = 0;
-    return Response::deserializeResponse(body_buffer.data(), offset);
+    Response response;
+    response.deserialize(body_buffer.data(), offset);
+    return response;
 }
 
 bool send_data(socket_t client_socket, const std::string &data)
