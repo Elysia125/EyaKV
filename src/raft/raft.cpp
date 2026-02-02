@@ -373,7 +373,6 @@ void RaftNode::handle_new_node_join(const RaftMessage &msg)
         save_persistent_state();
     }
 }
-// 场景1: 作为follower启动
 void RaftNode::init_as_follower()
 {
     LOG_INFO("Initiating as follower to connect to leader: %s", persistent_state_.cluster_metadata_.current_leader_.to_string().c_str());
@@ -638,6 +637,10 @@ void RaftNode::become_leader()
     // 更新角色
     role_ = RaftRole::Leader;
 
+    // 清空旧的leader记录（自己成为leader）
+    persistent_state_.cluster_metadata_.current_leader_ = Address();
+    save_persistent_state();
+
     // 启动心跳线程
     if (!heartbeat_thread_running_)
     {
@@ -646,6 +649,11 @@ void RaftNode::become_leader()
     }
 
     LOG_INFO("Became leader, term: %u", persistent_state_.current_term_.load());
+
+    // 广播NEW_MASTER消息通知所有已知节点
+    std::thread([this]()
+                { this->broadcast_new_master(); })
+        .detach();
 }
 
 // 选举线程主循环
@@ -725,7 +733,7 @@ void RaftNode::send_request_vote()
                 }
                 // 设置超时时间，例如 200ms。如果对方挂了，这里会超时返回，不会卡死。
                 ProtocolBody *response_body = new_body();
-                int ret = client.receive(*response_body, 200); // 假设 receive 支持超时 ms
+                ret = client.receive(*response_body, 200); // 假设 receive 支持超时 ms
 
                 if (ret > 0)
                 {
@@ -807,7 +815,6 @@ void RaftNode::send_append_entries(const socket_t &sock)
         LOG_ERROR("Failed to send AppendEntries to %d: %s", sock, strerror(errno));
     }
 }
-// 处理AppendEntries请求
 bool RaftNode::handle_append_entries(const RaftMessage &msg)
 {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -1114,7 +1121,7 @@ bool RaftNode::stop_accepting_writes()
         LOG_ERROR("Not a leader, cannot stop accepting writes");
         return false;
     }
-    writable.store(false, std::memory_order_relaxed);
+    writable_.store(false, std::memory_order_relaxed);
     return true;
 }
 
@@ -1127,7 +1134,7 @@ bool RaftNode::start_accepting_writes()
         LOG_ERROR("Not a leader, cannot stop accepting writes");
         return false;
     }
-    writable.store(true, std::memory_order_relaxed);
+    writable_.store(true, std::memory_order_relaxed);
     return true;
 }
 // 处理探查leader请求
@@ -1690,91 +1697,124 @@ Response RaftNode::handle_raft_command(const std::vector<std::string> &command_p
     Response response;
     is_exec = true;
     auto &leader_address_ = persistent_state_.cluster_metadata_.current_leader_;
-    if (command_parts[0] == "get_master" && command_parts.size() == 1)
+    if (command_parts[0] == "get_master")
     {
-        // 返回当前leader地址
-        if (leader_address_.is_null())
+        if (command_parts.size() == 1)
         {
-            response = Response::error("no leader elected");
-        }
-        else
-        {
-            response = Response::success(leader_address_.to_string());
-        }
-    }
-    else if (command_parts[0] == "set_master" && command_parts.size() == 3)
-    {
-        // 设置当前leader地址（仅限leader节点调用）
-        if (role_ != RaftRole::Leader)
-        {
-            response = Response::error("only leader can set master");
-            return response;
-        }
-        std::string host = command_parts[1];
-        int port = std::stoi(command_parts[2]);
-        // 连接到主节点
-        Address address(host, port);
-        if (!persistent_state_.cluster_metadata_.current_leader_.is_null() && address == persistent_state_.cluster_metadata_.current_leader_)
-        {
-            if (follower_client_ != nullptr)
+            // 返回当前leader地址
+            if (leader_address_.is_null())
             {
-                response = Response::success("already connected to master");
+                response = Response::error("no leader elected");
             }
             else
             {
-                response = Response::success(become_follower(address, persistent_state_.current_term_, true, persistent_state_.commit_index_));
+                response = Response::success(leader_address_.to_string());
             }
         }
         else
         {
-            response = Response::success(become_follower(address));
+            response = Response::error("invalid command");
         }
     }
-    else if (command_parts[0] == "remove_node" && command_parts.size() == 3)
+    else if (command_parts[0] == "set_master")
     {
-        if (role_ != RaftRole::Leader)
+        if (command_parts.size() == 3)
         {
-            response = Response::error("only leader can remove node");
-            return response;
-        }
-        std::string ip = command_parts[1];
-        uint16_t port = std::stoi(command_parts[2]);
-        // 从集群移除节点
-        Address node_to_remove(ip, port);
-        if (remove_node(node_to_remove))
-        {
-            response = Response::success("node removed");
+            // 设置当前leader地址（仅限leader节点调用）
+            if (role_ != RaftRole::Leader)
+            {
+                response = Response::error("only leader can set master");
+                return response;
+            }
+            std::string host = command_parts[1];
+            int port = std::stoi(command_parts[2]);
+            // 连接到主节点
+            Address address(host, port);
+            if (!persistent_state_.cluster_metadata_.current_leader_.is_null() && address == persistent_state_.cluster_metadata_.current_leader_)
+            {
+                if (follower_client_ != nullptr)
+                {
+                    response = Response::success("already connected to master");
+                }
+                else
+                {
+                    response = Response::success(become_follower(address, persistent_state_.current_term_, true, persistent_state_.commit_index_));
+                }
+            }
+            else
+            {
+                response = Response::success(become_follower(address));
+            }
         }
         else
         {
-            response = Response::error("node not found");
+            response = Response::error("invalid command");
         }
     }
-    else if (command_parts[0] == "list_nodes" && command_parts.size() == 1)
+    else if (command_parts[0] == "remove_node")
     {
-        auto &cluster_nodes_ = persistent_state_.cluster_metadata_.cluster_nodes_;
-        std::string nodes_str;
-        for (const auto &node : cluster_nodes_)
+        if (command_parts.size() == 3)
         {
-            if (!nodes_str.empty())
-                nodes_str += ",";
-            nodes_str += node.to_string();
+            if (role_ != RaftRole::Leader)
+            {
+                response = Response::error("only leader can remove node");
+                return response;
+            }
+            std::string ip = command_parts[1];
+            uint16_t port = std::stoi(command_parts[2]);
+            // 从集群移除节点
+            Address node_to_remove(ip, port);
+            if (remove_node(node_to_remove))
+            {
+                response = Response::success("node removed");
+            }
+            else
+            {
+                response = Response::error("node not found");
+            }
         }
-        if (!nodes_str.empty() && nodes_str.back() == ',')
+        else
         {
-            nodes_str.pop_back();
+            response = Response::error("invalid command");
         }
-        response = Response::success(nodes_str);
     }
-    else if (command_parts[0] == "get_status" && command_parts.size() == 1)
+    else if (command_parts[0] == "list_nodes")
     {
-        std::string status = "role=" + std::to_string(static_cast<int>(role_.load())) +
-                             ",term=" + std::to_string(persistent_state_.current_term_.load()) +
-                             ",leader=" + leader_address_.to_string() +
-                             ",nodes=" + std::to_string(persistent_state_.cluster_metadata_.cluster_nodes_.size()) +
-                             ",commit=" + std::to_string(persistent_state_.commit_index_.load()) +
-                             ",applied=" + std::to_string(persistent_state_.last_applied_.load());
-        response = Response::success(status);
+        if (command_parts.size() == 1)
+        {
+            auto &cluster_nodes_ = persistent_state_.cluster_metadata_.cluster_nodes_;
+            std::string nodes_str;
+            for (const auto &node : cluster_nodes_)
+            {
+                if (!nodes_str.empty())
+                    nodes_str += ",";
+                nodes_str += node.to_string();
+            }
+            nodes_str += "current_node";
+            response = Response::success(nodes_str);
+        }
+        else
+        {
+            response = Response::error("invalid command");
+        }
+    }
+    else if (command_parts[0] == "get_status")
+    {
+        if (command_parts.size() == 1)
+        {
+            std::string status = "role=" + std::to_string(static_cast<int>(role_.load())) +
+                                 ",term=" + std::to_string(persistent_state_.current_term_.load()) +
+                                 ",leader=" + leader_address_.to_string() +
+                                 ",nodes=" + std::to_string(persistent_state_.cluster_metadata_.cluster_nodes_.size()) +
+                                 ",commit=" + std::to_string(persistent_state_.commit_index_.load()) +
+                                 ",applied=" + std::to_string(persistent_state_.last_applied_.load()) +
+                                 ",writable=" + std::to_string(writable_);
+            response = Response::success(status);
+        }
+        else
+        {
+            response = Response::error("invalid command");
+        }
     }
     else
     {
@@ -1848,6 +1888,10 @@ void RaftNode::handle_request(ProtocolBody *body, socket_t client_sock)
         break;
     case RaftMessageType::SNAPSHOT_INSTALL_RESPONSE:
         handle_snapshot_response(*msg, client_sock);
+        break;
+    case RaftMessageType::NEW_MASTER:
+        handle_new_master(*msg, client_sock);
+        close_socket(client_sock);
         break;
     }
     delete body;
@@ -1943,4 +1987,135 @@ bool RaftNode::remove_node(const Address &node_to_remove)
 bool RaftNode::is_trust(const Address &addr)
 {
     return is_trusted_ip(addr.to_string(), trusted_nodes_);
+}
+
+// 广播新主节点消息到所有已知节点
+void RaftNode::broadcast_new_master()
+{
+    if (role_ != RaftRole::Leader)
+    {
+        LOG_WARN("Only leader can broadcast new master message");
+        return;
+    }
+
+    // 获取当前状态，避免长时间持锁
+    uint32_t current_term;
+    std::vector<Address> nodes;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        current_term = persistent_state_.current_term_.load();
+        // 复制一份节点列表
+        for (const auto &node : persistent_state_.cluster_metadata_.cluster_nodes_)
+        {
+            nodes.push_back(node);
+        }
+    }
+
+    if (nodes.empty())
+    {
+        LOG_INFO("No cluster nodes to broadcast new master message");
+        return;
+    }
+
+    LOG_INFO("Broadcasting NEW_MASTER message to %zu nodes, term: %u", nodes.size(), current_term);
+
+    // 向所有已知节点发送NEW_MASTER消息
+    for (const auto &node : nodes)
+    {
+        bool is_submitted = thread_pool_->submit([node, current_term, this]()
+                                                 {
+            TCPClient client(node.host, node.port);
+            try
+            {
+                client.connect();
+                
+                // 获取本地地址作为leader地址
+                Address leader_addr;
+                if (!get_self_address(client.get_socket(), leader_addr))
+                {
+                    LOG_ERROR("Failed to get self address for NEW_MASTER broadcast");
+                    return;
+                }
+                leader_addr.port = this->port_;
+                
+                RaftMessage msg = RaftMessage::new_master(current_term, leader_addr);
+                int ret = client.send(msg);
+                if (ret <= 0)
+                {
+                    LOG_WARN("Failed to send NEW_MASTER message to %s", node.to_string().c_str());
+                }
+                else
+                {
+                    LOG_INFO("Sent NEW_MASTER message to %s", node.to_string().c_str());
+                }
+            }
+            catch (const std::exception &e)
+            {
+                LOG_WARN("Failed to broadcast NEW_MASTER to %s: %s", node.to_string().c_str(), e.what());
+            } });
+        if (!is_submitted)
+        {
+            LOG_WARN("Failed to submit NEW_MASTER broadcast task for node: %s", node.to_string().c_str());
+        }
+    }
+}
+
+// 处理新主节点选举成功消息
+void RaftNode::handle_new_master(const RaftMessage &msg, const socket_t &client_sock)
+{
+    if (!msg.new_master_data.has_value())
+    {
+        LOG_WARN("NEW_MASTER message missing data");
+        return;
+    }
+
+    const auto &data = *msg.new_master_data;
+    uint32_t leader_term = msg.term;
+    uint32_t my_term = persistent_state_.current_term_.load();
+
+    LOG_INFO("Received NEW_MASTER message from %s, term: %u", data.leader_address.to_string().c_str(), leader_term);
+
+    // 如果消息的任期比我小，忽略
+    if (leader_term < my_term)
+    {
+        LOG_WARN("Ignoring NEW_MASTER from old term %u (my term: %u)", leader_term, my_term);
+        return;
+    }
+
+    // 如果我已经是Leader且任期相同，忽略（避免脑裂）
+    if (role_ == RaftRole::Leader && leader_term == my_term)
+    {
+        LOG_WARN("Ignoring NEW_MASTER, I am already leader in term %u", my_term);
+        return;
+    }
+
+    // 获取本机地址，避免连接自己
+    Address self_addr;
+    // 获取自己的地址
+    if (!get_self_address(client_sock, self_addr))
+    {
+        LOG_ERROR("Failed to get self address for NEW_MASTER");
+        return;
+    }
+    if (self_addr == data.leader_address)
+    {
+        LOG_WARN("Ignoring NEW_MASTER, self address is the same as leader address");
+        return;
+    }
+    // 更新任期并连接新Leader
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (leader_term > my_term)
+        {
+            persistent_state_.current_term_ = leader_term;
+            persistent_state_.voted_for_ = Address(); // 重置投票
+        }
+        persistent_state_.cluster_metadata_.current_leader_ = data.leader_address;
+        save_persistent_state();
+    }
+
+    LOG_INFO("Connecting to new leader: %s", data.leader_address.to_string().c_str());
+
+    // 转换为Follower并连接新Leader
+    become_follower(data.leader_address, leader_term, true, persistent_state_.commit_index_.load());
 }

@@ -413,6 +413,26 @@ struct LeaveNodeData
     }
 };
 
+// 新主节点选举成功消息数据
+struct NewMasterData
+{
+    Address leader_address; // 新Leader地址
+
+    NewMasterData() : leader_address() {}
+    NewMasterData(const Address &addr) : leader_address(addr) {}
+
+    std::string serialize() const
+    {
+        return leader_address.serialize();
+    }
+
+    static NewMasterData deserialize(const char *data, size_t &offset)
+    {
+        Address addr = Address::deserialize(data, offset);
+        return NewMasterData(addr);
+    }
+};
+
 // 新节点加入集群消息
 struct JoinClusterData
 {
@@ -618,6 +638,7 @@ struct RaftMessage : public ProtocolBody
     std::optional<SnapshotInstallResponseData> snapshot_install_response_data; // 快照安装响应数据
     std::optional<NewNodeJoinData> new_node_join_data;                         // 新连接数据
     std::optional<LeaveNodeData> leave_node_data;                              // 节点移除数据
+    std::optional<NewMasterData> new_master_data;                              // 新主节点数据
     RaftMessage() = default;
 
     static RaftMessage leave_node(const Address &addr)
@@ -693,11 +714,12 @@ struct RaftMessage : public ProtocolBody
         return msg;
     }
 
-    static RaftMessage new_master(uint32_t term)
+    static RaftMessage new_master(uint32_t term, const Address &leader_addr)
     {
         RaftMessage msg;
         msg.type = RaftMessageType::NEW_MASTER;
         msg.term = term;
+        msg.new_master_data = NewMasterData(leader_addr);
         return msg;
     }
 
@@ -847,6 +869,20 @@ struct RaftMessage : public ProtocolBody
             }
             break;
 
+        case RaftMessageType::NEW_MASTER:
+            if (new_master_data.has_value())
+            {
+                result.append(new_master_data->serialize());
+            }
+            break;
+
+        case RaftMessageType::LEAVE_NODE:
+            if (leave_node_data.has_value())
+            {
+                result.append(leave_node_data->serialize());
+            }
+            break;
+
         default:
             break;
         }
@@ -908,6 +944,14 @@ struct RaftMessage : public ProtocolBody
 
         case RaftMessageType::SNAPSHOT_INSTALL_RESPONSE:
             snapshot_install_response_data = SnapshotInstallResponseData::deserialize(data, offset);
+            break;
+
+        case RaftMessageType::NEW_MASTER:
+            new_master_data = NewMasterData::deserialize(data, offset);
+            break;
+
+        case RaftMessageType::LEAVE_NODE:
+            leave_node_data = LeaveNodeData::deserialize(data, offset);
             break;
 
         default:
