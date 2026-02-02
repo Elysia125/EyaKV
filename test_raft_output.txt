@@ -1,0 +1,28 @@
+Node 0 started (KV:5210, Raft:5211)
+Node 1 started (KV:5220, Raft:5221)
+Node 2 started (KV:5230, Raft:5231)
+Waiting for nodes to start...
+
+--- Step 1: Check initial status ---
+Node 0 status: {'code': 1, 'val': 'role=2,term=0,leader=:0,nodes=0,commit=0,applied=0,writable=1', 'err': ''}
+Node 1 status: {'code': 1, 'val': 'role=2,term=0,leader=:0,nodes=0,commit=0,applied=0,writable=1', 'err': ''}
+Node 2 status: {'code': 1, 'val': 'role=2,term=0,leader=:0,nodes=0,commit=0,applied=0,writable=1', 'err': ''}
+
+--- Step 2: Form cluster (Node 1, 2 join Node 0) ---
+Node 1 -> set_master 127.0.0.1 5211
+Node 2 -> set_master 127.0.0.1 5211
+
+--- Step 3: Check status again ---
+Node 0 status: {'code': 1, 'val': 'role=2,term=0,leader=:0,nodes=1,commit=0,applied=0,writable=1', 'err': ''}
+Node 1 status: {'code': 1, 'val': 'role=0,term=0,leader=:0,nodes=1,commit=0,applied=0,writable=1', 'err': ''}
+Node 2 status: {'code': 1, 'val': 'role=2,term=0,leader=:0,nodes=0,commit=0,applied=0,writable=1', 'err': ''}
+
+--- Step 4: KV Replication Test ---
+Sending 'set mykey hello_raft' to Node 0...
+Set Response: {'code': 1, 'val': '1', 'err': ''}
+Reading 'get mykey' from all nodes...
+Node 0 'get mykey': {'code': 1, 'val': '1', 'err': ''}
+Node 1 'get mykey': {'code': 1, 'val': '1', 'err': ''}
+Node 2 'get mykey': {'code': 1, 'val': 'null', 'err': ''}
+
+Cleaning up...

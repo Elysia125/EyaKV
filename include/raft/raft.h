@@ -12,6 +12,7 @@
 #include <memory>
 #include <cstring>
 #include <shared_mutex>
+#include <mutex>
 #include <future>
 #include "common/base/export.h"
 #include "raft/protocol/protocol.h"
@@ -336,7 +337,7 @@ private:
     std::chrono::steady_clock::time_point last_heartbeat_time_; // 最后心跳时间：用于检测选举超时
 
     // 互斥锁（保证多线程安全）
-    mutable std::mutex mutex_; // 互斥锁：保护易失性状态的并发访问
+    mutable std::recursive_mutex mutex_; // 互斥锁：保护易失性状态的并发访问
 
     // 线程控制
     std::thread election_thread_;                       // 选举线程：负责选举超时检测和发起选举
@@ -350,7 +351,7 @@ private:
     std::atomic<bool> follower_client_thread_running_{false}; // Follower客户端线程运行标志
 
     // 元数据
-    std::string root_dir_;          // 数据根目录：存储日志、快照、元数据等的根目录
+    std::string root_dir_; // 数据根目录：存储日志、快照、元数据等的根目录
 
     // 是否允许写（仅Leader有效，Follower本身不可写）
     std::atomic<bool> writable_{true}; // 可写标志：只有Leader可以处理写请求
@@ -545,7 +546,7 @@ private:
 
     /// @brief 应用已提交的日志到状态机
     void apply_committed_entries();
-    
+
     // 无锁版本辅助方法 (调用者需保证持有 mutex_)
     void apply_committed_entries_nolock();
     void send_append_entries_nolock(const socket_t &sock);
@@ -578,7 +579,7 @@ private:
     /// @brief 重置选举超时（更新最后心跳时间+重新生成超时值）
     void reset_election_timeout()
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
         last_heartbeat_time_ = std::chrono::steady_clock::now();
         election_timeout_ = generate_election_timeout();
     }
@@ -587,7 +588,7 @@ private:
     /// @return 超时返回true，否则返回false
     bool is_election_timeout()
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
         auto now = std::chrono::steady_clock::now();
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_heartbeat_time_).count();
         return elapsed > election_timeout_;

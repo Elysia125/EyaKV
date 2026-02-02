@@ -95,12 +95,12 @@ RaftNode::RaftNode(const std::string root_dir, const std::string &ip, const u_sh
                  persistent_state_.cluster_metadata_.cluster_nodes_.size());
         init_with_cluster_discovery();
     }
-    
+
     // 确保 CommitIndex 不超过日志最后一条索引
     uint32_t last_log_idx = log_array_.get_last_index();
     if (persistent_state_.commit_index_ > last_log_idx)
     {
-        LOG_WARN("[Node=%s] Sanitizing CommitIndex: %u -> %u (LastLogIndex)", 
+        LOG_WARN("[Node=%s] Sanitizing CommitIndex: %u -> %u (LastLogIndex)",
                  node_id.c_str(), persistent_state_.commit_index_.load(), last_log_idx);
         persistent_state_.commit_index_.store(last_log_idx);
     }
@@ -326,10 +326,12 @@ void RaftNode::handle_join_cluster_response(const RaftMessage &msg)
     if (data.success)
     {
         LOG_INFO("Join cluster success");
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        Address leader_addr = persistent_state_.cluster_metadata_.current_leader_;
         persistent_state_.current_term_ = term;
         persistent_state_.cluster_metadata_ = data.cluster_metadata;
-        persistent_state_.cluster_metadata_.cluster_nodes_.insert(persistent_state_.cluster_metadata_.current_leader_);
+        persistent_state_.cluster_metadata_.cluster_nodes_.insert(leader_addr);
+        persistent_state_.cluster_metadata_.current_leader_ = leader_addr;
         save_persistent_state();
     }
     else
@@ -377,19 +379,15 @@ void RaftNode::handle_leave_node(const RaftMessage &msg)
     auto &data = *msg.leave_node_data;
     Address self_addr;
     get_self_address(follower_client_->get_socket(), self_addr);
+    self_addr.port = port_;
     if (self_addr == data.node_address)
     {
         LOG_INFO("This node is leaving the cluster, shutting down");
-        follower_client_ = nullptr;
-        follower_client_thread_running_ = false;
-        if (follower_client_thread_.joinable())
-        {
-            follower_client_thread_.join();
-        }
+        become_leader();
         return;
     }
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
         persistent_state_.cluster_metadata_.cluster_nodes_.erase(data.node_address);
         save_persistent_state();
     }
@@ -403,7 +401,7 @@ void RaftNode::handle_new_node_join(const RaftMessage &msg)
     }
     auto &data = *msg.new_node_join_data;
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
         persistent_state_.cluster_metadata_.cluster_nodes_.insert(data.node_address);
         save_persistent_state();
     }
@@ -435,7 +433,7 @@ bool RaftNode::connect_to_leader(const Address &leader_addr)
 // 场景3: 探查集群状态
 void RaftNode::init_with_cluster_discovery()
 {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
 
     std::unordered_set<Address> &cluster_nodes = persistent_state_.cluster_metadata_.cluster_nodes_;
     if (cluster_nodes.empty())
@@ -531,7 +529,7 @@ uint32_t RaftNode::get_current_timestamp()
 // 转换为Follower
 bool RaftNode::become_follower(const Address &leader_addr, uint32_t term, bool is_reconnect, const uint32_t commit_index)
 {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     std::string node_id = get_node_id();
     RaftRole old_role = role_.load();
 
@@ -548,7 +546,7 @@ bool RaftNode::become_follower(const Address &leader_addr, uint32_t term, bool i
     if (connect_to_leader(leader_addr))
     {
         // 连接成功，发送消息
-        RaftMessage init_message = RaftMessage::join_cluster(is_reconnect, commit_index);
+        RaftMessage init_message = RaftMessage::join_cluster(is_reconnect, commit_index, port_);
         follower_client_->send(init_message);
         ProtocolBody *msg = new_body();
         int ret = follower_client_->receive(*msg, raft_msg_timeout_);
@@ -566,7 +564,7 @@ bool RaftNode::become_follower(const Address &leader_addr, uint32_t term, bool i
         else
         {
             RaftMessage *response_msg = dynamic_cast<RaftMessage *>(msg);
-            if (response_msg->type != RaftMessageType::JOIN_CLUSTER_RESPONSE || response_msg->type != RaftMessageType::QUERY_LEADER_RESPONSE)
+            if (response_msg->type != RaftMessageType::JOIN_CLUSTER_RESPONSE && response_msg->type != RaftMessageType::QUERY_LEADER_RESPONSE)
             {
                 LOG_ERROR("Follower client received invalid init message response");
                 // 设置follower状态
@@ -632,7 +630,7 @@ bool RaftNode::become_follower(const Address &leader_addr, uint32_t term, bool i
                 // 处理接收到的消息
                 handle_leader_message(*response_msg);
                 delete msg;
-                return true;
+                return role_ == RaftRole::Follower;
             }
         }
         delete msg;
@@ -649,7 +647,7 @@ void RaftNode::become_candidate()
     uint32_t old_term, new_term;
 
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
         old_role = role_.load();
         old_term = persistent_state_.current_term_.load();
 
@@ -694,7 +692,7 @@ void RaftNode::become_leader()
     RaftRole old_role;
 
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
         old_role = role_.load();
 
         follower_client_ = nullptr;
@@ -706,8 +704,8 @@ void RaftNode::become_leader()
         // 更新角色
         role_ = RaftRole::Leader;
 
-        // 清空旧的leader记录（自己成为leader）
-        persistent_state_.cluster_metadata_.current_leader_ = Address();
+        // 暂不清空旧的leader记录，方便下次连接相同的leader
+        // persistent_state_.cluster_metadata_.current_leader_ = Address();
         save_persistent_state();
 
         LOG_INFO("[Node=%s] STATE TRANSITION: %s -> Leader, Term: %u, Cluster size: %zu",
@@ -723,14 +721,6 @@ void RaftNode::become_leader()
         heartbeat_thread_running_ = true;
         heartbeat_thread_ = std::thread(&RaftNode::heartbeat_loop, this);
     }
-
-    // 广播NEW_MASTER消息通知所有已知节点
-    LOG_INFO("[Node=%s][Term=%u] Broadcasting NEW_MASTER message to cluster",
-             node_id.c_str(),
-             persistent_state_.current_term_.load());
-    std::thread([this]()
-                { this->broadcast_new_master(); })
-        .detach();
 }
 
 // 选举线程主循环
@@ -800,7 +790,7 @@ void RaftNode::send_request_vote()
 
     log_array_.get_last_info(last_log_index, last_log_term);
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
         current_term = persistent_state_.current_term_.load();
         // 复制一份节点列表，避免遍历时持锁
         for (const auto &node : persistent_state_.cluster_metadata_.cluster_nodes_)
@@ -887,7 +877,7 @@ void RaftNode::send_heartbeat_to_all()
 // 发送AppendEntries
 void RaftNode::send_append_entries(const socket_t &sock)
 {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     send_append_entries_nolock(sock);
 }
 
@@ -956,7 +946,7 @@ void RaftNode::send_append_entries_nolock(const socket_t &sock)
 bool RaftNode::handle_append_entries(const RaftMessage &msg)
 {
     std::string node_id = get_node_id();
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
 
     // 1. 检查term
     if (msg.term < persistent_state_.current_term_.load())
@@ -966,6 +956,13 @@ bool RaftNode::handle_append_entries(const RaftMessage &msg)
                  role_to_string(role_.load()),
                  persistent_state_.current_term_.load(),
                  msg.term);
+        // 发送失败响应
+        if (follower_client_)
+        {
+            uint32_t last_idx = log_array_.get_last_index();
+            RaftMessage response = RaftMessage::append_entries_response(persistent_state_.current_term_.load(), false, last_idx);
+            follower_client_->send(response);
+        }
         return false;
     }
     role_ = RaftRole::Follower;
@@ -986,6 +983,13 @@ bool RaftNode::handle_append_entries(const RaftMessage &msg)
     if (!msg.append_entries_data)
     {
         LOG_ERROR("[Node=%s] AppendEntries message missing data", node_id.c_str());
+        // 发送失败响应
+        if (follower_client_)
+        {
+            uint32_t last_idx = log_array_.get_last_index();
+            RaftMessage response = RaftMessage::append_entries_response(persistent_state_.current_term_.load(), false, last_idx);
+            follower_client_->send(response);
+        }
         return false;
     }
 
@@ -1000,6 +1004,13 @@ bool RaftNode::handle_append_entries(const RaftMessage &msg)
             LOG_WARN("[Node=%s] Prev log index %u not found, rejecting AppendEntries",
                      node_id.c_str(),
                      data.prev_log_index);
+            // 发送失败响应
+            if (follower_client_)
+            {
+                uint32_t last_idx = log_array_.get_last_index();
+                RaftMessage response = RaftMessage::append_entries_response(persistent_state_.current_term_.load(), false, last_idx);
+                follower_client_->send(response);
+            }
             return false;
         }
 
@@ -1010,6 +1021,13 @@ bool RaftNode::handle_append_entries(const RaftMessage &msg)
                      data.prev_log_index,
                      prev_entry.term,
                      data.prev_log_term);
+            // 发送失败响应
+            if (follower_client_)
+            {
+                uint32_t last_idx = log_array_.get_last_index();
+                RaftMessage response = RaftMessage::append_entries_response(persistent_state_.current_term_.load(), false, last_idx);
+                follower_client_->send(response);
+            }
             return false;
         }
     }
@@ -1080,6 +1098,14 @@ bool RaftNode::handle_append_entries(const RaftMessage &msg)
                   persistent_state_.commit_index_.load());
     }
 
+    // 5. 发送成功响应
+    if (follower_client_)
+    {
+        uint32_t last_idx = log_array_.get_last_index();
+        RaftMessage response = RaftMessage::append_entries_response(persistent_state_.current_term_.load(), true, last_idx);
+        follower_client_->send(response);
+    }
+
     return true;
 }
 
@@ -1087,7 +1113,7 @@ bool RaftNode::handle_append_entries(const RaftMessage &msg)
 bool RaftNode::handle_request_vote(const RaftMessage &msg, const socket_t &client_sock)
 {
     std::string node_id = get_node_id();
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
 
     if (!msg.request_vote_data)
     {
@@ -1217,7 +1243,7 @@ bool RaftNode::handle_request_vote(const RaftMessage &msg, const socket_t &clien
 // 应用已提交的日志到状态机
 void RaftNode::apply_committed_entries()
 {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     apply_committed_entries_nolock();
 }
 
@@ -1297,7 +1323,7 @@ void RaftNode::try_commit_entries()
 {
     std::string node_id = get_node_id();
     // 需持有锁以读取 match_index_ 等状态
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
 
     uint32_t commit_index = persistent_state_.commit_index_.load();
     uint32_t last_log_index = log_array_.get_last_index();
@@ -1463,7 +1489,7 @@ void RaftNode::handle_join_cluster(const RaftMessage &msg, const socket_t &clien
     response_msg.term = persistent_state_.current_term_.load();
     JoinClusterResponseData response;
     response.success = false;
-    response_msg.join_cluster_response_data = response;
+    // response_msg.join_cluster_response_data will be set before sending
     // 添加新节点到集群
     Address new_node_addr;
     if (get_opposite_address(client_sock, new_node_addr))
@@ -1473,16 +1499,18 @@ void RaftNode::handle_join_cluster(const RaftMessage &msg, const socket_t &clien
         {
             LOG_WARN("New node %s is not trusted, rejecting JoinCluster", new_node_addr.to_string().c_str());
             response.error_message = "Node is not trusted";
+            response_msg.join_cluster_response_data = response;
             send(response_msg, client_sock);
             close_socket(client_sock);
             return;
         }
+        new_node_addr.port = data.port;
         // 广播有新节点加入
         auto broadcast_msg = RaftMessage::new_node_join_broadcast(new_node_addr);
         broadcast_to_followers(broadcast_msg);
         // 发送集群必要信息
         {
-            std::lock_guard<std::mutex> lock(mutex_);
+            std::lock_guard<std::recursive_mutex> lock(mutex_);
             // 根据 Follower 汇报的 last_index 设置 next_index
             // Follower 说它有到 index 100 的日志，那我们下一次尝试发 101
             next_index_[client_sock] = data.last_index + 1;
@@ -1494,6 +1522,7 @@ void RaftNode::handle_join_cluster(const RaftMessage &msg, const socket_t &clien
         response.success = true;
         response.cluster_metadata = persistent_state_.cluster_metadata_; // 发送最新集群配置
         response.sync_from_index = next_index_[client_sock];
+        response_msg.join_cluster_response_data = response;
         send(response_msg, client_sock);
         // 3. 触发一次同步检测
         // 异步触发，不要阻塞当前线程
@@ -1502,7 +1531,7 @@ void RaftNode::handle_join_cluster(const RaftMessage &msg, const socket_t &clien
             .detach();
         // 更新集群配置
         {
-            std::lock_guard<std::mutex> lock(mutex_);
+            std::lock_guard<std::recursive_mutex> lock(mutex_);
             persistent_state_.cluster_metadata_.cluster_nodes_.insert(new_node_addr);
             save_persistent_state();
         }
@@ -1527,7 +1556,7 @@ void RaftNode::handle_join_cluster(const RaftMessage &msg, const socket_t &clien
 }
 void RaftNode::trigger_log_sync(socket_t sock)
 {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
 
     uint32_t next_idx = next_index_[sock];
     uint32_t base_idx = log_array_.get_base_index();
@@ -1551,7 +1580,7 @@ void RaftNode::send_snapshot_chunk(socket_t sock)
     // 注意：这里需要更精细的锁控制，避免长时间持有 mutex_ 读取文件
     SnapshotTransferState *state = nullptr;
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
         state = &snapshot_state_[sock];
     }
 
@@ -1579,7 +1608,7 @@ void RaftNode::send_snapshot_chunk(socket_t sock)
         // 捕获快照元数据
         // 因为快照是基于当前状态机生成的，所以它对应的 Log Index 就是 last_applied_
         {
-            std::lock_guard<std::mutex> lock(mutex_);
+            std::lock_guard<std::recursive_mutex> lock(mutex_);
             state->last_included_index = persistent_state_.last_applied_.load();
             state->last_included_term = log_array_.get_term(state->last_included_index);
 
@@ -1700,7 +1729,7 @@ void RaftNode::handle_install_snapshot(const RaftMessage &msg)
             uint32_t snapshot_index = data.last_included_index;
             uint32_t snapshot_term = data.last_included_term;
             {
-                std::lock_guard<std::mutex> lock(mutex_);
+                std::lock_guard<std::recursive_mutex> lock(mutex_);
 
                 // 1. 更新持久化状态
                 persistent_state_.log_snapshot_index_ = snapshot_index;
@@ -1729,7 +1758,7 @@ void RaftNode::handle_install_snapshot(const RaftMessage &msg)
 void RaftNode::handle_snapshot_response(const RaftMessage &msg, socket_t sock)
 {
     const auto &resp = *msg.snapshot_install_response_data;
-    std::unique_lock<std::mutex> lock(mutex_);
+    std::unique_lock<std::recursive_mutex> lock(mutex_);
     if (snapshot_state_.count(sock) == 0)
     {
         return;
@@ -1777,19 +1806,19 @@ void RaftNode::handle_append_entries_response(const RaftMessage &msg, const sock
         // 复制成功，更新match_index和next_index
         uint32_t old_match, new_match;
         {
-            std::lock_guard<std::mutex> lock(mutex_);
+            std::lock_guard<std::recursive_mutex> lock(mutex_);
             old_match = match_index_[sock];
             match_index_[sock] = std::max(match_index_[sock], response.log_index);
             new_match = match_index_[sock];
             next_index_[sock] = match_index_[sock] + 1;
         }
 
-        LOG_INFO("[Node=%s][Role=Leader][Term=%u] LOG REPLICATION SUCCESS: Socket=%d, MatchIndex: %u -> %u",
-                 node_id.c_str(),
-                 persistent_state_.current_term_.load(),
-                 sock,
-                 old_match,
-                 new_match);
+        LOG_DEBUG("[Node=%s][Role=Leader][Term=%u] LOG REPLICATION SUCCESS: Socket=%d, MatchIndex: %u -> %u",
+                  node_id.c_str(),
+                  persistent_state_.current_term_.load(),
+                  sock,
+                  old_match,
+                  new_match);
 
         // 检查是否可以提交
         try_commit_entries();
@@ -1799,7 +1828,7 @@ void RaftNode::handle_append_entries_response(const RaftMessage &msg, const sock
         // 复制失败，回退next_index
         uint32_t old_next, new_next;
         {
-            std::lock_guard<std::mutex> lock(mutex_);
+            std::lock_guard<std::recursive_mutex> lock(mutex_);
             old_next = next_index_[sock];
             if (next_index_[sock] > 0)
             {
@@ -1823,7 +1852,7 @@ void RaftNode::handle_append_entries_response(const RaftMessage &msg, const sock
 void RaftNode::handle_request_vote_response(const RaftMessage &msg)
 {
     std::string node_id = get_node_id();
-    std::unique_lock<std::mutex> lock(mutex_);
+    std::unique_lock<std::recursive_mutex> lock(mutex_);
 
     uint32_t my_term = persistent_state_.current_term_.load();
 
@@ -1884,6 +1913,13 @@ void RaftNode::handle_request_vote_response(const RaftMessage &msg)
                      majority);
             lock.unlock();
             become_leader();
+            // 广播NEW_MASTER消息通知所有已知节点
+            LOG_INFO("[Node=%s][Term=%u] Broadcasting NEW_MASTER message to cluster",
+                     node_id.c_str(),
+                     persistent_state_.current_term_.load());
+            std::thread([this]()
+                        { this->broadcast_new_master(); })
+                .detach();
         }
     }
     else
@@ -1937,7 +1973,7 @@ Response RaftNode::submit_command(const std::string &request_id, const std::stri
     std::vector<std::string> command_parts = split_by_spacer(cmd);
     if (command_parts.empty())
     {
-        response = Response::error("Invalid command");
+        response = Response::error(std::string("invalid command"));
         response.request_id_ = request_id;
     }
     else
@@ -1981,7 +2017,7 @@ Response RaftNode::submit_command(const std::string &request_id, const std::stri
             // 执行了写命令
             if (!persistent_state_.cluster_metadata_.current_leader_.is_null())
             {
-                std::lock_guard<std::mutex> lock(mutex_);
+                std::lock_guard<std::recursive_mutex> lock(mutex_);
                 persistent_state_.cluster_metadata_.current_leader_ = Address();
                 save_persistent_state();
             }
@@ -2044,7 +2080,7 @@ Response RaftNode::handle_raft_command(const std::vector<std::string> &command_p
         }
         else
         {
-            response = Response::error("invalid command");
+            response = Response::error(std::string("invalid command"));
         }
     }
     else if (command_parts[0] == "set_master")
@@ -2069,17 +2105,18 @@ Response RaftNode::handle_raft_command(const std::vector<std::string> &command_p
                 }
                 else
                 {
-                    response = Response::success(become_follower(address, persistent_state_.current_term_, true, persistent_state_.commit_index_));
+                    response = Response::success(become_follower(address, persistent_state_.current_term_.load(), true, persistent_state_.commit_index_.load()));
                 }
             }
             else
             {
+                // TODO 清空现有的数据，避免脏数据
                 response = Response::success(become_follower(address));
             }
         }
         else
         {
-            response = Response::error("invalid command");
+            response = Response::error(std::string("invalid command"));
         }
     }
     else if (command_parts[0] == "remove_node")
@@ -2097,16 +2134,16 @@ Response RaftNode::handle_raft_command(const std::vector<std::string> &command_p
             Address node_to_remove(ip, port);
             if (remove_node(node_to_remove))
             {
-                response = Response::success("node removed");
+                response = Response::success(std::string("node removed"));
             }
             else
             {
-                response = Response::error("node not found");
+                response = Response::error(std::string("node not found"));
             }
         }
         else
         {
-            response = Response::error("invalid command");
+            response = Response::error(std::string("invalid command"));
         }
     }
     else if (command_parts[0] == "list_nodes")
@@ -2117,16 +2154,22 @@ Response RaftNode::handle_raft_command(const std::vector<std::string> &command_p
             std::string nodes_str;
             for (const auto &node : cluster_nodes_)
             {
+                if (node.is_null())
+                {
+                    continue;
+                }
                 if (!nodes_str.empty())
                     nodes_str += ",";
                 nodes_str += node.to_string();
             }
+            if (!nodes_str.empty())
+                nodes_str += ",";
             nodes_str += "current_node";
             response = Response::success(nodes_str);
         }
         else
         {
-            response = Response::error("invalid command");
+            response = Response::error(std::string("invalid command"));
         }
     }
     else if (command_parts[0] == "get_status")
@@ -2144,7 +2187,7 @@ Response RaftNode::handle_raft_command(const std::vector<std::string> &command_p
         }
         else
         {
-            response = Response::error("invalid command");
+            response = Response::error(std::string("invalid command"));
         }
     }
     else
@@ -2281,9 +2324,9 @@ void RaftNode::close_socket(socket_t sock)
     {
         std::lock_guard<std::shared_mutex> lock(follower_sockets_mutex_);
         follower_sockets_.erase(sock);
-        Address node_to_remove;
+        /*Address node_to_remove;
         get_opposite_address(sock, node_to_remove);
-        follower_address_map_.erase(node_to_remove);
+        follower_address_map_.erase(node_to_remove);*/
     }
 }
 
@@ -2296,13 +2339,13 @@ bool RaftNode::remove_node(const Address &node_to_remove)
         socket_t sock = follower_address_map_[node_to_remove];
         next_index_.erase(sock);
         match_index_.erase(sock);
+        RaftMessage node_remove_msg = RaftMessage::leave_node(node_to_remove);
+        broadcast_to_followers(node_remove_msg);
         {
             std::unique_lock<std::shared_mutex> lock(follower_sockets_mutex_);
             follower_sockets_.erase(sock);
             follower_address_map_.erase(node_to_remove);
         }
-        RaftMessage node_remove_msg = RaftMessage::leave_node(node_to_remove);
-        broadcast_to_followers(node_remove_msg);
         cluster_nodes_.erase(it);
         save_persistent_state();
         LOG_INFO("Removed node from cluster: %s", node_to_remove.to_string().c_str());
@@ -2333,7 +2376,7 @@ void RaftNode::broadcast_new_master()
     uint32_t current_term;
     std::vector<Address> nodes;
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
         current_term = persistent_state_.current_term_.load();
         // 复制一份节点列表
         for (const auto &node : persistent_state_.cluster_metadata_.cluster_nodes_)
@@ -2435,7 +2478,7 @@ void RaftNode::handle_new_master(const RaftMessage &msg, const socket_t &client_
     }
     // 更新任期并连接新Leader
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
         if (leader_term > my_term)
         {
             persistent_state_.current_term_ = leader_term;

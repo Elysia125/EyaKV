@@ -438,9 +438,10 @@ struct JoinClusterData
 {
     bool is_reconnect;   // 是否是重连
     uint32_t last_index; // 日志的最后一个索引
-    JoinClusterData() : is_reconnect(false), last_index(0) {}
-    JoinClusterData(bool reconnect, uint32_t last_idx)
-        : is_reconnect(reconnect), last_index(last_idx) {}
+    uint16_t port;       // 自己的节点端口
+    JoinClusterData() : is_reconnect(false), last_index(0), port(0) {}
+    JoinClusterData(bool reconnect, uint32_t last_idx, uint16_t port)
+        : is_reconnect(reconnect), last_index(last_idx), port(port) {}
 
     std::string serialize() const
     {
@@ -452,7 +453,8 @@ struct JoinClusterData
         // 序列化密码和日志索引
         uint32_t net_last_index = htonl(last_index);
         result.append(reinterpret_cast<const char *>(&net_last_index), sizeof(net_last_index));
-
+        uint16_t net_port = htons(port);
+        result.append(reinterpret_cast<const char *>(&net_port), sizeof(net_port));
         return result;
     }
     static JoinClusterData deserialize(const char *data, size_t &offset)
@@ -467,7 +469,10 @@ struct JoinClusterData
         std::memcpy(&net_last_index, data + offset, sizeof(net_last_index));
         offset += sizeof(net_last_index);
         join_data.last_index = ntohl(net_last_index);
-
+        uint16_t net_port;
+        std::memcpy(&net_port, data + offset, sizeof(net_port));
+        offset += sizeof(net_port);
+        join_data.port = ntohs(net_port);
         return join_data;
     }
 };
@@ -739,11 +744,11 @@ struct RaftMessage : public ProtocolBody
         return msg;
     }
 
-    static RaftMessage join_cluster(bool is_reconnect, uint32_t last_index)
+    static RaftMessage join_cluster(bool is_reconnect, uint32_t last_index, uint16_t port)
     {
         RaftMessage msg;
         msg.type = RaftMessageType::JOIN_CLUSTER;
-        msg.join_cluster_data = JoinClusterData(is_reconnect, last_index);
+        msg.join_cluster_data = JoinClusterData(is_reconnect, last_index, port);
         return msg;
     }
 

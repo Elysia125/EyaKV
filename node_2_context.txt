@@ -1,0 +1,200 @@
+[2026-02-02 17:59:39] [14] [DEBUG] Processing COMMAND request on fd 732: set_master 127.0.0.1 5211
+[2026-02-02 17:59:39] [14] [INFO] [Node=127.0.0.1:5231][Role=Leader][Term=0] STATE TRANSITION -> Follower, Leader=127.0.0.1:5211, TargetTerm=0, IsReconnect=false, CommitIndex=0
+[2026-02-02 17:59:39] [14] [INFO] attempt to connect to leader: 127.0.0.1:5211
+[2026-02-02 17:59:39] [14] [INFO] Connected to leader: 127.0.0.1:5211
+[2026-02-02 17:59:39] [14] [ERROR] Follower client failed to receive init message response
+[2026-02-02 17:59:39] [14] [DEBUG] Task completed (active threads: 0)
+[2026-02-02 17:59:39] [1] [ERROR] fd closed 732
+[2026-02-02 17:59:39] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:39] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:39] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:39] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:39] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:39] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:39] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:39] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:39] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:39] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:41] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:41] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:41] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:41] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:41] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:41] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:41] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:41] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:41] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:41] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:41] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:41] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:41] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:41] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:41] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:41] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:41] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:41] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:41] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:41] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:41] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:39] [14] [INFO] [Node=127.0.0.1:5231][Role=Leader][Term=0] STATE TRANSITION -> Follower, Leader=127.0.0.1:5211, TargetTerm=0, IsReconnect=false, CommitIndex=0
+[2026-02-02 17:59:39] [14] [INFO] attempt to connect to leader: 127.0.0.1:5211
+[2026-02-02 17:59:39] [14] [INFO] Connected to leader: 127.0.0.1:5211
+[2026-02-02 17:59:39] [14] [ERROR] Follower client failed to receive init message response
+[2026-02-02 17:59:39] [14] [DEBUG] Task completed (active threads: 0)
+[2026-02-02 17:59:39] [1] [ERROR] fd closed 732
+[2026-02-02 17:59:39] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:39] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:39] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:39] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:39] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:39] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:39] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:39] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:39] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:39] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:40] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:41] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:41] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:41] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:41] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:41] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:41] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:41] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:41] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:41] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:41] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:41] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:41] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:41] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:41] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:41] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:41] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:41] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:41] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:41] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:41] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat
+[2026-02-02 17:59:41] [3] [DEBUG] [Node=127.0.0.1:5231][Role=Leader][Term=0] Sending heartbeat to 0 followers, log_count: 0
+[2026-02-02 17:59:41] [3] [DEBUG] [Node=127.0.0.1:5231] No followers to send heartbeat

@@ -469,9 +469,9 @@ inline bool is_big_endian()
     return (test.bytes[0] == 0x01);
 }
 
-using get_address_func = std::function<int((socket_t s, sockaddr *name, int *namelen))>;
+using get_address_func = std::function<int(socket_t s, sockaddr *name, int *namelen)>;
 
-static bool get_address(get_address_func func, socket_t sock, Address &result)
+inline bool get_address(get_address_func func, socket_t sock, Address &result)
 {
     sockaddr_storage addr;
     socklen_t addr_len = sizeof(addr);

@@ -596,7 +596,6 @@ public:
                 // 处理请求，由子类决定何时释放 body
                 handle_request(body, client_sock);
             }
-            // 不要在这里 delete body，让子类决定所有权
         }
         catch (const std::exception &e)
         {
