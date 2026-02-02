@@ -35,7 +35,7 @@ enum class SSTableMergeStrategy
 #define DEFAULT_RAFT_PORT 5211
 #define DEFAULT_RAFT_TRUST_IP "127.0.0.1"
 #define DEFAULT_READ_ONLY false
-#define DEFAULT_LOG_LEVEL LogLevel::DEBUG
+#define DEFAULT_LOG_LEVEL LogLevel::INFO
 #define DEFAULT_LOG_ROTATE_SIZE 1024 * 5 // 日志轮转阈值，避免日志文件过大
 #define DEFAULT_SKIPLIST_MAX_LEVEL 16
 #define DEFAULT_SKIPLIST_PROBABILITY 0.5

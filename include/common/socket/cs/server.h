@@ -85,6 +85,9 @@ public:
     TCPServer(const std::string &ip, const u_short port, const uint32_t max_connections, const uint32_t connect_wait_queue_size, const uint32_t connect_wait_timeout)
         : TCPBase(ip, port), max_connections_(max_connections), connect_wait_queue_size_(connect_wait_queue_size), connect_wait_timeout_(connect_wait_timeout), current_connections_(0), is_running_(false), wait_thread_stop_monitor_(false), listen_socket_(INVALID_SOCKET_VALUE)
     {
+#ifdef _WIN32
+        FD_ZERO(&master_set_);
+#endif
     }
 
     ~TCPServer()
@@ -489,7 +492,7 @@ public:
                 {
                     break; // 数据已全部读取完毕
                 }
-                LOG_ERROR("Recv error on fd %d: %s", client_sock, strerror(errno));
+                LOG_ERROR("Recv error on fd %d: %s", client_sock, socket_error_to_string(GET_SOCKET_ERROR()).c_str());
                 goto cleanup;
             }
             else if (bytes_received == 0)
@@ -531,9 +534,8 @@ public:
                     ProtocolBody *body = new_body();
                     body->deserialize(recv_buffer.data() + body_offset, offset);
 
-                    // TODO: 处理请求
+                    // 处理请求，由子类决定何时释放 body
                     handle_request(body, client_sock);
-                    delete body;
                 }
                 catch (const std::exception &e)
                 {
@@ -576,6 +578,7 @@ public:
                 if (bytes_received == -1)
                 {
                     LOG_ERROR("Recv error on fd %d: timeout", client_sock);
+                    close_socket(client_sock);
                 }
                 else if (bytes_received == -2)
                 {
@@ -584,15 +587,16 @@ public:
                 }
                 else
                 {
-                    LOG_ERROR("Recv error on fd %d: %s", client_sock, socket_error_to_string(bytes_received));
+                    LOG_ERROR("Recv error on fd %d: %s", client_sock, socket_error_to_string(bytes_received).c_str());
+                    close_socket(client_sock);
                 }
             }
             else if (bytes_received != 0)
             {
-                // 处理请求
+                // 处理请求，由子类决定何时释放 body
                 handle_request(body, client_sock);
             }
-            delete body;
+            // 不要在这里 delete body，让子类决定所有权
         }
         catch (const std::exception &e)
         {
@@ -608,17 +612,17 @@ public:
 #ifdef _WIN32
         if (ret == SOCKET_ERROR)
         {
-            LOG_ERROR("Shutdown error on fd %d: %s", sock, socket_error_to_string(errno));
+            LOG_ERROR("Shutdown error on fd %d: %s", sock, socket_error_to_string(GET_SOCKET_ERROR()).c_str());
         }
 #else
         if (ret == -1)
         {
-            LOG_ERROR("Shutdown error on fd %d: %s", sock, socket_error_to_string(errno));
+            LOG_ERROR("Shutdown error on fd %d: %s", sock, socket_error_to_string(GET_SOCKET_ERROR()).c_str());
         }
 #endif
         CLOSE_SOCKET(sock);
 #ifdef __APPLE__
-#elif _WIN32
+#elif defined(_WIN32)
         FD_CLR(sock, &master_set_);
 #elif __linux__
         epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, sock, NULL);

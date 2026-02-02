@@ -35,6 +35,15 @@ void EyaKVStarter::print_banner()
 void EyaKVStarter::initialize()
 {
     register_signal_handlers();
+#ifdef _WIN32
+    WSADATA wsaData;
+    int wsaRes = WSAStartup(MAKEWORD(2, 2), &wsaData);
+    if (wsaRes != 0)
+    {
+        std::cerr << "WSAStartup failed: " << wsaRes << std::endl;
+        throw std::runtime_error("WSAStartup failed");
+    }
+#endif
     print_banner();
     initialize_logger();
     initialize_storage();

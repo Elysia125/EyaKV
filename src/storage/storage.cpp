@@ -705,7 +705,7 @@ Response Storage::execute(uint8_t type, std::vector<std::string> &args)
     {
         return Response::error("read only");
     }
-    if (closed_.exchange(true))
+    if (closed_)
     {
         return Response::error("error:storage closed");
     }

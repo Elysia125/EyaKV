@@ -174,7 +174,7 @@ private:
      * @param request 客户端请求对象
      * @param client_sock 客户端socket描述符
      */
-    void handle_request(ProtocolBody *body, socket_t client_sock);
+    void handle_request(ProtocolBody *body, socket_t client_sock) override;
 
     /**
      * @brief 发送连接状态给客户端

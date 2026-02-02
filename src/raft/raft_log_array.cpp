@@ -26,7 +26,7 @@ RaftLogArray::RaftLogArray(const std::string &log_dir)
     LOG_INFO("[RaftLogArray] Initializing log array, dir: %s", log_dir.c_str());
 
     // 确保 log_dir 存在
-    if (!create_directory(log_dir_))
+    if (!fs::exists(log_dir_) && !create_directory(log_dir_))
     {
         LOG_ERROR("[RaftLogArray] Failed to create log directory: %s", log_dir_.c_str());
         throw std::runtime_error("Failed to create log directory: " + log_dir_);
@@ -192,7 +192,7 @@ bool RaftLogArray::read_entry_from_wal(uint64_t offset, LogEntry &entry) const
     size_t off = 0;
     entry = LogEntry::deserialize(data.c_str(), off);
     fseek(wal_file_, current_pos, SEEK_SET); // 恢复位置
-    return false;
+    return true;
 }
 
 bool RaftLogArray::write_index_entry(uint64_t offset)

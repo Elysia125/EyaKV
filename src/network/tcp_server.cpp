@@ -396,6 +396,7 @@ void EyaServer::handle_request(ProtocolBody *body, socket_t client_sock)
         LOG_ERROR("Transferred data is not a request");
         Response response = Response::error("Server error");
         send(response, client_sock);
+        delete body;
         return;
     }
     LOG_DEBUG("Processing request from fd %d: %s",
@@ -429,12 +430,14 @@ void EyaServer::handle_request(ProtocolBody *body, socket_t client_sock)
                 response = Response::error("Authentication required");
                 send(response, client_sock);
                 close_socket(client_sock);
+                delete body;
                 return;
             }
             else
             {
                 if(!RaftNode::is_init()){
                     LOG_ERROR("Raft is not initialized");
+                            delete body;
                     exit(1);
                 }
                 static RaftNode*raft_node=RaftNode::get_instance();
@@ -458,7 +461,8 @@ void EyaServer::handle_request(ProtocolBody *body, socket_t client_sock)
         response = Response::error("Unknown server error");
     }
     // 发送响应
-    send(response, client_sock); });
+    send(response, client_sock);
+        delete body; });
     if (!is_submitted)
     {
         LOG_ERROR("Failed to submit request to thread pool");

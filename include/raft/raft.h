@@ -349,8 +349,7 @@ private:
     std::thread follower_client_thread_;                      // Follower客户端线程：处理从Leader接收到的消息
     std::atomic<bool> follower_client_thread_running_{false}; // Follower客户端线程运行标志
 
-    // 元数据文件句柄
-    FILE *metadata_file_ = nullptr; // 元数据文件句柄：存储集群元数据
+    // 元数据
     std::string root_dir_;          // 数据根目录：存储日志、快照、元数据等的根目录
 
     // 是否允许写（仅Leader有效，Follower本身不可写）
@@ -546,6 +545,10 @@ private:
 
     /// @brief 应用已提交的日志到状态机
     void apply_committed_entries();
+    
+    // 无锁版本辅助方法 (调用者需保证持有 mutex_)
+    void apply_committed_entries_nolock();
+    void send_append_entries_nolock(const socket_t &sock);
 
     // 辅助方法
     /// @brief 获取当前时间戳（秒）

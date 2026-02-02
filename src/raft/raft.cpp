@@ -62,15 +62,6 @@ RaftNode::RaftNode(const std::string root_dir, const std::string &ip, const u_sh
     WSAStartup(MAKEWORD(2, 2), &wsaData);
 #endif
 
-    // 1. 打开元数据文件
-    std::string meta_path = PathUtils::combine_path(PathUtils::combine_path(root_dir, ".raft"), ".raft_meta");
-    metadata_file_ = fopen(meta_path.c_str(), "ab+");
-    if (metadata_file_ == nullptr)
-    {
-        LOG_ERROR("[Node=%s] Failed to open metadata file: %s", node_id.c_str(), meta_path.c_str());
-        throw std::runtime_error("Failed to open metadata file: " + meta_path);
-    }
-
     // 2. 加载持久化状态
     load_persistent_state();
     LOG_INFO("[Node=%s] Loaded persistent state - Term=%u, CommitIndex=%u, LastApplied=%u, SnapshotIndex=%u",
@@ -104,6 +95,18 @@ RaftNode::RaftNode(const std::string root_dir, const std::string &ip, const u_sh
                  persistent_state_.cluster_metadata_.cluster_nodes_.size());
         init_with_cluster_discovery();
     }
+    
+    // 确保 CommitIndex 不超过日志最后一条索引
+    uint32_t last_log_idx = log_array_.get_last_index();
+    if (persistent_state_.commit_index_ > last_log_idx)
+    {
+        LOG_WARN("[Node=%s] Sanitizing CommitIndex: %u -> %u (LastLogIndex)", 
+                 node_id.c_str(), persistent_state_.commit_index_.load(), last_log_idx);
+        persistent_state_.commit_index_.store(last_log_idx);
+    }
+
+    // 尝试应用已加载的日志
+    apply_committed_entries();
 
     // 4. 启动后台线程
     start_background_threads();
@@ -154,12 +157,6 @@ RaftNode::~RaftNode()
         follower_client_thread_.join();
     }
 
-    // 关闭元数据文件
-    if (metadata_file_ != nullptr)
-    {
-        fclose(metadata_file_);
-        metadata_file_ = nullptr;
-    }
     for (auto &[sock, snapshot_state] : snapshot_state_)
     {
         if (snapshot_state.fp != nullptr)
@@ -174,46 +171,54 @@ RaftNode::~RaftNode()
 // 加载持久化状态
 void RaftNode::load_persistent_state()
 {
-    if (metadata_file_ == nullptr)
+    std::string meta_path = PathUtils::combine_path(PathUtils::combine_path(root_dir_, ".raft"), ".raft_meta");
+    FILE *file = fopen(meta_path.c_str(), "rb");
+    if (file == nullptr)
     {
-        LOG_INFO("No persistent state found, starting with empty state");
+        LOG_INFO("No persistent state file found: %s", meta_path.c_str());
         return;
     }
 
-    fseek(metadata_file_, 0, SEEK_END);
-    long file_size = ftell(metadata_file_);
-    fseek(metadata_file_, 0, SEEK_SET);
+    fseek(file, 0, SEEK_END);
+    long file_size = ftell(file);
+    fseek(file, 0, SEEK_SET);
 
     if (file_size > 0)
     {
         std::string data(file_size, '\0');
-        if (fread(&data[0], 1, file_size, metadata_file_) != file_size)
+        if (fread(&data[0], 1, file_size, file) != (size_t)file_size)
         {
             LOG_ERROR("Failed to read persistent state from file");
+            fclose(file);
             return;
         }
         size_t offset = 0;
         persistent_state_ = PersistentState::deserialize(data.data(), offset);
     }
+    fclose(file);
 }
 
 // 保存持久化状态
 void RaftNode::save_persistent_state()
 {
-    if (metadata_file_ == nullptr)
+    std::string meta_path = PathUtils::combine_path(PathUtils::combine_path(root_dir_, ".raft"), ".raft_meta");
+    FILE *file = fopen(meta_path.c_str(), "wb");
+    if (file == nullptr)
     {
-        LOG_ERROR("Metadata file is not open");
+        LOG_ERROR("Failed to open metadata file for writing: %s", meta_path.c_str());
         return;
     }
 
     std::string serialized_data = persistent_state_.serialize();
-    if (fwrite(serialized_data.c_str(), 1, serialized_data.size(), metadata_file_) != serialized_data.size())
+    if (fwrite(serialized_data.data(), 1, serialized_data.size(), file) != serialized_data.size())
     {
-        LOG_ERROR("Failed to write persistent state to file");
+        LOG_ERROR("Failed to write persistent state to file: %s", meta_path.c_str());
+        fclose(file);
         return;
     }
 
-    fflush(metadata_file_);
+    fflush(file);
+    fclose(file);
 }
 
 // 客户端线程工作函数
@@ -882,8 +887,14 @@ void RaftNode::send_heartbeat_to_all()
 // 发送AppendEntries
 void RaftNode::send_append_entries(const socket_t &sock)
 {
+    std::lock_guard<std::mutex> lock(mutex_);
+    send_append_entries_nolock(sock);
+}
+
+void RaftNode::send_append_entries_nolock(const socket_t &sock)
+{
     std::string node_id = get_node_id();
-    std::lock_guard<std::mutex> lock(mutex_); // 需注意锁的范围，避免死锁
+    // 假设调用者已持有 mutex_
 
     // 如果不是 Leader，不发送
     if (role_ != RaftRole::Leader)
@@ -1057,7 +1068,8 @@ bool RaftNode::handle_append_entries(const RaftMessage &msg)
             persistent_state_.commit_index_.store(new_commit, std::memory_order_relaxed);
             save_persistent_state();
             LOG_INFO("[Node=%s] COMMIT INDEX updated: %u -> %u", node_id.c_str(), old_commit, new_commit);
-            apply_committed_entries(); // Follower 也要应用日志
+            LOG_INFO("[Node=%s] COMMIT INDEX updated: %u -> %u", node_id.c_str(), old_commit, new_commit);
+            apply_committed_entries_nolock(); // Follower 也要应用日志
         }
     }
     else
@@ -1205,8 +1217,14 @@ bool RaftNode::handle_request_vote(const RaftMessage &msg, const socket_t &clien
 // 应用已提交的日志到状态机
 void RaftNode::apply_committed_entries()
 {
-    std::string node_id = get_node_id();
     std::lock_guard<std::mutex> lock(mutex_);
+    apply_committed_entries_nolock();
+}
+
+void RaftNode::apply_committed_entries_nolock()
+{
+    std::string node_id = get_node_id();
+    // 假设调用者已持有 mutex_
     uint32_t commit_index = persistent_state_.commit_index_.load();
     uint32_t last_applied = persistent_state_.last_applied_.load();
 
@@ -1278,6 +1296,9 @@ void RaftNode::apply_committed_entries()
 void RaftNode::try_commit_entries()
 {
     std::string node_id = get_node_id();
+    // 需持有锁以读取 match_index_ 等状态
+    std::lock_guard<std::mutex> lock(mutex_);
+
     uint32_t commit_index = persistent_state_.commit_index_.load();
     uint32_t last_log_index = log_array_.get_last_index();
 
@@ -1310,9 +1331,8 @@ void RaftNode::try_commit_entries()
     size_t cluster_size = match_indexes.size();
     uint32_t majority_index = match_indexes[cluster_size / 2];
 
-    // 4. 检查条件：
-    // a. N > commitIndex
-    // b. log[N].term == currentTerm (Raft 安全限制：只能提交当前任期的日志)
+    // 4. 检查条件并更新 CommitIndex
+    bool advanced = false;
     if (majority_index > commit_index)
     {
         uint32_t log_term = log_array_.get_term(majority_index);
@@ -1327,14 +1347,9 @@ void RaftNode::try_commit_entries()
                      majority_index,
                      log_term);
 
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                persistent_state_.commit_index_.store(majority_index);
-            }
+            persistent_state_.commit_index_.store(majority_index);
             save_persistent_state(); // 持久化
-
-            // 应用日志到状态机
-            apply_committed_entries();
+            advanced = true;
         }
         else
         {
@@ -1344,6 +1359,12 @@ void RaftNode::try_commit_entries()
                       log_term,
                       current_term);
         }
+    }
+
+    // 只要有已提交但未应用的日志，就尝试应用
+    if (advanced || persistent_state_.commit_index_ > persistent_state_.last_applied_)
+    {
+        apply_committed_entries_nolock();
     }
 }
 
@@ -1520,7 +1541,7 @@ void RaftNode::trigger_log_sync(socket_t sock)
     else
     {
         // 场景：日志存在，走正常的 AppendEntries
-        send_append_entries(sock);
+        send_append_entries_nolock(sock);
     }
 }
 // 发送快照块
@@ -1886,7 +1907,13 @@ Response RaftNode::execute_command(const std::string &cmd)
     }
     static Storage *storage_ = Storage::get_instance();
     std::vector<std::string> command_parts = split_by_spacer(cmd);
+    if (command_parts.empty())
+    {
+        return Response::error("Empty command");
+    }
     uint8_t operation = stringToOperationType(command_parts[0]);
+    // 移除操作名，只保留参数
+    command_parts.erase(command_parts.begin());
     return storage_->execute(operation, command_parts);
 }
 
@@ -1988,7 +2015,8 @@ Response RaftNode::submit_command(const std::string &request_id, const std::stri
                 // 超时处理
                 std::lock_guard<std::mutex> pending_lock(pending_requests_mutex_);
                 pending_requests_.erase(log_index);
-                return Response::error("command timeout");
+                response = Response::error("command timeout");
+                response.request_id_ = request_id;
             }
         }
     }
