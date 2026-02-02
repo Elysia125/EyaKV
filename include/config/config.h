@@ -93,10 +93,19 @@ enum class SSTableMergeStrategy
 class EyaKVConfig
 {
 private:
-    std::string config_file_ = PathUtils::get_target_file_path("conf/eyakv.conf");
+    std::string config_file_;
     std::unordered_map<std::string, std::string> config_map_;
     EyaKVConfig()
     {
+        const char *env_config = std::getenv("EYAKV_CONFIG_PATH");
+        if (env_config != nullptr)
+        {
+            config_file_ = std::string(env_config);
+        }
+        else
+        {
+            config_file_ = PathUtils::get_target_file_path("conf/eyakv.conf");
+        }
         load_default_config();
         load_config();
         check_config();

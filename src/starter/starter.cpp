@@ -170,7 +170,12 @@ void EyaKVStarter::initialize_raft()
             raft_trust_ip.insert(addr);
         }
     }
-    RaftNode::init(PathUtils::get_exe_dir(), ip, port, raft_trust_ip);
+    std::optional<std::string> data_dir = config.get_config(DATA_DIR_KEY);
+    if (!data_dir.has_value() || data_dir->empty())
+    {
+        throw std::runtime_error("Data directory not configured for Raft.");
+    }
+    RaftNode::init(data_dir.value(), ip, port, raft_trust_ip);
     if (RaftNode::get_instance() != nullptr)
     {
         std::cout << "Raft consensus initialized successfully." << std::endl;

@@ -20,6 +20,7 @@
 #include "network/protocol/protocol.h"
 #include "common/ds/lru_cache.h"
 #include "common/concurrency/threadpool.h"
+#include "logger/logger.h"
 // Raft角色枚举
 enum RaftRole
 {
@@ -27,6 +28,24 @@ enum RaftRole
     Candidate, // 候选者：正在竞选Leader，请求其他节点投票
     Leader     // 领导者：负责处理客户端请求、日志复制和提交
 };
+
+/// @brief 将RaftRole转换为字符串
+/// @param role Raft角色
+/// @return 角色名称字符串
+inline const char *role_to_string(RaftRole role)
+{
+    switch (role)
+    {
+    case RaftRole::Follower:
+        return "Follower";
+    case RaftRole::Candidate:
+        return "Candidate";
+    case RaftRole::Leader:
+        return "Leader";
+    default:
+        return "Unknown";
+    }
+}
 
 // 持久化状态结构：存储在稳定存储上的Raft节点状态
 struct PersistentState
@@ -638,6 +657,26 @@ public:
     /// @brief 获取当前角色
     /// @return 当前角色（Follower、Candidate或Leader）
     RaftRole get_role() const { return role_.load(); }
+
+    /// @brief 获取节点ID（用于日志记录）
+    /// @return 节点标识字符串，格式为 "ip:port"
+    std::string get_node_id() const { return ip_ + ":" + std::to_string(port_); }
+
+    /// @brief 获取当前任期号
+    /// @return 当前任期号
+    uint32_t get_current_term() const { return persistent_state_.current_term_.load(std::memory_order_relaxed); }
+
+    /// @brief 获取当前Leader地址
+    /// @return Leader地址，如果没有Leader则返回null地址
+    Address get_leader_addr() const { return persistent_state_.cluster_metadata_.current_leader_; }
+
+    /// @brief 获取已提交的日志索引
+    /// @return 已提交的最高日志索引
+    uint32_t get_commit_index() const { return persistent_state_.commit_index_.load(std::memory_order_relaxed); }
+
+    /// @brief 获取已应用的日志索引
+    /// @return 已应用到状态机的最高日志索引
+    uint32_t get_last_applied() const { return persistent_state_.last_applied_.load(std::memory_order_relaxed); }
 
     /// @brief 获取RaftNode单例实例
     /// @return RaftNode指针，如果未初始化则返回nullptr

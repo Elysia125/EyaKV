@@ -23,10 +23,12 @@
 RaftLogArray::RaftLogArray(const std::string &log_dir)
     : entries_(), base_index_(1), log_dir_(log_dir)
 {
+    LOG_INFO("[RaftLogArray] Initializing log array, dir: %s", log_dir.c_str());
+
     // 确保 log_dir 存在
     if (!create_directory(log_dir_))
     {
-        LOG_ERROR("Failed to create log directory: %s", log_dir_.c_str());
+        LOG_ERROR("[RaftLogArray] Failed to create log directory: %s", log_dir_.c_str());
         throw std::runtime_error("Failed to create log directory: " + log_dir_);
     }
     // 打开 WAL 文件 (append 模式)
@@ -34,7 +36,7 @@ RaftLogArray::RaftLogArray(const std::string &log_dir)
     wal_file_ = fopen(wal_path_.c_str(), "ab+");
     if (wal_file_ == nullptr)
     {
-        LOG_ERROR("Failed to open WAL file: %s", wal_path_.c_str());
+        LOG_ERROR("[RaftLogArray] Failed to open WAL file: %s", wal_path_.c_str());
         throw std::runtime_error("Failed to open WAL file: " + wal_path_);
     }
 
@@ -43,7 +45,7 @@ RaftLogArray::RaftLogArray(const std::string &log_dir)
     index_file_ = fopen(index_path_.c_str(), "ab+");
     if (index_file_ == nullptr)
     {
-        LOG_ERROR("Failed to open index file: %s", index_path_.c_str());
+        LOG_ERROR("[RaftLogArray] Failed to open index file: %s", index_path_.c_str());
         throw std::runtime_error("Failed to open index file: " + index_path_);
     }
     // 尝试恢复
@@ -52,6 +54,8 @@ RaftLogArray::RaftLogArray(const std::string &log_dir)
 
 RaftLogArray::~RaftLogArray()
 {
+    LOG_INFO("[RaftLogArray] Destroying log array, dir: %s", log_dir_.c_str());
+
     // 刷盘并关闭文件
     sync_metadata();
 
@@ -219,13 +223,14 @@ bool RaftLogArray::append_to_index(uint64_t offset)
 bool RaftLogArray::append(LogEntry &entry)
 {
     std::unique_lock<std::shared_mutex> lock(mutex_);
-    entry.index = base_index_ + entries_.size();
+    uint32_t new_index = base_index_ + entries_.size();
+    entry.index = new_index;
 
     // 1. 写入 WAL
     uint64_t offset;
     if (!write_entry_to_wal(entry, offset))
     {
-        LOG_ERROR("Failed to write entry to WAL");
+        LOG_ERROR("[RaftLogArray] Failed to write entry to WAL at index %u", new_index);
         return -1;
     }
 
@@ -236,11 +241,20 @@ bool RaftLogArray::append(LogEntry &entry)
     index_offsets_.push_back(offset);
     if (!write_index_entry(offset))
     {
-        LOG_WARN("Failed to write index entry to file");
+        LOG_WARN("[RaftLogArray] Failed to write index entry to file for index %u", new_index);
     }
+
+    LOG_DEBUG("[RaftLogArray] APPENDED: Index=%u, Term=%u, Cmd=%s, WALOffset=%lu",
+              new_index,
+              entry.term,
+              entry.cmd.c_str(),
+              offset);
+
     if (entries_.size() > LOG_SIZE_THRESHOLD)
     {
-        LOG_WARN("Raft log size exceeded threshold, truncating.");
+        LOG_WARN("[RaftLogArray] Log size %zu exceeds threshold %u, truncating",
+                 entries_.size(),
+                 LOG_SIZE_THRESHOLD);
         truncate_from(entries_.size() / 4); // 截断前四分之一日志
     }
     return true;
@@ -249,11 +263,13 @@ bool RaftLogArray::append(LogEntry &entry)
 bool RaftLogArray::append(const LogEntry &entry)
 {
     std::unique_lock<std::shared_mutex> lock(mutex_);
+    uint32_t new_index = base_index_ + entries_.size();
+
     // 1. 写入 WAL
     uint64_t offset;
     if (!write_entry_to_wal(entry, offset))
     {
-        LOG_ERROR("Failed to write entry to WAL");
+        LOG_ERROR("[RaftLogArray] Failed to write entry to WAL at index %u", new_index);
         return -1;
     }
 
@@ -264,11 +280,20 @@ bool RaftLogArray::append(const LogEntry &entry)
     index_offsets_.push_back(offset);
     if (!write_index_entry(offset))
     {
-        LOG_WARN("Failed to write index entry to file");
+        LOG_WARN("[RaftLogArray] Failed to write index entry to file for index %u", new_index);
     }
+
+    LOG_DEBUG("[RaftLogArray] APPENDED: Index=%u, Term=%u, Cmd=%s, WALOffset=%lu",
+              new_index,
+              entry.term,
+              entry.cmd.c_str(),
+              offset);
+
     if (entries_.size() > LOG_SIZE_THRESHOLD)
     {
-        LOG_WARN("Raft log size exceeded threshold, truncating.");
+        LOG_WARN("[RaftLogArray] Log size %zu exceeds threshold %u, truncating",
+                 entries_.size(),
+                 LOG_SIZE_THRESHOLD);
         truncate_from(entries_.size() / 4); // 截断前四分之一日志
     }
     return true;
@@ -291,20 +316,30 @@ bool RaftLogArray::batch_append(std::vector<LogEntry> &entries)
     uint64_t offset = ftell(wal_file_);
     if (!write_batch_to_wal(entries))
     {
-        LOG_ERROR("Failed to write batch to WAL");
+        LOG_ERROR("[RaftLogArray] Failed to write batch of %zu entries to WAL", entries.size());
         return false;
     }
 
     // 2. 追加到内存
+    uint32_t batch_start_index = start_index - entries.size();
     for (const auto &entry : entries)
     {
         entries_.push_back(entry);
         index_offsets_.push_back(offset);
         offset += sizeof(uint32_t) * 2 + entry.serialize().size(); // 估算下一个偏移
     }
+
+    LOG_INFO("[RaftLogArray] BATCH APPEND: %zu entries, Index %u-%u, WALOffset=%lu",
+             entries.size(),
+             batch_start_index,
+             start_index - 1,
+             offset);
+
     if (entries_.size() > LOG_SIZE_THRESHOLD)
     {
-        LOG_WARN("Raft log size exceeded threshold, truncating.");
+        LOG_WARN("[RaftLogArray] Log size %zu exceeds threshold %u, truncating",
+                 entries_.size(),
+                 LOG_SIZE_THRESHOLD);
         truncate_from(entries_.size() / 4); // 截断前四分之一日志
     }
     return true;
@@ -321,20 +356,30 @@ bool RaftLogArray::batch_append(const std::vector<LogEntry> &entries)
     uint64_t offset = ftell(wal_file_);
     if (!write_batch_to_wal(entries))
     {
-        LOG_ERROR("Failed to write batch to WAL");
+        LOG_ERROR("[RaftLogArray] Failed to write batch of %zu entries to WAL", entries.size());
         return false;
     }
 
     // 2. 追加到内存
+    uint32_t start_index = base_index_ + entries_.size() - entries.size();
     for (const auto &entry : entries)
     {
         entries_.push_back(entry);
         index_offsets_.push_back(offset);
         offset += sizeof(uint32_t) * 2 + entry.serialize().size(); // 估算下一个偏移
     }
+
+    LOG_INFO("[RaftLogArray] BATCH APPEND: %zu entries, Index %u-%zu, WALOffset=%lu",
+             entries.size(),
+             start_index,
+             start_index + entries.size() - 1,
+             offset);
+
     if (entries_.size() > LOG_SIZE_THRESHOLD)
     {
-        LOG_WARN("Raft log size exceeded threshold, truncating.");
+        LOG_WARN("[RaftLogArray] Log size %zu exceeds threshold %u, truncating",
+                 entries_.size(),
+                 LOG_SIZE_THRESHOLD);
         truncate_from(entries_.size() / 4); // 截断前四分之一日志
     }
     return true;
@@ -446,19 +491,19 @@ bool RaftLogArray::recover()
 {
     std::unique_lock<std::shared_mutex> lock(mutex_);
 
-    LOG_INFO("Starting Raft log recovery...");
+    LOG_INFO("[RaftLogArray] Starting log recovery from dir: %s", log_dir_.c_str());
 
     // 1. 加载索引
     if (!load_index())
     {
-        LOG_WARN("Failed to load index, starting with empty log");
+        LOG_WARN("[RaftLogArray] Failed to load index, starting with empty log");
         return true;
     }
 
     // 2. 加载日志条目
     if (!load_entries())
     {
-        LOG_WARN("Failed to load entries, starting with empty log");
+        LOG_WARN("[RaftLogArray] Failed to load entries, starting with empty log");
         entries_.clear();
         index_offsets_.clear();
         base_index_ = 1;
@@ -469,15 +514,23 @@ bool RaftLogArray::recover()
     if (!entries_.empty())
     {
         base_index_ = entries_.front().index;
-        LOG_INFO("Recovered base_index_: %u", base_index_);
+        LOG_INFO("[RaftLogArray] Recovered base_index_: %u", base_index_);
     }
     else
     {
         base_index_ = 1;
+        LOG_INFO("[RaftLogArray] No entries found, setting base_index_ = 1");
     }
 
-    LOG_INFO("Recovered %zu log entries (index: %u-%u)",
-             entries_.size(), base_index_, get_last_index());
+    uint32_t last_index = 0;
+    if (!entries_.empty())
+    {
+        last_index = base_index_ + static_cast<uint32_t>(entries_.size()) - 1;
+    }
+    LOG_INFO("[RaftLogArray] Recovery complete: %zu entries (Index: %u-%u)",
+             entries_.size(),
+             base_index_,
+             last_index);
 
     return true;
 }
@@ -534,12 +587,14 @@ bool RaftLogArray::truncate_from(uint32_t index)
 
     if (index < base_index_ || index > base_index_ + entries_.size())
     {
-        LOG_ERROR("Invalid truncate index: %u (base: %u, size: %zu)",
+        LOG_ERROR("[RaftLogArray] Invalid truncate_from index: %u (base: %u, size: %zu)",
                   index, base_index_, entries_.size());
         return false;
     }
 
-    LOG_INFO("Truncating logs from index %u (removing entries >= %u)", index, index);
+    uint32_t old_last_index = get_last_index();
+    LOG_INFO("[RaftLogArray] TRUNCATE FROM: Index %u (removing entries >= %u), OldLastIndex=%u",
+             index, index, old_last_index);
     if (index == base_index_ + entries_.size())
     {
         LOG_INFO("Truncate to the last index, no need to truncate");
