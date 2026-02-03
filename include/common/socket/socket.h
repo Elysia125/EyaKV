@@ -32,7 +32,7 @@ inline std::string socket_error_to_string(int error) { return std::to_string(err
 typedef int socket_t;
 #define INVALID_SOCKET_VALUE -1
 #define SOCKET_ERROR_VALUE -1
-#define CLOSE_SOCKET close
+#define CLOSE_SOCKET ::close
 #define GET_SOCKET_ERROR() errno
 inline std::string socket_error_to_string(int error) { return strerror(error); }
 #endif
@@ -469,7 +469,7 @@ inline bool is_big_endian()
     return (test.bytes[0] == 0x01);
 }
 
-using get_address_func = std::function<int(socket_t s, sockaddr *name, int *namelen)>;
+using get_address_func = std::function<int(socket_t, sockaddr *, socklen_t *)>;
 
 inline bool get_address(get_address_func func, socket_t sock, Address &result)
 {

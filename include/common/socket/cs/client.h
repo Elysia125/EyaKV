@@ -10,12 +10,18 @@ private:
     WSAInitGuard wsa_guard_;
 #endif
 public:
-    TCPClient(std::string host, u_short port) : TCPBase(host, port), socket_guard_(), wsa_guard_()
+    TCPClient(std::string host, u_short port) : TCPBase(host, port), socket_guard_()
+#ifdef _WIN32
+                                                ,
+                                                wsa_guard_()
+#endif
     {
+#ifdef _WIN32
         if (!wsa_guard_.init())
         {
             throw std::runtime_error("Failed to initialize Winsock");
         }
+#endif
     }
     ~TCPClient()
     {

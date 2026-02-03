@@ -10,6 +10,7 @@
 #include <deque>
 #include <thread>
 #include <optional>
+#include <fcntl.h>
 // IO复用技术头文件
 #ifdef __linux__
 #include <sys/epoll.h>
@@ -40,6 +41,8 @@ protected:
     std::condition_variable_any wait_queue_cv_;  // 条件变量，用于通知监控线程
     std::thread queue_monitor_thread_;           // 等待队列监控线程，检查连接超时
     std::atomic<bool> wait_thread_stop_monitor_; // 监控线程停止标志
+
+    static constexpr size_t INITIAL_BUFFER_SIZE = 4096;
     /**
      * 平台特定的IO复用句柄或数据
      */
@@ -455,7 +458,6 @@ public:
         {
             LOG_ERROR("Epoll ctl failed for client socket: %s", strerror(errno));
             close_socket(client_sock);
-            continue;
         }
 #else // Windows
         FD_SET(client_sock, &master_set_);
