@@ -13,6 +13,18 @@
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#elif __linux__
+#ifdef __cplusplus
+extern "C"
+{
+#endif
+#include <unistd.h> // C 头文件，用 extern "C" 包裹避免命名空间问题
+#ifdef __cplusplus
+}
+#endif
+#include <limits.h>
+#elif __APPLE__
+#include <mach-o/dyld.h>
 #endif
 // 路径工具类：获取可执行文件目录，拼接目标文件绝对路径
 class EYAKV_COMMON_API PathUtils
@@ -43,15 +55,6 @@ public:
                 }
         }
 #elif __linux__
-#ifdef __cplusplus
-        extern "C"
-        {
-#endif
-#include <unistd.h> // C 头文件，用 extern "C" 包裹避免命名空间问题
-#ifdef __cplusplus
-        }
-#endif
-#include <limits.h>
         static std::string get_exe_absolute_path()
         {
                 std::lock_guard<std::mutex> lock(cache_mutex_);
@@ -71,7 +74,6 @@ public:
                 return "";
         }
 #elif __APPLE__
-#include <mach-o/dyld.h>
         static std::string get_exe_absolute_path()
         {
                 std::lock_guard<std::mutex> lock(cache_mutex_);
