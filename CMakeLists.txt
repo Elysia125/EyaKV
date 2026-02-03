@@ -44,6 +44,8 @@ FetchContent_MakeAvailable(googletest)
 # For this environment, let's assume we might need to fetch it or just proceed 
 # without strictly requiring it for the "Hello World" unless necessary.
 # But per plan, we should configure it.
+set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(WITH_GTEST OFF CACHE BOOL "" FORCE)     # 告诉 glog 不要去依赖 gtest
 find_package(glog QUIET)
 if (NOT glog_FOUND)
     message(STATUS "GLog not found locally, will attempt to fetch...")
