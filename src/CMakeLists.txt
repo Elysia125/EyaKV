@@ -11,7 +11,12 @@ endif()
 add_library(eyakv_logger STATIC
     logger/logger.cpp
 )
-
+# 添加必要的编译宏和 C 兼容选项
+target_compile_definitions(eyakv_logger
+    PRIVATE
+        _GNU_SOURCE  # 暴露 readlink 等 GNU 扩展函数
+        _POSIX_C_SOURCE=200809L  # 兼容 POSIX 标准
+)
 # Platform-specific settings
 if(WIN32)
     # Windows specific settings

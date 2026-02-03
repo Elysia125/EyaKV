@@ -43,7 +43,14 @@ public:
                 }
         }
 #elif __linux__
-#include <unistd.h>
+#ifdef __cplusplus
+        extern "C"
+        {
+#endif
+#include <unistd.h> // C 头文件，用 extern "C" 包裹避免命名空间问题
+#ifdef __cplusplus
+        }
+#endif
 #include <limits.h>
         static std::string get_exe_absolute_path()
         {
