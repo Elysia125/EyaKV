@@ -8,7 +8,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6.0.2
       - name: Setup CMake
-        uses: lukka/get-cmake@v4.2.3
+        uses: lukka/get-cmake@v3.28.0
       - name: Configure
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
       - name: Build

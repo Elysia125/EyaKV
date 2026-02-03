@@ -137,6 +137,13 @@ class EyaKVConfig
 private:
     std::string config_file_;
     std::unordered_map<std::string, std::string> config_map_;
+
+    // 配置 key 到环境变量 key 的映射表
+    static const std::unordered_map<std::string, std::string> ENV_KEY_MAP;
+
+    // 初始化环境变量映射表
+    static std::unordered_map<std::string, std::string> init_env_key_map();
+
     EyaKVConfig()
     {
         const char *env_config = std::getenv("EYAKV_CONFIG_PATH");
@@ -150,6 +157,7 @@ private:
         }
         load_default_config();
         load_config();
+        load_config_from_env();  // 从环境变量加载配置
         check_config();
     }
     void load_config()
@@ -186,6 +194,25 @@ private:
                 throw std::runtime_error("Invalid config line: " + line);
             }
             config_map_[key] = value;
+        }
+    }
+
+    /**
+     * @brief 从环境变量加载配置
+     *
+     * 环境变量的命名规则：EYAKV_<KEY_NAME>
+     * 例如：port -> EYAKV_PORT, log_level -> EYAKV_LOG_LEVEL
+     * 环境变量优先级高于配置文件
+     */
+    void load_config_from_env()
+    {
+        for (const auto &[config_key, env_key] : ENV_KEY_MAP)
+        {
+            const char *env_value = std::getenv(env_key.c_str());
+            if (env_value != nullptr && std::string(env_value).length() > 0)
+            {
+                config_map_[config_key] = std::string(env_value);
+            }
         }
     }
 
@@ -484,4 +511,84 @@ public:
     }
     ~EyaKVConfig() = default;
 };
+
+// 初始化环境变量映射表的静态实现
+inline std::unordered_map<std::string, std::string> EyaKVConfig::init_env_key_map()
+{
+    return {
+        // 网络配置
+        {PORT_KEY, "EYAKV_PORT"},
+        {IP_KEY, "EYAKV_IP"},
+        {RAFT_PORT_KEY, "EYAKV_RAFT_PORT"},
+        {RAFT_TRUST_IP_KEY, "EYAKV_RAFT_TRUST_IP"},
+
+        // 日志配置
+        {LOG_LEVEL_KEY, "EYAKV_LOG_LEVEL"},
+        {LOG_ROTATE_SIZE_KEY, "EYAKV_LOG_ROTATE_SIZE"},
+        {LOG_DIR_KEY, "EYAKV_LOG_DIR"},
+
+        // 存储配置
+        {READ_ONLY_KEY, "EYAKV_READ_ONLY"},
+        {MEMTABLE_SIZE_KEY, "EYAKV_MEMTABLE_SIZE"},
+        {DATA_DIR_KEY, "EYAKV_DATA_DIR"},
+
+        // SkipList 配置
+        {SKIPLIST_MAX_LEVEL_KEY, "EYAKV_SKIPLIST_MAX_LEVEL"},
+        {SKIPLIST_PROBABILITY_KEY, "EYAKV_SKIPLIST_PROBABILITY"},
+        {SKIPLIST_MAX_NODE_COUNT_KEY, "EYAKV_SKIPLIST_MAX_NODE_COUNT"},
+
+        // WAL 配置
+        {WAL_ENABLE_KEY, "EYAKV_WAL_ENABLE"},
+        {WAL_DIR_KEY, "EYAKV_WAL_DIR"},
+        {WAL_FILE_SIZE_KEY, "EYAKV_WAL_FILE_SIZE"},
+        {WAL_FILE_MAX_COUNT_KEY, "EYAKV_WAL_FILE_MAX_COUNT"},
+        {WAL_FLUSH_INTERVAL_KEY, "EYAKV_WAL_FLUSH_INTERVAL"},
+        {WAL_FLUSH_STRATEGY_KEY, "EYAKV_WAL_FLUSH_STRATEGY"},
+
+        // SSTable 配置
+        {SSTABLE_MERGE_STRATEGY_KEY, "EYAKV_SSTABLE_MERGE_STRATEGY"},
+        {SSTABLE_ZERO_LEVEL_SIZE_KEY, "EYAKV_SSTABLE_ZERO_LEVEL_SIZE"},
+        {SSTABLE_LEVEL_SIZE_RATIO_KEY, "EYAKV_SSTABLE_LEVEL_SIZE_RATIO"},
+        {SSTABLE_MERGE_THRESHOLD_KEY, "EYAKV_SSTABLE_MERGE_THRESHOLD"},
+
+        // 连接和线程配置
+        {MAX_CONNECTIONS_KEY, "EYAKV_MAX_CONNECTIONS"},
+        {MEMORY_POOL_SIZE_KEY, "EYAKV_MEMORY_POOL_SIZE"},
+        {WAITING_QUEUE_SIZE_KEY, "EYAKV_WAITING_QUEUE_SIZE"},
+        {MAX_WAITING_TIME_KEY, "EYAKV_MAX_WAITING_TIME"},
+        {PASSWORD_KEY, "EYAKV_PASSWORD"},
+        {WORKER_THREAD_COUNT_KEY, "EYAKV_WORKER_THREAD_COUNT"},
+        {WORKER_QUEUE_SIZE_KEY, "EYAKV_WORKER_QUEUE_SIZE"},
+        {WORKER_WAIT_TIMEOUT_KEY, "EYAKV_WORKER_WAIT_TIMEOUT"},
+
+        // Raft 选举配置
+        {RAFT_ELECTION_TIMEOUT_MIN_KEY, "EYAKV_RAFT_ELECTION_TIMEOUT_MIN_MS"},
+        {RAFT_ELECTION_TIMEOUT_MAX_KEY, "EYAKV_RAFT_ELECTION_TIMEOUT_MAX_MS"},
+        {RAFT_HEARTBEAT_INTERVAL_KEY, "EYAKV_RAFT_HEARTBEAT_INTERVAL_MS"},
+        {RAFT_RPC_TIMEOUT_KEY, "EYAKV_RAFT_RPC_TIMEOUT_MS"},
+        {RAFT_FOLLOWER_IDLE_WAIT_KEY, "EYAKV_RAFT_FOLLOWER_IDLE_WAIT_MS"},
+        {RAFT_JOIN_MAX_RETRIES_KEY, "EYAKV_RAFT_JOIN_MAX_RETRIES"},
+
+        // Raft 日志配置
+        {RAFT_REQUEST_VOTE_TIMEOUT_KEY, "EYAKV_RAFT_REQUEST_VOTE_TIMEOUT_MS"},
+        {RAFT_SUBMIT_TIMEOUT_KEY, "EYAKV_RAFT_SUBMIT_TIMEOUT_MS"},
+        {RAFT_APPEND_BATCH_KEY, "EYAKV_RAFT_APPEND_ENTRIES_MAX_BATCH"},
+        {RAFT_LOG_THRESHOLD_KEY, "EYAKV_RAFT_LOG_SIZE_THRESHOLD"},
+        {RAFT_LOG_TRUNCATE_RATIO_KEY, "EYAKV_RAFT_LOG_TRUNCATE_RATIO"},
+        {RAFT_WAL_FILENAME_KEY, "EYAKV_RAFT_WAL_FILENAME"},
+        {RAFT_INDEX_FILENAME_KEY, "EYAKV_RAFT_INDEX_FILENAME"},
+
+        // Raft 快照配置
+        {RAFT_SNAPSHOT_CHUNK_KEY, "EYAKV_RAFT_SNAPSHOT_CHUNK_SIZE_BYTES"},
+        {RAFT_RESULT_CACHE_CAPACITY_KEY, "EYAKV_RAFT_RESULT_CACHE_CAPACITY"},
+
+        // Raft 线程池配置
+        {RAFT_THREADPOOL_WORKERS_KEY, "EYAKV_RAFT_THREADPOOL_WORKERS"},
+        {RAFT_THREADPOOL_QUEUE_KEY, "EYAKV_RAFT_THREADPOOL_QUEUE_SIZE"},
+        {RAFT_THREADPOOL_WAIT_KEY, "EYAKV_RAFT_THREADPOOL_WAIT_TIMEOUT_MS"},
+    };
+}
+
+// 静态成员变量定义
+inline const std::unordered_map<std::string, std::string> EyaKVConfig::ENV_KEY_MAP = EyaKVConfig::init_env_key_map();
 #endif
