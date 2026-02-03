@@ -58,6 +58,27 @@ enum class SSTableMergeStrategy
 #define DEFAULT_WORKER_QUEUE_SIZE 1000
 #define DEFAULT_WORKER_WAIT_TIMEOUT 30
 
+// Raft 相关默认配置
+#define DEFAULT_RAFT_ELECTION_TIMEOUT_MIN 150           // 选举超时最小值(ms)
+#define DEFAULT_RAFT_ELECTION_TIMEOUT_MAX 300           // 选举超时最大值(ms)
+#define DEFAULT_RAFT_HEARTBEAT_INTERVAL 30              // 心跳间隔(ms)
+#define DEFAULT_RAFT_RPC_TIMEOUT 2000                   // Raft RPC 超时(ms)
+#define DEFAULT_RAFT_FOLLOWER_IDLE_WAIT 1000            // Follower 空闲等待(ms)
+#define DEFAULT_RAFT_JOIN_MAX_RETRIES 3                 // Follower 加入集群最大重试次数
+#define DEFAULT_RAFT_REQUEST_VOTE_TIMEOUT 200           // RequestVote 响应超时(ms)
+#define DEFAULT_RAFT_SUBMIT_TIMEOUT 2000                // 提交命令等待超时(ms)
+#define DEFAULT_RAFT_APPEND_BATCH 100                   // 单次 AppendEntries 最大日志条数
+#define DEFAULT_RAFT_SNAPSHOT_CHUNK (64 * 1024)         // 快照 chunk 大小(bytes)
+#define DEFAULT_RAFT_RESULT_CACHE_CAPACITY 10000        // 结果缓存容量
+#define DEFAULT_RAFT_THREADPOOL_WORKERS 4               // Raft 内部线程池工作线程数
+#define DEFAULT_RAFT_THREADPOOL_QUEUE 10000             // Raft 内部线程池队列大小
+#define DEFAULT_RAFT_THREADPOOL_WAIT 1000               // Raft 内部线程池等待超时(ms)
+
+#define DEFAULT_RAFT_LOG_THRESHOLD 1000000              // 触发日志截断的阈值(条数)
+#define DEFAULT_RAFT_LOG_TRUNCATE_RATIO 0.25            // 截断比例
+#define DEFAULT_RAFT_WAL_FILENAME "raft_wal.log"        // WAL 文件名
+#define DEFAULT_RAFT_INDEX_FILENAME "raft_index.idx"    // 索引文件名
+
 #define PORT_KEY "port"
 #define IP_KEY "ip"
 #define RAFT_PORT_KEY "raft_port"
@@ -89,6 +110,27 @@ enum class SSTableMergeStrategy
 #define WORKER_THREAD_COUNT_KEY "worker_thread_count"
 #define WORKER_QUEUE_SIZE_KEY "worker_queue_size"
 #define WORKER_WAIT_TIMEOUT_KEY "worker_wait_timeout"
+
+// Raft 相关配置 key
+#define RAFT_ELECTION_TIMEOUT_MIN_KEY "raft_election_timeout_min_ms"
+#define RAFT_ELECTION_TIMEOUT_MAX_KEY "raft_election_timeout_max_ms"
+#define RAFT_HEARTBEAT_INTERVAL_KEY "raft_heartbeat_interval_ms"
+#define RAFT_RPC_TIMEOUT_KEY "raft_rpc_timeout_ms"
+#define RAFT_FOLLOWER_IDLE_WAIT_KEY "raft_follower_idle_wait_ms"
+#define RAFT_JOIN_MAX_RETRIES_KEY "raft_join_max_retries"
+#define RAFT_REQUEST_VOTE_TIMEOUT_KEY "raft_request_vote_timeout_ms"
+#define RAFT_SUBMIT_TIMEOUT_KEY "raft_submit_timeout_ms"
+#define RAFT_APPEND_BATCH_KEY "raft_append_entries_max_batch"
+#define RAFT_SNAPSHOT_CHUNK_KEY "raft_snapshot_chunk_size_bytes"
+#define RAFT_RESULT_CACHE_CAPACITY_KEY "raft_result_cache_capacity"
+#define RAFT_THREADPOOL_WORKERS_KEY "raft_threadpool_workers"
+#define RAFT_THREADPOOL_QUEUE_KEY "raft_threadpool_queue_size"
+#define RAFT_THREADPOOL_WAIT_KEY "raft_threadpool_wait_timeout_ms"
+
+#define RAFT_LOG_THRESHOLD_KEY "raft_log_size_threshold"
+#define RAFT_LOG_TRUNCATE_RATIO_KEY "raft_log_truncate_ratio"
+#define RAFT_WAL_FILENAME_KEY "raft_wal_filename"
+#define RAFT_INDEX_FILENAME_KEY "raft_index_filename"
 
 class EyaKVConfig
 {
@@ -180,6 +222,26 @@ private:
         config_map_[WORKER_THREAD_COUNT_KEY] = std::to_string(DEFAULT_WORKER_THREAD_COUNT);
         config_map_[WORKER_QUEUE_SIZE_KEY] = std::to_string(DEFAULT_WORKER_QUEUE_SIZE);
         config_map_[WORKER_WAIT_TIMEOUT_KEY] = std::to_string(DEFAULT_WORKER_WAIT_TIMEOUT);
+
+        // Raft 相关默认配置
+        config_map_[RAFT_ELECTION_TIMEOUT_MIN_KEY] = std::to_string(DEFAULT_RAFT_ELECTION_TIMEOUT_MIN);
+        config_map_[RAFT_ELECTION_TIMEOUT_MAX_KEY] = std::to_string(DEFAULT_RAFT_ELECTION_TIMEOUT_MAX);
+        config_map_[RAFT_HEARTBEAT_INTERVAL_KEY] = std::to_string(DEFAULT_RAFT_HEARTBEAT_INTERVAL);
+        config_map_[RAFT_RPC_TIMEOUT_KEY] = std::to_string(DEFAULT_RAFT_RPC_TIMEOUT);
+        config_map_[RAFT_FOLLOWER_IDLE_WAIT_KEY] = std::to_string(DEFAULT_RAFT_FOLLOWER_IDLE_WAIT);
+        config_map_[RAFT_JOIN_MAX_RETRIES_KEY] = std::to_string(DEFAULT_RAFT_JOIN_MAX_RETRIES);
+        config_map_[RAFT_REQUEST_VOTE_TIMEOUT_KEY] = std::to_string(DEFAULT_RAFT_REQUEST_VOTE_TIMEOUT);
+        config_map_[RAFT_SUBMIT_TIMEOUT_KEY] = std::to_string(DEFAULT_RAFT_SUBMIT_TIMEOUT);
+        config_map_[RAFT_APPEND_BATCH_KEY] = std::to_string(DEFAULT_RAFT_APPEND_BATCH);
+        config_map_[RAFT_SNAPSHOT_CHUNK_KEY] = std::to_string(DEFAULT_RAFT_SNAPSHOT_CHUNK);
+        config_map_[RAFT_RESULT_CACHE_CAPACITY_KEY] = std::to_string(DEFAULT_RAFT_RESULT_CACHE_CAPACITY);
+        config_map_[RAFT_THREADPOOL_WORKERS_KEY] = std::to_string(DEFAULT_RAFT_THREADPOOL_WORKERS);
+        config_map_[RAFT_THREADPOOL_QUEUE_KEY] = std::to_string(DEFAULT_RAFT_THREADPOOL_QUEUE);
+        config_map_[RAFT_THREADPOOL_WAIT_KEY] = std::to_string(DEFAULT_RAFT_THREADPOOL_WAIT);
+        config_map_[RAFT_LOG_THRESHOLD_KEY] = std::to_string(DEFAULT_RAFT_LOG_THRESHOLD);
+        config_map_[RAFT_LOG_TRUNCATE_RATIO_KEY] = std::to_string(DEFAULT_RAFT_LOG_TRUNCATE_RATIO);
+        config_map_[RAFT_WAL_FILENAME_KEY] = DEFAULT_RAFT_WAL_FILENAME;
+        config_map_[RAFT_INDEX_FILENAME_KEY] = DEFAULT_RAFT_INDEX_FILENAME;
     }
 
     void check_config()

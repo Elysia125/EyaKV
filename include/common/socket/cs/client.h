@@ -25,6 +25,15 @@ public:
         }
     }
 
+    void close()
+    {
+        if (socket_guard_.is_valid())
+        {
+            CLOSE_SOCKET(socket_guard_.get());
+        }
+        socket_guard_.reset(INVALID_SOCKET_VALUE);
+    }
+
     socket_t get_socket() const
     {
         return socket_guard_.get();
@@ -64,10 +73,18 @@ public:
 
     int send(const ProtocolBody &body)
     {
+        if (!socket_guard_.is_valid())
+        {
+            return -2;
+        }
         return TCPBase::send(body, socket_guard_.get());
     }
     int receive(ProtocolBody &body, uint32_t timeout = 0)
     {
+        if (!socket_guard_.is_valid())
+        {
+            return -2;
+        }
         int ret = TCPBase::receive(body, socket_guard_.get(), timeout);
         if (ret == -2)
         {

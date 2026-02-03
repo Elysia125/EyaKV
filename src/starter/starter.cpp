@@ -184,7 +184,92 @@ void EyaKVStarter::initialize_raft()
     {
         throw std::runtime_error("Data directory not configured for Raft.");
     }
-    RaftNode::init(data_dir.value(), ip, port, raft_trust_ip);
+
+    // 构造 RaftNode 运行时配置
+    RaftNodeConfig raft_cfg;
+    // 选举与心跳
+    if (auto v = config.get_config(RAFT_ELECTION_TIMEOUT_MIN_KEY))
+    {
+        raft_cfg.election_timeout_min_ms = std::stoi(*v);
+    }
+    if (auto v = config.get_config(RAFT_ELECTION_TIMEOUT_MAX_KEY))
+    {
+        raft_cfg.election_timeout_max_ms = std::stoi(*v);
+    }
+    if (auto v = config.get_config(RAFT_HEARTBEAT_INTERVAL_KEY))
+    {
+        raft_cfg.heartbeat_interval_ms = std::stoi(*v);
+    }
+    if (auto v = config.get_config(RAFT_RPC_TIMEOUT_KEY))
+    {
+        raft_cfg.raft_rpc_timeout_ms = std::stoi(*v);
+    }
+    // follower / 重试 / RPC
+    if (auto v = config.get_config(RAFT_FOLLOWER_IDLE_WAIT_KEY))
+    {
+        raft_cfg.follower_idle_wait_ms = std::stoi(*v);
+    }
+    if (auto v = config.get_config(RAFT_JOIN_MAX_RETRIES_KEY))
+    {
+        raft_cfg.join_cluster_max_retries = std::stoi(*v);
+    }
+    if (auto v = config.get_config(RAFT_REQUEST_VOTE_TIMEOUT_KEY))
+    {
+        raft_cfg.request_vote_recv_timeout_ms = std::stoi(*v);
+    }
+    if (auto v = config.get_config(RAFT_SUBMIT_TIMEOUT_KEY))
+    {
+        raft_cfg.submit_command_timeout_ms = std::stoi(*v);
+    }
+    // 日志复制 / 快照
+    if (auto v = config.get_config(RAFT_APPEND_BATCH_KEY))
+    {
+        raft_cfg.append_entries_max_batch = static_cast<uint32_t>(std::stoul(*v));
+    }
+    if (auto v = config.get_config(RAFT_SNAPSHOT_CHUNK_KEY))
+    {
+        raft_cfg.snapshot_chunk_size_bytes = static_cast<size_t>(std::stoull(*v));
+    }
+    // 结果缓存
+    if (auto v = config.get_config(RAFT_RESULT_CACHE_CAPACITY_KEY))
+    {
+        raft_cfg.result_cache_capacity = static_cast<size_t>(std::stoull(*v));
+    }
+    // 线程池
+    ThreadPool::Config tp_cfg = raft_cfg.thread_pool_config;
+    if (auto v = config.get_config(RAFT_THREADPOOL_WORKERS_KEY))
+    {
+        tp_cfg.thread_count = static_cast<uint32_t>(std::stoul(*v));
+    }
+    if (auto v = config.get_config(RAFT_THREADPOOL_QUEUE_KEY))
+    {
+        tp_cfg.queue_size = static_cast<uint32_t>(std::stoul(*v));
+    }
+    if (auto v = config.get_config(RAFT_THREADPOOL_WAIT_KEY))
+    {
+        tp_cfg.wait_timeout_ms = static_cast<uint32_t>(std::stoul(*v));
+    }
+    raft_cfg.thread_pool_config = tp_cfg;
+
+    // 日志存储配置
+    if (auto v = config.get_config(RAFT_LOG_THRESHOLD_KEY))
+    {
+        raft_cfg.log_config.log_size_threshold = static_cast<uint32_t>(std::stoul(*v));
+    }
+    if (auto v = config.get_config(RAFT_LOG_TRUNCATE_RATIO_KEY))
+    {
+        raft_cfg.log_config.truncate_ratio = std::stod(*v);
+    }
+    if (auto v = config.get_config(RAFT_WAL_FILENAME_KEY))
+    {
+        raft_cfg.log_config.wal_filename = *v;
+    }
+    if (auto v = config.get_config(RAFT_INDEX_FILENAME_KEY))
+    {
+        raft_cfg.log_config.index_filename = *v;
+    }
+
+    RaftNode::init(data_dir.value(), ip, port, raft_trust_ip, 5, raft_cfg);
     if (RaftNode::get_instance() != nullptr)
     {
         std::cout << "Raft consensus initialized successfully." << std::endl;

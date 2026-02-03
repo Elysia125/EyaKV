@@ -13,15 +13,13 @@
 #include <unistd.h>
 #endif
 
-#define LOG_SIZE_THRESHOLD 1000000 // 100万条目
-
 // 日志文件格式 (模仿 leveldb log format):
 // [Checksum (4 bytes)] [Length (4 bytes)] [Data (N bytes)]
 // Checksum = CRC32 of [Length][Data]
 
 // RaftLogArray 实现
-RaftLogArray::RaftLogArray(const std::string &log_dir)
-    : entries_(), base_index_(1), log_dir_(log_dir)
+RaftLogArray::RaftLogArray(const std::string &log_dir, const RaftLogConfig &config)
+    : entries_(), base_index_(1), log_dir_(log_dir), log_config_(config)
 {
     LOG_INFO("[RaftLogArray] Initializing log array, dir: %s", log_dir.c_str());
 
@@ -32,7 +30,7 @@ RaftLogArray::RaftLogArray(const std::string &log_dir)
         throw std::runtime_error("Failed to create log directory: " + log_dir_);
     }
     // 打开 WAL 文件 (append 模式)
-    wal_path_ = PathUtils::combine_path(log_dir_, "raft_wal.log");
+    wal_path_ = PathUtils::combine_path(log_dir_, log_config_.wal_filename);
     wal_file_ = fopen(wal_path_.c_str(), "ab+");
     if (wal_file_ == nullptr)
     {
@@ -41,7 +39,7 @@ RaftLogArray::RaftLogArray(const std::string &log_dir)
     }
 
     // 打开索引文件
-    index_path_ = PathUtils::combine_path(log_dir_, "raft_index.idx");
+    index_path_ = PathUtils::combine_path(log_dir_, log_config_.index_filename);
     index_file_ = fopen(index_path_.c_str(), "ab+");
     if (index_file_ == nullptr)
     {
@@ -250,12 +248,17 @@ bool RaftLogArray::append(LogEntry &entry)
               entry.cmd.c_str(),
               offset);
 
-    if (entries_.size() > LOG_SIZE_THRESHOLD)
+    if (entries_.size() > log_config_.log_size_threshold)
     {
         LOG_WARN("[RaftLogArray] Log size %zu exceeds threshold %u, truncating",
                  entries_.size(),
-                 LOG_SIZE_THRESHOLD);
-        truncate_from(entries_.size() / 4); // 截断前四分之一日志
+                 log_config_.log_size_threshold);
+        size_t truncate_count = static_cast<size_t>(entries_.size() * log_config_.truncate_ratio);
+        if (truncate_count > 0)
+        {
+            uint32_t truncate_index = base_index_ + static_cast<uint32_t>(truncate_count);
+            truncate_from(truncate_index);
+        }
     }
     return true;
 }
@@ -289,12 +292,17 @@ bool RaftLogArray::append(const LogEntry &entry)
               entry.cmd.c_str(),
               offset);
 
-    if (entries_.size() > LOG_SIZE_THRESHOLD)
+    if (entries_.size() > log_config_.log_size_threshold)
     {
         LOG_WARN("[RaftLogArray] Log size %zu exceeds threshold %u, truncating",
                  entries_.size(),
-                 LOG_SIZE_THRESHOLD);
-        truncate_from(entries_.size() / 4); // 截断前四分之一日志
+                 log_config_.log_size_threshold);
+        size_t truncate_count = static_cast<size_t>(entries_.size() * log_config_.truncate_ratio);
+        if (truncate_count > 0)
+        {
+            uint32_t truncate_index = base_index_ + static_cast<uint32_t>(truncate_count);
+            truncate_from(truncate_index);
+        }
     }
     return true;
 }
@@ -335,12 +343,17 @@ bool RaftLogArray::batch_append(std::vector<LogEntry> &entries)
              start_index - 1,
              offset);
 
-    if (entries_.size() > LOG_SIZE_THRESHOLD)
+    if (entries_.size() > log_config_.log_size_threshold)
     {
         LOG_WARN("[RaftLogArray] Log size %zu exceeds threshold %u, truncating",
                  entries_.size(),
-                 LOG_SIZE_THRESHOLD);
-        truncate_from(entries_.size() / 4); // 截断前四分之一日志
+                 log_config_.log_size_threshold);
+        size_t truncate_count = static_cast<size_t>(entries_.size() * log_config_.truncate_ratio);
+        if (truncate_count > 0)
+        {
+            uint32_t truncate_index = base_index_ + static_cast<uint32_t>(truncate_count);
+            truncate_from(truncate_index);
+        }
     }
     return true;
 }
@@ -375,12 +388,17 @@ bool RaftLogArray::batch_append(const std::vector<LogEntry> &entries)
              start_index + entries.size() - 1,
              offset);
 
-    if (entries_.size() > LOG_SIZE_THRESHOLD)
+    if (entries_.size() > log_config_.log_size_threshold)
     {
         LOG_WARN("[RaftLogArray] Log size %zu exceeds threshold %u, truncating",
                  entries_.size(),
-                 LOG_SIZE_THRESHOLD);
-        truncate_from(entries_.size() / 4); // 截断前四分之一日志
+                 log_config_.log_size_threshold);
+        size_t truncate_count = static_cast<size_t>(entries_.size() * log_config_.truncate_ratio);
+        if (truncate_count > 0)
+        {
+            uint32_t truncate_index = base_index_ + static_cast<uint32_t>(truncate_count);
+            truncate_from(truncate_index);
+        }
     }
     return true;
 }

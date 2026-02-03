@@ -22,6 +22,47 @@
 #include "common/ds/lru_cache.h"
 #include "common/concurrency/threadpool.h"
 #include "logger/logger.h"
+
+// Raft 日志存储配置
+struct RaftLogConfig
+{
+    uint32_t log_size_threshold = DEFAULT_RAFT_LOG_THRESHOLD; // 触发截断的日志条目数
+    double truncate_ratio = DEFAULT_RAFT_LOG_TRUNCATE_RATIO;  // 截断比例，例如 0.25 表示删除前 1/4
+    std::string wal_filename = DEFAULT_RAFT_WAL_FILENAME;     // WAL 文件名
+    std::string index_filename = DEFAULT_RAFT_INDEX_FILENAME; // 索引文件名
+};
+
+// Raft 节点运行时配置
+struct RaftNodeConfig
+{
+    // 选举和心跳
+    int election_timeout_min_ms = DEFAULT_RAFT_ELECTION_TIMEOUT_MIN;
+    int election_timeout_max_ms = DEFAULT_RAFT_ELECTION_TIMEOUT_MAX;
+    int heartbeat_interval_ms = DEFAULT_RAFT_HEARTBEAT_INTERVAL;
+    int raft_rpc_timeout_ms = DEFAULT_RAFT_RPC_TIMEOUT;
+
+    // Follower 客户端相关
+    int follower_idle_wait_ms = DEFAULT_RAFT_FOLLOWER_IDLE_WAIT;          // follower_client_loop wait_for
+    int join_cluster_max_retries = DEFAULT_RAFT_JOIN_MAX_RETRIES;         // become_follower 重试次数
+    int request_vote_recv_timeout_ms = DEFAULT_RAFT_REQUEST_VOTE_TIMEOUT; // send_request_vote 的 receive 超时
+    int submit_command_timeout_ms = DEFAULT_RAFT_SUBMIT_TIMEOUT;          // submit_command 等待 future
+
+    // 日志复制 / 快照
+    uint32_t append_entries_max_batch = DEFAULT_RAFT_APPEND_BATCH;  // 每次最多发送的日志条数
+    size_t snapshot_chunk_size_bytes = DEFAULT_RAFT_SNAPSHOT_CHUNK; // 快照 chunk 大小
+
+    // 结果缓存
+    size_t result_cache_capacity = DEFAULT_RAFT_RESULT_CACHE_CAPACITY;
+
+    // Raft 内部线程池
+    ThreadPool::Config thread_pool_config{
+        DEFAULT_RAFT_THREADPOOL_WORKERS,
+        DEFAULT_RAFT_THREADPOOL_QUEUE,
+        DEFAULT_RAFT_THREADPOOL_WAIT};
+
+    // 日志存储配置
+    RaftLogConfig log_config{};
+};
 // Raft角色枚举
 enum RaftRole
 {
@@ -155,10 +196,14 @@ private:
     // 元数据
     std::string log_dir_; // 日志目录：存储WAL、索引文件和快照的根目录
 
+    // 配置
+    RaftLogConfig log_config_;
+
 public:
     /// @brief 构造函数：初始化日志数组
     /// @param log_dir 日志存储目录路径
-    explicit RaftLogArray(const std::string &log_dir);
+    /// @param config 日志配置
+    explicit RaftLogArray(const std::string &log_dir, const RaftLogConfig &config = RaftLogConfig());
 
     /// @brief 析构函数：关闭文件句柄，释放资源
     ~RaftLogArray();
@@ -326,10 +371,10 @@ private:
     std::unordered_set<std::string> trusted_nodes_; // 受信任节点集合：只接受来自这些节点的Raft消息
 
     // 超时配置（毫秒）
-    int election_timeout_min_ = 150; // 选举超时最小值：150ms
-    int election_timeout_max_ = 300; // 选举超时最大值：300ms
-    int heartbeat_interval_ = 30;    // 心跳间隔：30ms，Leader向Follower发送心跳的周期
-    int raft_msg_timeout_ = 2000;    // Raft消息超时：2000ms，等待消息响应的超时时间
+    int election_timeout_min_; // 选举超时最小值：ms
+    int election_timeout_max_; // 选举超时最大值：ms
+    int heartbeat_interval_;   // 心跳间隔：ms，Leader向Follower发送心跳的周期
+    int raft_msg_timeout_;     // Raft消息超时：ms，等待消息响应的超时时间
 
     // 随机数生成（用于选举超时）
     std::mt19937 rng_;                                          // 随机数生成器：用于生成随机选举超时
@@ -402,11 +447,14 @@ private:
     std::unordered_map<socket_t, SnapshotTransferState> snapshot_state_; // 快照传输状态映射：套接字 -> 传输状态
 
     // 命令缓存结果
-    LRUCache<std::string, Response> result_cache_{10000}; // 结果缓存：LRU缓存已执行的命令结果，避免重复执行
-    int granted_votes_ = 0;                               // 当前收到的赞成票数：用于选举时统计选票
+    LRUCache<std::string, Response> result_cache_{0}; // 结果缓存：LRU缓存已执行的命令结果，避免重复执行
+    int granted_votes_ = 0;                           // 当前收到的赞成票数：用于选举时统计选票
 
     // 线程池
     std::unique_ptr<ThreadPool> thread_pool_; // 线程池：用于异步处理任务
+
+    // 运行时配置
+    RaftNodeConfig config_;
 
     /// @brief 辅助方法：将角色设置为Follower
     void to_follower()
@@ -456,7 +504,12 @@ private:
     /// @param port 本地端口
     /// @param trusted_nodes 受信任的节点集合
     /// @param max_follower_count 最大Follower数量
-    RaftNode(const std::string root_dir, const std::string &ip, const u_short port, const std::unordered_set<std::string> &trusted_nodes = {}, const uint32_t max_follower_count = 3);
+    RaftNode(const std::string root_dir,
+             const std::string &ip,
+             const u_short port,
+             const std::unordered_set<std::string> &trusted_nodes = {},
+             const uint32_t max_follower_count = 3,
+             const RaftNodeConfig &config = RaftNodeConfig());
 
     /// @brief 创建Raft消息体
     /// @return 新的RaftMessage对象指针
@@ -755,13 +808,18 @@ public:
     /// @param trusted_nodes 受信任的节点集合
     /// @param max_follower_count 最大Follower数量（默认5）
     /// @throw std::runtime_error 如果已经初始化
-    static void init(const std::string root_dir, const std::string &ip, const u_short port, const std::unordered_set<std::string> &trusted_nodes = {}, const uint32_t max_follower_count = 5)
+    static void init(const std::string root_dir,
+                     const std::string &ip,
+                     const u_short port,
+                     const std::unordered_set<std::string> &trusted_nodes = {},
+                     const uint32_t max_follower_count = 5,
+                     const RaftNodeConfig &config = RaftNodeConfig())
     {
         if (is_init_)
         {
             throw std::runtime_error("RaftNode already initialized");
         }
-        instance_ = std::unique_ptr<RaftNode>(new RaftNode(root_dir, ip, port, trusted_nodes, max_follower_count));
+        instance_ = std::unique_ptr<RaftNode>(new RaftNode(root_dir, ip, port, trusted_nodes, max_follower_count, config));
     }
 };
 

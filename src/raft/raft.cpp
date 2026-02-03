@@ -46,16 +46,30 @@ class ResponseSerializeCommand : public SerializeCommand<Response>
 };
 
 // RaftNode构造函数
-RaftNode::RaftNode(const std::string root_dir, const std::string &ip, const u_short port, const std::unordered_set<std::string> &trusted_nodes, const uint32_t max_follower_count)
+RaftNode::RaftNode(const std::string root_dir,
+                   const std::string &ip,
+                   const u_short port,
+                   const std::unordered_set<std::string> &trusted_nodes,
+                   const uint32_t max_follower_count,
+                   const RaftNodeConfig &config)
     : TCPServer(ip, port, max_follower_count, 0, 0),
       root_dir_(root_dir),
       role_(RaftRole::Leader),
       trusted_nodes_(trusted_nodes),
+      election_timeout_min_(config.election_timeout_min_ms),
+      election_timeout_max_(config.election_timeout_max_ms),
+      heartbeat_interval_(config.heartbeat_interval_ms),
+      raft_msg_timeout_(config.raft_rpc_timeout_ms),
+      result_cache_(config.result_cache_capacity),
+      thread_pool_(nullptr),
+      config_(config),
       rng_(std::chrono::steady_clock::now().time_since_epoch().count())
 {
     std::string node_id = ip + ":" + std::to_string(port);
     LOG_INFO("[Node=%s] Initializing RaftNode", node_id.c_str());
-    log_array_ = std::make_unique<RaftLogArray>(PathUtils::combine_path(root_dir, ".raft"));
+    log_array_ = std::make_unique<RaftLogArray>(
+        PathUtils::combine_path(root_dir, ".raft"),
+        config_.log_config);
 #ifdef _WIN32
     WSADATA wsaData;
     WSAStartup(MAKEWORD(2, 2), &wsaData);
@@ -115,12 +129,8 @@ RaftNode::RaftNode(const std::string root_dir, const std::string &ip, const u_sh
     std::shared_ptr<ResponseSerializeCommand> response_serialize_command = std::make_shared<ResponseSerializeCommand>();
     result_cache_.set_key_serializer(string_serialize_command);
     result_cache_.set_value_serializer(response_serialize_command);
-    // 6. TODO 初始化线程池(先固定参数)
-    ThreadPool::Config pool_config{
-        4,     // 工作线程数量
-        10000, // 任务队列大小
-        1000   // 等待超时时间（毫秒）
-    };
+    // 6. 初始化线程池(从配置读取参数)
+    ThreadPool::Config pool_config = config_.thread_pool_config;
     thread_pool_ = std::make_unique<ThreadPool>(pool_config);
     is_init_ = true;
     LOG_INFO("[Node=%s][Role=%s][Term=%u] RaftNode initialized successfully",
@@ -225,11 +235,11 @@ void RaftNode::follower_client_loop()
 {
     while (follower_client_thread_running_)
     {
-        if (follower_client_ == nullptr || !follower_client_->is_connected() || role_ == RaftRole::Leader)
+        if (follower_client_ == nullptr || role_ == RaftRole::Leader)
         {
             std::unique_lock<std::mutex> lock(follower_client_cv_mutex_);
-            follower_client_cv_.wait_for(lock, std::chrono::milliseconds(1000), [this]()
-                                         { return !follower_client_thread_running_ || follower_client_ != nullptr && follower_client_->is_connected() && role_ != RaftRole::Leader; });
+            follower_client_cv_.wait_for(lock, std::chrono::milliseconds(config_.follower_idle_wait_ms), [this]()
+                                         { return !follower_client_thread_running_ || follower_client_ != nullptr && role_ != RaftRole::Leader; });
             continue;
         }
         ProtocolBody *msg = new_body();
@@ -526,72 +536,98 @@ bool RaftNode::become_follower(const Address &leader_addr, uint32_t term, bool i
         // 连接成功，发送消息
         RaftMessage init_message = RaftMessage::join_cluster(is_reconnect, commit_index, port_);
         follower_client_->send(init_message);
-        ProtocolBody *msg = new_body();
-        int ret = follower_client_->receive(*msg, raft_msg_timeout_);
-        if (ret >= 0)
+
+        // 重试机制：最多重试 N 次，每次超时时间递增
+        const int max_retries = config_.join_cluster_max_retries;
+        const int base_timeout = raft_msg_timeout_;
+        bool success = false;
+
+        for (int retry = 0; retry < max_retries && !success; retry++)
         {
-            RaftMessage *response_msg = dynamic_cast<RaftMessage *>(msg);
-            if (response_msg->type != RaftMessageType::JOIN_CLUSTER_RESPONSE && response_msg->type != RaftMessageType::QUERY_LEADER_RESPONSE)
+            int current_timeout = base_timeout * (retry + 1); // 超时时间递增：2秒, 4秒, 6秒
+            LOG_INFO("[Node=%s] Follower: Attempting to receive init message response (retry %d/%d, timeout: %dms)",
+                     get_node_id().c_str(), retry + 1, max_retries, current_timeout);
+
+            ProtocolBody *msg = new_body();
+            int ret = follower_client_->receive(*msg, current_timeout);
+            if (ret >= 0)
             {
-                LOG_ERROR("Follower client received invalid init message response");
+                RaftMessage *response_msg = dynamic_cast<RaftMessage *>(msg);
+                if (response_msg->type != RaftMessageType::JOIN_CLUSTER_RESPONSE && response_msg->type != RaftMessageType::QUERY_LEADER_RESPONSE)
+                {
+                    LOG_ERROR("Follower client received invalid init message response");
+                }
+                else
+                {
+                    success = true;
+                    reset_election_timeout();
+                    to_follower();
+                    LOG_INFO("[Node=%s][Role=%s][Term=%u] Successfully connected to leader %s, commit_index updated to %u",
+                             node_id.c_str(),
+                             role_to_string(role_.load()),
+                             persistent_state_.current_term_.load(),
+                             leader_addr.to_string().c_str(),
+                             commit_index);
+                    // 更新任期
+                    persistent_state_.cluster_metadata_.current_leader_ = leader_addr;
+                    persistent_state_.cluster_metadata_.cluster_nodes_.clear();
+                    persistent_state_.commit_index_ = commit_index;
+                    if (term > persistent_state_.current_term_)
+                    {
+                        uint32_t old_term = persistent_state_.current_term_.load();
+                        persistent_state_.current_term_ = term;
+                        persistent_state_.voted_for_ = Address(); // 重置投票
+                        LOG_INFO("[Node=%s] Term updated: %u -> %u", node_id.c_str(), old_term, term);
+                    }
+                    save_persistent_state();
+
+                    // 清空leader状态
+                    next_index_.clear();
+                    match_index_.clear();
+                    {
+                        std::lock_guard<std::shared_mutex> lock(follower_sockets_mutex_);
+                        // 关闭所有follower_sockets_
+                        for (auto &socket : follower_sockets_)
+                        {
+                            // 给当前的follower_sockets_发送QueryLeaderResponse消息,让他们也去连接leader
+                            RaftMessage response = RaftMessage::query_leader_response(leader_addr);
+                            send(response, socket);
+                            close_socket(socket);
+                        }
+                        // 清空follower_sockets_和follower_address_map_
+                        follower_sockets_.clear();
+                        follower_address_map_.clear();
+                    }
+                    // 处理接收到的消息
+                    handle_leader_message(*response_msg);
+                    delete msg;
+                    return role_ == RaftRole::Follower;
+                }
             }
             else
             {
-                reset_election_timeout();
-                to_follower();
-                LOG_INFO("[Node=%s][Role=%s][Term=%u] Successfully connected to leader %s, commit_index updated to %u",
-                         node_id.c_str(),
-                         role_to_string(role_.load()),
-                         persistent_state_.current_term_.load(),
-                         leader_addr.to_string().c_str(),
-                         commit_index);
-                // 更新任期
-                persistent_state_.cluster_metadata_.current_leader_ = leader_addr;
-                persistent_state_.cluster_metadata_.cluster_nodes_.clear();
-                persistent_state_.commit_index_ = commit_index;
-                if (term > persistent_state_.current_term_)
-                {
-                    uint32_t old_term = persistent_state_.current_term_.load();
-                    persistent_state_.current_term_ = term;
-                    persistent_state_.voted_for_ = Address(); // 重置投票
-                    LOG_INFO("[Node=%s] Term updated: %u -> %u", node_id.c_str(), old_term, term);
-                }
-                save_persistent_state();
-
-                // 清空leader状态
-                next_index_.clear();
-                match_index_.clear();
-                {
-                    std::lock_guard<std::shared_mutex> lock(follower_sockets_mutex_);
-                    // 关闭所有follower_sockets_
-                    for (auto &socket : follower_sockets_)
-                    {
-                        // 给当前的follower_sockets_发送QueryLeaderResponse消息,让他们也去连接leader
-                        RaftMessage response = RaftMessage::query_leader_response(leader_addr);
-                        send(response, socket);
-                        close_socket(socket);
-                    }
-                    // 清空follower_sockets_和follower_address_map_
-                    follower_sockets_.clear();
-                    follower_address_map_.clear();
-                }
-                // 处理接收到的消息
-                handle_leader_message(*response_msg);
-                delete msg;
-                return role_ == RaftRole::Follower;
+                LOG_WARN("[Node=%s] Follower: Failed to receive init message response (retry %d), will retry connection",
+                         get_node_id().c_str(), retry + 1);
             }
+            delete msg;
+        }
+
+        // 所有重试都失败
+        if (!success)
+        {
+            LOG_ERROR("[Node=%s] Follower: All %d retries failed to receive init message response from leader, closing connection",
+                      get_node_id().c_str(), max_retries);
+            follower_client_->close();
         }
         else
         {
-            LOG_ERROR("Follower client failed to receive init message response");
+            LOG_ERROR("Failed to connect to leader %s", leader_addr.to_string().c_str());
         }
-        delete msg;
-    }
-    else
-    {
+        return false;
+    }else{
         LOG_ERROR("Failed to connect to leader %s", leader_addr.to_string().c_str());
+        return false;
     }
-    return false;
 }
 
 // 转换为Candidate
@@ -820,7 +856,7 @@ void RaftNode::send_request_vote()
                 }
                 // 设置超时时间，例如 200ms。如果对方挂了，这里会超时返回，不会卡死。
                 ProtocolBody *response_body = new_body();
-                ret = client.receive(*response_body, 200); // 假设 receive 支持超时 ms
+                ret = client.receive(*response_body, config_.request_vote_recv_timeout_ms); // 假设 receive 支持超时 ms
 
                 if (ret > 0)
                 {
@@ -899,8 +935,8 @@ void RaftNode::send_append_entries_nolock(const socket_t &sock)
     // 否则，发送空日志（纯心跳）
     if (next_idx <= last_log_idx)
     {
-        // 限制单次发送数量，防止包过大阻塞网络（例如每次最多发 100 条）
-        std::vector<LogEntry> entries = log_array_->get_entries_from(next_idx, 100);
+        // 限制单次发送数量，防止包过大阻塞网络（例如每次最多发 config_.append_entries_max_batch 条）
+        std::vector<LogEntry> entries = log_array_->get_entries_from(next_idx, static_cast<int>(config_.append_entries_max_batch));
 
         std::set<LogEntry> entry_set(entries.begin(), entries.end());
         msg = RaftMessage::append_entries_with_data(term, prev_log_index, prev_log_term, entry_set, leader_commit);
@@ -1640,7 +1676,7 @@ void RaftNode::send_snapshot_chunk(socket_t sock)
     }
 
     // 缓冲区大小
-    const size_t CHUNK_SIZE = 1024 * 64;
+    const size_t CHUNK_SIZE = config_.snapshot_chunk_size_bytes;
     std::vector<char> buffer(CHUNK_SIZE);
 
     // 定位文件指针
@@ -2055,7 +2091,8 @@ Response RaftNode::submit_command(const std::string &request_id, const std::stri
             // 4. 先调用一次try_commit_entries
             try_commit_entries();
             // 5. 阻塞等待结果
-            std::future_status status = pending_req->future.wait_for(std::chrono::milliseconds(raft_msg_timeout_));
+            std::future_status status = pending_req->future.wait_for(
+                std::chrono::milliseconds(config_.submit_command_timeout_ms));
             if (status == std::future_status::ready)
             {
                 return pending_req->future.get();
@@ -2127,14 +2164,18 @@ Response RaftNode::handle_raft_command(const std::vector<std::string> &command_p
                 // 清空现有的数据，避免脏数据
                 static Storage *storage_ = Storage::get_instance();
                 // 设置log_array_为空
-                log_array_ = nullptr;
-                if (!storage_->clear_and_backup_data())
-                {
-                    log_array_ = std::make_unique<RaftLogArray>(PathUtils::combine_path(root_dir_, ".raft"));
+            log_array_ = nullptr;
+            if (!storage_->clear_and_backup_data())
+            {
+                log_array_ = std::make_unique<RaftLogArray>(
+                    PathUtils::combine_path(root_dir_, ".raft"),
+                    config_.log_config);
                     response = Response::error("clear data failed");
                     return response;
                 }
-                log_array_ = std::make_unique<RaftLogArray>(PathUtils::combine_path(root_dir_, ".raft"));
+            log_array_ = std::make_unique<RaftLogArray>(
+                PathUtils::combine_path(root_dir_, ".raft"),
+                config_.log_config);
                 {
                     std::lock_guard<std::recursive_mutex> lock(mutex_);
                     persistent_state_.last_applied_.store(0);
