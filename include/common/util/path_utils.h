@@ -60,7 +60,7 @@ public:
                                 return exe_path;
                         }
                 }
-                LOG_WARN("PathUtils: Failed to get executable path on Linux.");
+                std::cerr << "PathUtils: Failed to get executable path on LINUX." << std::endl;
                 return "";
         }
 #elif __APPLE__
@@ -81,7 +81,7 @@ public:
                         }
                 }
         }
-        LOG_WARN("PathUtils: Failed to get executable path on macOS.");
+        std::cerr << "PathUtils: Failed to get executable path on MACOS." << std::endl;
         return "";
 }
 #else
