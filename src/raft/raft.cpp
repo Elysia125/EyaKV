@@ -70,7 +70,10 @@ RaftNode::RaftNode(const std::string root_dir, const std::string &ip, const u_sh
              persistent_state_.last_applied_.load(),
              persistent_state_.log_snapshot_index_.load());
 
-    // 3. 根据场景选择初始化策略
+    // 3. 启动后台线程
+    start_background_threads();
+
+    // 4. 根据场景选择初始化策略
     if (!persistent_state_.cluster_metadata_.current_leader_.is_null())
     {
         // 场景1: 已知leader，作为follower加入
@@ -106,9 +109,6 @@ RaftNode::RaftNode(const std::string root_dir, const std::string &ip, const u_sh
 
     // 尝试应用已加载的日志
     apply_committed_entries();
-
-    // 4. 启动后台线程
-    start_background_threads();
 
     // 5. 为LRU设置键值序列化器
     std::shared_ptr<StringSerializeCommand> string_serialize_command = std::make_shared<StringSerializeCommand>();
@@ -225,9 +225,12 @@ void RaftNode::follower_client_loop()
 {
     while (follower_client_thread_running_)
     {
-        if (follower_client_ == nullptr || !follower_client_->is_connected())
+        if (follower_client_ == nullptr || !follower_client_->is_connected() || role_ == RaftRole::Leader)
         {
-            break;
+            std::unique_lock<std::mutex> lock(follower_client_cv_mutex_);
+            follower_client_cv_.wait_for(lock, std::chrono::milliseconds(1000), [this]()
+                                         { return !follower_client_thread_running_ || follower_client_ != nullptr && follower_client_->is_connected() && role_ != RaftRole::Leader; });
+            continue;
         }
         ProtocolBody *msg = new_body();
         // 为了防止一直等待添加一个超时时间
@@ -241,7 +244,7 @@ void RaftNode::follower_client_loop()
         {
             LOG_ERROR("Follower client failed to receive message, connection closed");
             delete msg;
-            break;
+            become_follower(persistent_state_.cluster_metadata_.current_leader_, persistent_state_.current_term_, true, persistent_state_.commit_index_);
         }
         else if (ret > 0)
         {
@@ -297,11 +300,16 @@ void RaftNode::handle_join_cluster_response(const RaftMessage &msg)
     if (data.success)
     {
         LOG_INFO("Join cluster success");
+        // 获取自身的address
+        Address self_addr;
+        get_self_address(follower_client_->get_socket(), self_addr);
+        self_addr.port = port_;
         std::lock_guard<std::recursive_mutex> lock(mutex_);
         Address leader_addr = persistent_state_.cluster_metadata_.current_leader_;
         persistent_state_.current_term_ = term;
         persistent_state_.cluster_metadata_ = data.cluster_metadata;
         persistent_state_.cluster_metadata_.cluster_nodes_.insert(leader_addr);
+        persistent_state_.cluster_metadata_.cluster_nodes_.erase(self_addr);
         persistent_state_.cluster_metadata_.current_leader_ = leader_addr;
         save_persistent_state();
     }
@@ -371,6 +379,13 @@ void RaftNode::handle_new_node_join(const RaftMessage &msg)
         LOG_WARN("New node join data is empty");
     }
     auto &data = *msg.new_node_join_data;
+    Address self_addr;
+    get_self_address(follower_client_->get_socket(), self_addr);
+    self_addr.port = port_;
+    if (data.node_address == self_addr)
+    {
+        return;
+    }
     {
         std::lock_guard<std::recursive_mutex> lock(mutex_);
         persistent_state_.cluster_metadata_.cluster_nodes_.insert(data.node_address);
@@ -471,20 +486,12 @@ void RaftNode::init_with_cluster_discovery()
 // 启动后台线程
 void RaftNode::start_background_threads()
 {
-    // 如果是follower,启动选举线程
-    if (role_ == RaftRole::Follower)
-    {
-        election_thread_running_ = true;
-        election_thread_ = std::thread(&RaftNode::election_loop, this);
-    }
-
-    // 如果是leader，启动心跳线程
-    if (role_ == RaftRole::Leader)
-    {
-        heartbeat_thread_running_ = true;
-        heartbeat_thread_ = std::thread(&RaftNode::heartbeat_loop, this);
-    }
-
+    election_thread_running_ = true;
+    election_thread_ = std::thread(&RaftNode::election_loop, this);
+    heartbeat_thread_running_ = true;
+    heartbeat_thread_ = std::thread(&RaftNode::heartbeat_loop, this);
+    follower_client_thread_running_ = true;
+    follower_client_thread_ = std::thread(&RaftNode::follower_client_loop, this);
     LOG_INFO("Background threads started");
 }
 
@@ -521,34 +528,17 @@ bool RaftNode::become_follower(const Address &leader_addr, uint32_t term, bool i
         follower_client_->send(init_message);
         ProtocolBody *msg = new_body();
         int ret = follower_client_->receive(*msg, raft_msg_timeout_);
-        if (ret < 0)
-        {
-            LOG_ERROR("Follower client failed to receive init message response");
-            // 设置follower状态
-            follower_client_ = nullptr;
-            follower_client_thread_running_ = false;
-            if (follower_client_thread_.joinable())
-            {
-                follower_client_thread_.join();
-            }
-        }
-        else
+        if (ret >= 0)
         {
             RaftMessage *response_msg = dynamic_cast<RaftMessage *>(msg);
             if (response_msg->type != RaftMessageType::JOIN_CLUSTER_RESPONSE && response_msg->type != RaftMessageType::QUERY_LEADER_RESPONSE)
             {
                 LOG_ERROR("Follower client received invalid init message response");
-                // 设置follower状态
-                follower_client_ = nullptr;
-                follower_client_thread_running_ = false;
-                if (follower_client_thread_.joinable())
-                {
-                    follower_client_thread_.join();
-                }
             }
             else
             {
-                role_ = RaftRole::Follower;
+                reset_election_timeout();
+                to_follower();
                 LOG_INFO("[Node=%s][Role=%s][Term=%u] Successfully connected to leader %s, commit_index updated to %u",
                          node_id.c_str(),
                          role_to_string(role_.load()),
@@ -585,28 +575,22 @@ bool RaftNode::become_follower(const Address &leader_addr, uint32_t term, bool i
                     follower_sockets_.clear();
                     follower_address_map_.clear();
                 }
-                if (heartbeat_thread_running_)
-                {
-                    heartbeat_thread_running_ = false;
-                    if (heartbeat_thread_.joinable())
-                    {
-                        heartbeat_thread_.join();
-                    }
-                }
-                reset_election_timeout();
-                // 启动接收线程
-                follower_client_thread_running_ = true;
-                std::thread receive_thread(&RaftNode::follower_client_loop, this);
-                receive_thread.detach();
                 // 处理接收到的消息
                 handle_leader_message(*response_msg);
                 delete msg;
                 return role_ == RaftRole::Follower;
             }
         }
+        else
+        {
+            LOG_ERROR("Follower client failed to receive init message response");
+        }
         delete msg;
     }
-    role_ = RaftRole::Leader;
+    else
+    {
+        LOG_ERROR("Failed to connect to leader %s", leader_addr.to_string().c_str());
+    }
     return false;
 }
 
@@ -634,7 +618,7 @@ void RaftNode::become_candidate()
         granted_votes_ = 1;
 
         // 4. 更新角色
-        role_ = RaftRole::Candidate;
+        to_candidate();
 
         // 5. 重置选举计时器（防止在本次选举中立即再次超时）
         last_heartbeat_time_ = std::chrono::steady_clock::now();
@@ -647,7 +631,6 @@ void RaftNode::become_candidate()
                  new_term,
                  election_timeout_);
     }
-
     // 发送RequestVote
     send_request_vote();
 }
@@ -655,25 +638,14 @@ void RaftNode::become_candidate()
 // 转换为Leader
 void RaftNode::become_leader()
 {
-    if (role_ == RaftRole::Leader)
-    {
-        return;
-    }
     std::string node_id = get_node_id();
     RaftRole old_role;
 
     {
         std::lock_guard<std::recursive_mutex> lock(mutex_);
         old_role = role_.load();
-
-        follower_client_ = nullptr;
-        follower_client_thread_running_ = false;
-        if (follower_client_thread_.joinable())
-        {
-            follower_client_thread_.join();
-        }
         // 更新角色
-        role_ = RaftRole::Leader;
+        to_leader();
 
         // 暂不清空旧的leader记录，方便下次连接相同的leader
         // persistent_state_.cluster_metadata_.current_leader_ = Address();
@@ -686,13 +658,6 @@ void RaftNode::become_leader()
                  role_to_string(old_role),
                  persistent_state_.current_term_.load(),
                  persistent_state_.cluster_metadata_.cluster_nodes_.size());
-    }
-
-    // 启动心跳线程
-    if (!heartbeat_thread_running_)
-    {
-        heartbeat_thread_running_ = true;
-        heartbeat_thread_ = std::thread(&RaftNode::heartbeat_loop, this);
     }
 }
 
@@ -708,13 +673,37 @@ void RaftNode::election_loop()
 
     while (election_thread_running_)
     {
-        uint32_t sleep_time = static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::milliseconds>(last_heartbeat_time_.time_since_epoch()).count()) + election_timeout_ - get_current_timestamp();
-        if (sleep_time > 0)
+        // 如果已经是Leader，等待直到变成Follower或Candidate
+        if (role_ == RaftRole::Leader)
         {
-            std::this_thread::sleep_for(std::chrono::milliseconds(sleep_time));
+            LOG_DEBUG("[Node=%s] Election thread: Already Leader, waiting for role change", node_id.c_str());
+            std::unique_lock<std::mutex> lock(election_cv_mutex_);
+            // 等待被唤醒（role变为非Leader或线程被停止）
+            election_cv_.wait_for(lock, std::chrono::milliseconds(election_timeout_),
+                                  [this]()
+                                  {
+                                      return !election_thread_running_ || role_ != RaftRole::Leader;
+                                  });
+            continue;
         }
 
-        if (is_election_timeout())
+        // 计算等待时间
+        uint32_t sleep_time = static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::milliseconds>(last_heartbeat_time_.time_since_epoch()).count()) + election_timeout_ - get_current_timestamp();
+
+        if (sleep_time > 0)
+        {
+            LOG_DEBUG("[Node=%s] Election thread: Waiting %ums before next election check", node_id.c_str(), sleep_time);
+            std::unique_lock<std::mutex> lock(election_cv_mutex_);
+            // 等待指定时间，或被提前唤醒（role变化或线程停止）
+            election_cv_.wait_for(lock, std::chrono::milliseconds(sleep_time),
+                                  [this]()
+                                  {
+                                      return !election_thread_running_ || role_ == RaftRole::Leader;
+                                  });
+        }
+
+        // 检查是否超时且仍不是Leader
+        if (election_thread_running_ && role_ != RaftRole::Leader && is_election_timeout())
         {
             LOG_WARN("[Node=%s][Role=%s][Term=%u] Election timeout triggered (%dms), starting new election",
                      node_id.c_str(),
@@ -735,9 +724,37 @@ void RaftNode::heartbeat_loop()
 
     while (heartbeat_thread_running_)
     {
-        std::this_thread::sleep_for(std::chrono::milliseconds(heartbeat_interval_));
+        // 如果不是Leader，等待直到变成Leader
+        if (role_ != RaftRole::Leader)
+        {
+            LOG_DEBUG("[Node=%s] Heartbeat thread: Not Leader, waiting for role change", node_id.c_str());
+            std::unique_lock<std::mutex> lock(heartbeat_cv_mutex_);
+            // 等待被唤醒（role变为Leader或线程被停止）
+            heartbeat_cv_.wait_for(lock, std::chrono::milliseconds(heartbeat_interval_),
+                                   [this]()
+                                   {
+                                       return !heartbeat_thread_running_ || role_ == RaftRole::Leader;
+                                   });
+            continue;
+        }
 
-        if (role_ == RaftRole::Leader)
+        // 等待心跳间隔时间
+        LOG_DEBUG("[Node=%s] Heartbeat thread: Waiting %dms before next heartbeat", node_id.c_str(), heartbeat_interval_);
+        std::unique_lock<std::mutex> lock(heartbeat_cv_mutex_);
+        // 等待指定时间，或被提前唤醒（role变化或线程停止）
+        heartbeat_cv_.wait_for(lock, std::chrono::milliseconds(heartbeat_interval_),
+                               [this]()
+                               {
+                                   return !heartbeat_thread_running_ || role_ != RaftRole::Leader;
+                               });
+
+        // 如果被唤醒后仍不是Leader，跳过本次心跳发送
+        if (!heartbeat_thread_running_ || role_ != RaftRole::Leader)
+        {
+            continue;
+        }
+
+        if (log_array_)
         {
             uint32_t log_count = log_array_->size();
             LOG_DEBUG("[Node=%s][Role=Leader][Term=%u] Sending heartbeat to %zu followers, log_count: %u",
@@ -938,7 +955,8 @@ bool RaftNode::handle_append_entries(const RaftMessage &msg)
         }
         return false;
     }
-    role_ = RaftRole::Follower;
+    to_follower();
+
     // 2. 发现更高term,更新term
     if (msg.term > persistent_state_.current_term_.load())
     {
@@ -1012,13 +1030,14 @@ bool RaftNode::handle_append_entries(const RaftMessage &msg)
         size_t conflicted = 0;
         for (const auto &entry : *data.entries)
         {
+            // 检查该索引是否已存在且任期一致
+            bool found = false;
             LogEntry existing_entry;
             if (log_array_->get(entry.index, existing_entry))
             {
-                // 已存在该索引的日志，检查term是否匹配
                 if (existing_entry.term != entry.term)
                 {
-                    // term不匹配，删除冲突日志
+                    // term不匹配，删除冲突日志及之后的所有日志
                     LOG_INFO("[Node=%s] LOG CONFLICT at index %u: local_term=%u, remote_term=%u, truncating",
                              node_id.c_str(),
                              entry.index,
@@ -1027,11 +1046,20 @@ bool RaftNode::handle_append_entries(const RaftMessage &msg)
                     log_array_->truncate_from(entry.index);
                     conflicted++;
                 }
+                else
+                {
+                    // 已存在且任期一致，跳过此条目
+                    found = true;
+                }
             }
-            // 追加新日志
-            if (log_array_->append(const_cast<LogEntry &>(entry)))
+
+            if (!found)
             {
-                appended++;
+                // 追加新日志
+                if (log_array_->append(const_cast<LogEntry &>(entry)))
+                {
+                    appended++;
+                }
             }
         }
         if (appended > 0)
@@ -1141,8 +1169,10 @@ bool RaftNode::handle_request_vote(const RaftMessage &msg, const socket_t &clien
                  opposite_addr.to_string().c_str());
         persistent_state_.current_term_ = candidate_term;
         persistent_state_.voted_for_ = Address(); // 新任期重置投票
-        role_ = RaftRole::Follower;
         save_persistent_state();
+
+        to_follower();
+
         // 更新本地变量以便后续判断
         my_term = candidate_term;
     }
@@ -1854,7 +1884,7 @@ void RaftNode::handle_request_vote_response(const RaftMessage &msg)
         persistent_state_.current_term_ = msg.term;
         persistent_state_.voted_for_ = Address();
         save_persistent_state();
-        role_ = RaftRole::Follower;
+        to_follower();
         return; // 退出
     }
 
@@ -1889,19 +1919,20 @@ void RaftNode::handle_request_vote_response(const RaftMessage &msg)
                      my_term,
                      granted_votes_,
                      majority);
-            lock.unlock();
-            // 记录下当前的集群节点数组
+            //  记录下当前的集群节点数组和 Term
             std::unordered_set<Address> cluster_nodes = persistent_state_.cluster_metadata_.cluster_nodes_;
+            uint32_t leader_term = my_term; // 保存成为 Leader 时的 Term
             become_leader();
             // 重新赋值给持久化状态
             persistent_state_.cluster_metadata_.cluster_nodes_ = cluster_nodes;
             save_persistent_state();
             // 广播NEW_MASTER消息通知所有已知节点
+            // 注意：在广播前检查 Term 和角色是否一致，避免竞态条件
             LOG_INFO("[Node=%s][Term=%u] Broadcasting NEW_MASTER message to cluster",
                      node_id.c_str(),
-                     persistent_state_.current_term_.load());
-            std::thread([this]()
-                        { this->broadcast_new_master(); })
+                     leader_term);
+            std::thread([this, leader_term]()
+                        { this->broadcast_new_master_with_check(leader_term); })
                 .detach();
         }
     }
@@ -2180,7 +2211,7 @@ Response RaftNode::handle_raft_command(const std::vector<std::string> &command_p
             std::string status = "role=" + std::to_string(static_cast<int>(role_.load())) +
                                  ",term=" + std::to_string(persistent_state_.current_term_.load()) +
                                  ",leader=" + leader_address_.to_string() +
-                                 ",nodes=" + std::to_string(persistent_state_.cluster_metadata_.cluster_nodes_.size()) +
+                                 ",nodes=" + std::to_string(persistent_state_.cluster_metadata_.cluster_nodes_.size() + 1) +
                                  ",commit=" + std::to_string(persistent_state_.commit_index_.load()) +
                                  ",applied=" + std::to_string(persistent_state_.last_applied_.load()) +
                                  ",writable=" + std::to_string(writable_);
@@ -2361,6 +2392,37 @@ bool RaftNode::is_trust(const Address &addr)
     return is_trusted_ip(addr.to_string(), trusted_nodes_);
 }
 
+// 广播新主节点消息到所有已知节点（带 Term 检查）
+void RaftNode::broadcast_new_master_with_check(uint32_t expected_term)
+{
+    // 检查当前 Term 和角色是否与预期一致，避免竞态条件
+    uint32_t current_term;
+    RaftRole current_role;
+    {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        current_term = persistent_state_.current_term_.load();
+        current_role = role_.load();
+    }
+
+    // 如果 Term 或角色不匹配，说明状态已改变，放弃广播
+    if (current_term != expected_term)
+    {
+        LOG_WARN("[Node=%s] Term mismatch when broadcasting new master: expected %u, actual %u, skipping broadcast",
+                 get_node_id().c_str(), expected_term, current_term);
+        return;
+    }
+
+    if (current_role != RaftRole::Leader)
+    {
+        LOG_WARN("[Node=%s] Not leader when broadcasting new master (role: %s, term: %u), skipping broadcast",
+                 get_node_id().c_str(), role_to_string(current_role), current_term);
+        return;
+    }
+
+    // 检查通过，执行实际广播
+    broadcast_new_master_impl();
+}
+
 // 广播新主节点消息到所有已知节点
 void RaftNode::broadcast_new_master()
 {
@@ -2370,6 +2432,13 @@ void RaftNode::broadcast_new_master()
         return;
     }
 
+    // 调用实际的广播实现
+    broadcast_new_master_impl();
+}
+
+// 广播新主节点消息的实际实现
+void RaftNode::broadcast_new_master_impl()
+{
     // 获取当前状态，避免长时间持锁
     uint32_t current_term;
     std::vector<Address> nodes;
@@ -2400,7 +2469,7 @@ void RaftNode::broadcast_new_master()
             try
             {
                 client.connect();
-                
+
                 // 获取本地地址作为leader地址
                 Address leader_addr;
                 if (!get_self_address(client.get_socket(), leader_addr))
@@ -2409,7 +2478,7 @@ void RaftNode::broadcast_new_master()
                     return;
                 }
                 leader_addr.port = this->port_;
-                
+
                 RaftMessage msg = RaftMessage::new_master(current_term, leader_addr);
                 int ret = client.send(msg);
                 if (ret <= 0)

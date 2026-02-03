@@ -329,7 +329,7 @@ private:
     int election_timeout_min_ = 150; // 选举超时最小值：150ms
     int election_timeout_max_ = 300; // 选举超时最大值：300ms
     int heartbeat_interval_ = 30;    // 心跳间隔：30ms，Leader向Follower发送心跳的周期
-    int raft_msg_timeout_ = 1000;    // Raft消息超时：1000ms，等待消息响应的超时时间
+    int raft_msg_timeout_ = 2000;    // Raft消息超时：2000ms，等待消息响应的超时时间
 
     // 随机数生成（用于选举超时）
     std::mt19937 rng_;                                          // 随机数生成器：用于生成随机选举超时
@@ -345,6 +345,13 @@ private:
     std::atomic<bool> election_thread_running_{false};  // 选举线程运行标志
     std::atomic<bool> heartbeat_thread_running_{false}; // 心跳线程运行标志
 
+    // 线程同步：条件变量和互斥锁
+    std::condition_variable election_cv_;        // 选举线程条件变量：用于等待role变化
+    std::condition_variable heartbeat_cv_;       // 心跳线程条件变量：用于等待role变化
+    std::condition_variable follower_client_cv_; // Follower客户端线程条件变量：用于等待消息
+    std::mutex election_cv_mutex_;               // 选举条件变量互斥锁
+    std::mutex heartbeat_cv_mutex_;              // 心跳条件变量互斥锁
+    std::mutex follower_client_cv_mutex_;        // Follower客户端条件变量互斥锁
     // 连接管理（与Leader的连接，如果是Leader则为nullptr）
     std::unique_ptr<TCPClient> follower_client_;              // Follower连接到Leader的TCP客户端
     std::thread follower_client_thread_;                      // Follower客户端线程：处理从Leader接收到的消息
@@ -400,6 +407,44 @@ private:
 
     // 线程池
     std::unique_ptr<ThreadPool> thread_pool_; // 线程池：用于异步处理任务
+
+    /// @brief 辅助方法：将角色设置为Follower
+    void to_follower()
+    {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        role_ = RaftRole::Follower;
+        {
+            std::lock_guard<std::mutex> cv_lock(election_cv_mutex_);
+            election_cv_.notify_all();
+        }
+        {
+            std::lock_guard<std::mutex> cv_lock(follower_client_cv_mutex_);
+            follower_client_cv_.notify_all();
+        }
+    }
+    /// @brief 辅助方法：将角色设置为Candidate
+    void to_candidate()
+    {
+        if (role_ == RaftRole::Leader)
+        {
+            return;
+        }
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        role_ = RaftRole::Candidate;
+    }
+
+    /// @brief 辅助方法：将角色设置为Leader
+    void to_leader()
+    {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        role_ = RaftRole::Leader;
+        follower_client_ = nullptr;
+        {
+            std::lock_guard<std::mutex> cv_lock(heartbeat_cv_mutex_);
+            heartbeat_cv_.notify_all();
+        }
+    }
+
     /// @brief 辅助方法：通知等待的请求（当日志被应用时调用）
     /// @param index 日志索引
     /// @param response 响应结果
@@ -512,6 +557,13 @@ private:
 
     /// @brief 广播新Leader消息到所有已知节点
     void broadcast_new_master();
+
+    /// @brief 广播新Leader消息到所有已知节点（带 Term 检查，避免竞态条件）
+    /// @param expected_term 预期的 Term，只有当前 Term 匹配时才会广播
+    void broadcast_new_master_with_check(uint32_t expected_term);
+
+    /// @brief 广播新主节点消息的实际实现
+    void broadcast_new_master_impl();
 
     /// @brief 处理AppendEntries响应（内部版本，用于更新next_index和match_index）
     /// @param follower Follower标识

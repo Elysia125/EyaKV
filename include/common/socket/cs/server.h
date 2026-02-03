@@ -265,7 +265,7 @@ public:
 
             if (activity == SOCKET_ERROR_VALUE)
             {
-                LOG_ERROR("select error: %s", socket_error_to_string(activity));
+                LOG_ERROR("select error: %s", socket_error_to_string(activity).c_str());
             }
             // 遍历所有可能的socket
             for (uint32_t i = 0; i < master_set_.fd_count; i++)

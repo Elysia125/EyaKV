@@ -361,7 +361,7 @@ bool RaftLogArray::batch_append(const std::vector<LogEntry> &entries)
     }
 
     // 2. 追加到内存
-    uint32_t start_index = base_index_ + entries_.size() - entries.size();
+    uint32_t start_index = base_index_ + entries_.size();
     for (const auto &entry : entries)
     {
         entries_.push_back(entry);
