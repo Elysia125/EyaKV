@@ -28,6 +28,7 @@ Storage::Storage(const std::string &data_dir,
                  const uint32_t &sstable_merge_threshold,
                  const uint64_t &sstable_zero_level_size,
                  const double &sstable_level_size_ratio) : data_dir_(data_dir),
+                                                           wal_dir_(wal_dir),
                                                            enable_wal_(enable_wal),
                                                            read_only_(read_only),
                                                            memtable_size_(memtable_size),
@@ -319,14 +320,14 @@ bool Storage::get_from_old(const std::string &key, std::optional<EValue> &value)
     // 查 SSTable
     if (sstable_manager_)
     {
-        EValue value;
-        if (sstable_manager_->get(key, &value))
+        EValue ev;
+        if (sstable_manager_->get(key, &ev))
         {
-            if (value.is_expired() || value.is_deleted())
+            if (ev.is_expired() || ev.is_deleted())
             {
                 return false;
             }
-            value = value.value;
+            value = ev;
             return true;
         }
     }
@@ -447,6 +448,7 @@ void Storage::force_flush()
 void Storage::flush_memtable_to_sstable()
 {
     // Flush 每个 MemTable 到 SSTable
+    std::unique_lock<std::shared_mutex> lock(immutable_mutex_);
     for (auto it = immutable_memtables_.begin(); it != immutable_memtables_.end();)
     {
         std::string filename = it->first;
@@ -464,7 +466,7 @@ void Storage::flush_memtable_to_sstable()
             auto meta = sstable_manager_->create_new_sstable(entries);
             if (meta.has_value())
             {
-                LOG_INFO("Flushed MemTable to SSTable: %s with %s entries", meta->filepath, std::to_string(meta->entry_count));
+                LOG_INFO("Flushed MemTable to SSTable: %s with %zu entries", meta->filepath.c_str(), meta->entry_count);
                 if (enable_wal_ && wal_)
                 {
                     wal_->clear(filename);
@@ -849,7 +851,10 @@ bool Storage::create_checkpoint(std::string &output_tar_path, const std::string 
         }
 
         // 强制将 MemTable 和 Immutable MemTables 刷入 SSTable
-        force_flush();
+        if (!(memtable_->size() == 0 && immutable_memtables_.empty()))
+        {
+            force_flush();
+        }
         auto timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
         // 3. 复制 SSTable 文件
         fs::path dest_dir = fs::path(snapshot_dir) / std::to_string(timestamp);
@@ -934,40 +939,64 @@ bool Storage::restore_from_checkpoint(const std::string &snapshot_tar_path, std:
     try
     {
         std::unique_lock<std::shared_mutex> lock(write_mutex_);
-        // 1. 强制将当前数据刷盘
-        force_flush();
-        // 2. 关闭后台线程
+        // 1. 关闭后台线程
         if (was_running)
         {
             stop_background_flush_thread();
         }
-        // 3. 将sstable_manager置为空（关闭文件句柄）
-        sstable_manager_ = nullptr;
-        // 4. 清理当前数据目录
-        LOG_INFO("Cleaning current data directory: %s", data_dir_.c_str());
-        if (fs::exists(data_dir_))
+        // 2. 强制将当前数据刷盘
+        if (!(memtable_->size() == 0 && immutable_memtables_.empty()))
         {
-            fs::rename(data_dir_, data_dir_ + "_bak");
+            force_flush();
         }
-        fs::create_directories(data_dir_);
+        // 3. 将sstable_manager置为空（关闭文件句柄）
+        LOG_INFO("Closing SSTableManager...");
+        sstable_manager_ = nullptr;
+        LOG_INFO("SSTableManager closed, sstable_manager_ is null: %s", sstable_manager_ == nullptr ? "true" : "false");
+        // 4. 清理当前数据目录
+        LOG_INFO("Cleaning current data directory: %s", sstable_dir_.c_str());
+        LOG_INFO("All file handles should be closed now. Attempting to rename directory...");
+        // 列出目录中的所有文件，用于诊断
+        if (fs::exists(sstable_dir_))
+        {
+            LOG_INFO("Listing files in %s before rename:", sstable_dir_.c_str());
+            try
+            {
+                for (const auto &entry : fs::directory_iterator(sstable_dir_))
+                {
+                    LOG_INFO("  - %s (is_regular_file: %s, is_directory: %s)",
+                             entry.path().string().c_str(),
+                             entry.is_regular_file() ? "true" : "false",
+                             entry.is_directory() ? "true" : "false");
+                }
+            }
+            catch (const std::exception &e)
+            {
+                LOG_WARN("Failed to list directory contents: %s", e.what());
+            }
+
+            // 因为是从快照中全量恢复数据，所以直接删除源目录
+            uint64_t count = fs::remove_all(sstable_dir_);
+            LOG_INFO("Removed %u files and directories from: %s", count, sstable_dir_.c_str());
+        }
+        fs::create_directories(sstable_dir_);
 
         // 5. 将快照文件解压到数据目录
         Archiver archiver;
-        archiver.extractTo(snapshot_tar_path, data_dir_);
+        archiver.extractTo(snapshot_tar_path, sstable_dir_);
         // 6. 重新初始化sstable_manager
         sstable_manager_ = std::make_unique<SSTableManager>(sstable_dir_,
                                                             sstable_merge_strategy_,
                                                             sstable_merge_threshold_,
                                                             sstable_zero_level_size_,
                                                             sstable_level_size_ratio_);
-
-        // 重启后台线程
+        // 7. 重启后台线程
         if (was_running)
         {
             start_background_flush_thread();
         }
-        // 7. 读取额外元数据（如果有）
-        fs::path meta_path = fs::path(data_dir_) / "extra_meta.bin";
+        // 8. 读取额外元数据（如果有）
+        fs::path meta_path = fs::path(sstable_dir_) / "extra_meta.bin";
         if (fs::exists(meta_path))
         {
             std::ifstream in(meta_path);
@@ -975,6 +1004,8 @@ bool Storage::restore_from_checkpoint(const std::string &snapshot_tar_path, std:
             buffer << in.rdbuf();
             in.close();
             out_extra_meta_data = buffer.str();
+            // 删除额外元数据文件
+            fs::remove(meta_path);
         }
         LOG_INFO("Restore from checkpoint completed successfully.");
         return true;
@@ -982,6 +1013,14 @@ bool Storage::restore_from_checkpoint(const std::string &snapshot_tar_path, std:
     catch (const std::exception &e)
     {
         LOG_ERROR("Failed to restore from checkpoint: %s", e.what());
+        if (!sstable_manager_)
+        {
+            sstable_manager_ = std::make_unique<SSTableManager>(sstable_dir_,
+                                                                sstable_merge_strategy_,
+                                                                sstable_merge_threshold_,
+                                                                sstable_zero_level_size_,
+                                                                sstable_level_size_ratio_);
+        }
         // 尝试重启以保持某种状态，虽然数据可能已损坏
         if (was_running)
         {
@@ -1020,6 +1059,137 @@ bool Storage::remove_snapshot(const std::string &snapshot_path)
     catch (const std::exception &e)
     {
         LOG_ERROR("Failed to remove snapshot file: %s, error: %s", snapshot_path.c_str(), e.what());
+        return false;
+    }
+}
+bool Storage::empty() const
+{
+    return sstable_manager_->empty() && memtable_->size() == 0 && immutable_memtables_.empty();
+}
+bool Storage::clear_and_backup_data()
+{
+    LOG_INFO("Starting clear and backup data");
+    if (empty())
+    {
+        return true;
+    }
+    bool was_running = background_flush_thread_running_;
+
+    try
+    {
+        std::unique_lock<std::shared_mutex> lock(write_mutex_);
+        // 1. 关闭后台线程
+        if (was_running)
+        {
+            stop_background_flush_thread();
+        }
+        // 2. 强制将当前数据刷盘
+        if (!(memtable_->size() == 0 && immutable_memtables_.empty()))
+        {
+            force_flush();
+        }
+        // 3. 将sstable_manager置为空（关闭文件句柄）
+        LOG_INFO("Closing SSTableManager...");
+        sstable_manager_ = nullptr;
+        LOG_INFO("SSTableManager closed, sstable_manager_ is null: %s", sstable_manager_ == nullptr ? "true" : "false");
+        // 4. 关闭WAL（关闭文件句柄）
+        if (wal_)
+        {
+            LOG_INFO("Closing WAL, current WAL file: %s", current_wal_filename_.c_str());
+            // 因为数据已经全部刷盘，所以可以安全地清空WAL
+            if (!current_wal_filename_.empty())
+            {
+                wal_->clear(current_wal_filename_);
+                LOG_INFO("WAL file cleared: %s", current_wal_filename_.c_str());
+            }
+            wal_ = nullptr;
+            LOG_INFO("WAL closed, wal_ is null: %s", wal_ == nullptr ? "true" : "false");
+        }
+        // 5. 清理当前数据目录
+        LOG_INFO("Cleaning current data directory: %s", data_dir_.c_str());
+        LOG_INFO("All file handles should be closed now. Attempting to rename directory...");
+
+        // 列出目录中的所有文件，用于诊断
+        if (fs::exists(data_dir_))
+        {
+            LOG_INFO("Listing files in %s before rename:", data_dir_.c_str());
+            try
+            {
+                for (const auto &entry : fs::directory_iterator(data_dir_))
+                {
+                    LOG_INFO("  - %s (is_regular_file: %s, is_directory: %s)",
+                             entry.path().string().c_str(),
+                             entry.is_regular_file() ? "true" : "false",
+                             entry.is_directory() ? "true" : "false");
+                }
+            }
+            catch (const std::exception &e)
+            {
+                LOG_WARN("Failed to list directory contents: %s", e.what());
+            }
+
+            auto timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+            std::string new_name = data_dir_ + "_bak_" + std::to_string(timestamp);
+            LOG_INFO("Attempting rename: %s -> %s", data_dir_.c_str(), new_name.c_str());
+
+            try
+            {
+                // 重命名源文件
+                fs::rename(data_dir_, new_name);
+                LOG_INFO("Rename succeeded");
+            }
+            catch (const fs::filesystem_error &e)
+            {
+                LOG_ERROR("Rename failed with filesystem_error: %s", e.what());
+                LOG_ERROR("  path1: %s", e.path1().string().c_str());
+                if (!e.path2().empty())
+                {
+                    LOG_ERROR("  path2: %s", e.path2().string().c_str());
+                }
+                throw;
+            }
+        }
+        fs::create_directories(data_dir_);
+        // 6. 重新初始化sstable_manager
+        sstable_manager_ = std::make_unique<SSTableManager>(sstable_dir_,
+                                                            sstable_merge_strategy_,
+                                                            sstable_merge_threshold_,
+                                                            sstable_zero_level_size_,
+                                                            sstable_level_size_ratio_);
+        if (enable_wal_)
+        { // 7. 重新初始化wal
+            wal_ = std::make_unique<Wal>(wal_dir_, wal_flush_strategy_ == WALFlushStrategy::IMMEDIATE_ON_WRITE);
+            current_wal_filename_ = wal_->open_wal_file();
+        }
+        // 8. 重启后台线程
+        if (was_running)
+        {
+            start_background_flush_thread();
+        }
+        LOG_INFO("Clear and backup data completed successfully.");
+        return true;
+    }
+    catch (const std::exception &e)
+    {
+        LOG_ERROR("Failed to clear and backup data: %s", e.what());
+        if (!sstable_manager_)
+        {
+            sstable_manager_ = std::make_unique<SSTableManager>(sstable_dir_,
+                                                                sstable_merge_strategy_,
+                                                                sstable_merge_threshold_,
+                                                                sstable_zero_level_size_,
+                                                                sstable_level_size_ratio_);
+        }
+        if (!wal_ && enable_wal_)
+        {
+            wal_ = std::make_unique<Wal>(wal_dir_, wal_flush_strategy_ == WALFlushStrategy::IMMEDIATE_ON_WRITE);
+            current_wal_filename_ = wal_->open_wal_file();
+        }
+        // 尝试重启以保持某种状态，虽然数据可能已损坏
+        if (was_running)
+        {
+            start_background_flush_thread();
+        }
         return false;
     }
 }

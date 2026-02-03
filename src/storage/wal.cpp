@@ -31,9 +31,11 @@ Wal::~Wal()
 {
     if (wal_file_ != nullptr)
     {
-        LOG_DEBUG("Wal: Closing WAL file.");
+        LOG_INFO("Wal::~Wal: Closing WAL file: %s", (PathUtils::combine_path(wal_dir_, wal_file_name_)).c_str());
         sync();
         fclose(wal_file_);
+        wal_file_ = nullptr;
+        LOG_INFO("Wal::~Wal: WAL file closed");
     }
 }
 

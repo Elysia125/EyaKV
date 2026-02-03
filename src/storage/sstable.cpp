@@ -119,8 +119,10 @@ SSTable::~SSTable()
 {
     if (file_ != nullptr)
     {
+        LOG_INFO("SSTable::~SSTable: Closing file %s", filepath_.c_str());
         fclose(file_);
         file_ = nullptr;
+        LOG_INFO("SSTable::~SSTable: File %s closed", filepath_.c_str());
     }
 }
 
@@ -705,13 +707,6 @@ SSTableManager::SSTableManager(const std::string &data_dir,
     {
         std::filesystem::create_directories(data_dir_);
     }
-    level_sstables_.resize(max_level_ + 1);
-    level_sstable_size_.resize(max_level_ + 1, 0);
-    level_mutex_.resize(max_level_ + 1);
-    for (size_t i = 0; i <= max_level_; ++i)
-    {
-        level_mutex_[i] = std::make_unique<std::recursive_mutex>();
-    }
     // 加载现有的 SSTable 文件
     load_all();
 }
@@ -727,6 +722,16 @@ std::string SSTableManager::generate_filename()
 bool SSTableManager::load_all()
 {
     level_sstables_.clear();
+    level_sstable_size_.clear();
+    level_mutex_.clear();
+    sstable_count_ = 0;
+    level_sstables_.resize(max_level_ + 1);
+    level_sstable_size_.resize(max_level_ + 1, 0);
+    level_mutex_.resize(max_level_ + 1);
+    for (size_t i = 0; i <= max_level_; ++i)
+    {
+        level_mutex_[i] = std::make_unique<std::recursive_mutex>();
+    }
     next_sequence_number_ = 1;
 
     if (!std::filesystem::exists(data_dir_))
@@ -736,10 +741,15 @@ bool SSTableManager::load_all()
 
     for (const auto &entry : std::filesystem::directory_iterator(data_dir_))
     {
+        auto filepath = entry.path().string();
+        auto ext = entry.path().extension().string();
+        LOG_INFO("SSTableManager::load_all: Found file: %s, extension: '%s'", filepath.c_str(), ext.c_str());
+
         if (entry.path().extension() == ".sst")
         {
             try
             {
+                LOG_INFO("SSTableManager::load_all: Loading SSTable: %s", filepath.c_str());
                 auto sstable = std::make_unique<SSTable>(entry.path().string());
 
                 // 更新下一个序列号
@@ -778,8 +788,8 @@ bool SSTableManager::load_all()
     // 按序列号排序（最新的在前）
     sort_sstables_by_sequence();
 
-    LOG_INFO("Loaded %zu SSTable files from %s", sstable_count_, data_dir_.c_str());
     normalize_sstables();
+    LOG_INFO("Loaded %zu SSTable files from %s, max level: %d, level_sstables_.size(): %zu", sstable_count_, data_dir_.c_str(), max_level_, level_sstables_.size());
     return true;
 }
 
@@ -1133,8 +1143,11 @@ std::optional<SSTableMeta> SSTableManager::create_from_entries(
 bool SSTableManager::get(const std::string &key, EValue *value) const
 {
     // 按顺序查询（最新的在前）
+    LOG_INFO("SSTableManager::get key=%s,level_sstables_.size()=%d", key.c_str(), level_sstables_.size());
+    int current_level = 0;
     for (const auto &sstables : level_sstables_)
     {
+        LOG_INFO("SSTableManager::get level=%d, sstables.size()=%d", current_level, sstables.size());
         for (const auto &sstable : sstables)
         {
             auto result = sstable->get(key);
@@ -1143,10 +1156,12 @@ bool SSTableManager::get(const std::string &key, EValue *value) const
                 if (value)
                 {
                     *value = result.value();
+                    LOG_INFO("SSTableManager::get found key=%s, value=%s", key.c_str(), to_string(value->value).c_str());
                 }
                 return true;
             }
         }
+        current_level++;
     }
     return false;
 }

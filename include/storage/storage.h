@@ -99,13 +99,13 @@ public:
         if (instance_ == nullptr)
         {
             instance_ = std::unique_ptr<Storage>(new Storage(data_dir, wal_dir,
-                                                          read_only, enable_wal,
-                                                          wal_flush_interval,
-                                                          wal_flush_strategy,
-                                                          memtable_size, skiplist_max_level,
-                                                          skiplist_probability,
-                                                          sstable_merge_strategy, sstable_merge_threshold,
-                                                          sstable_zero_level_size, sstable_level_size_ratio));
+                                                             read_only, enable_wal,
+                                                             wal_flush_interval,
+                                                             wal_flush_strategy,
+                                                             memtable_size, skiplist_max_level,
+                                                             skiplist_probability,
+                                                             sstable_merge_strategy, sstable_merge_threshold,
+                                                             sstable_zero_level_size, sstable_level_size_ratio));
         }
     }
 
@@ -182,6 +182,15 @@ public:
      * @return 成功返回 true
      */
     bool remove_snapshot(const std::string &snapshot_path);
+    /**
+     * @brief 清空并备份当前的数据
+     * @return 成功返回true
+     */
+    bool clear_and_backup_data();
+    /**
+     * @brief 数据是否为空
+     */
+    bool empty() const;
 
 private:
     std::string data_dir_;
@@ -213,7 +222,7 @@ private:
     const uint64_t sstable_zero_level_size_;
     const double sstable_level_size_ratio_;
     const SSTableMergeStrategy sstable_merge_strategy_;
-
+    const std::string wal_dir_;
     // 后台线程控制
     std::atomic<bool> background_flush_thread_running_{false};
     std::atomic<bool> closed_{false};

@@ -23,7 +23,6 @@ using Serializer = EyaKV::Serializer;
 //  RPC 消息类型
 enum RaftMessageType
 {
-    HEART_BEAT = 0,                 // 心跳消息
     REQUEST_VOTE = 1,               // 请求投票
     REQUEST_VOTE_RESPONSE = 2,      // 请求投票响应
     APPEND_ENTRIES = 3,             // 日志追加
@@ -38,9 +37,7 @@ enum RaftMessageType
     CLUSTER_CONFIG_RESPONSE = 14,   // 集群配置变更响应
     SNAPSHOT_INSTALL = 15,          // 快照安装
     SNAPSHOT_INSTALL_RESPONSE = 16, // 快照安装响应
-    LOG_SYNC_REQUEST = 17,          // 日志同步请求
-    LOG_SYNC_RESPONSE = 18,         // 日志同步响应
-    LEAVE_NODE = 19                 // 节点移除
+    LEAVE_NODE = 17                 // 节点移除
 };
 // 日志条目结构体（根据设计文档更新）
 struct LogEntry
@@ -124,30 +121,6 @@ namespace std
         }
     };
 }
-
-// 心跳消息数据
-struct HeartBeatData
-{
-    uint32_t leader_commit; // 领导者的提交索引
-
-    HeartBeatData(uint32_t commit = 0) : leader_commit(commit) {}
-
-    std::string serialize() const
-    {
-        std::string result;
-        uint32_t net_leader_commit = htonl(leader_commit);
-        result.append(reinterpret_cast<const char *>(&net_leader_commit), sizeof(net_leader_commit));
-        return result;
-    }
-
-    static HeartBeatData deserialize(const char *data, size_t &offset)
-    {
-        uint32_t net_leader_commit;
-        std::memcpy(&net_leader_commit, data + offset, sizeof(net_leader_commit));
-        offset += sizeof(net_leader_commit);
-        return HeartBeatData(ntohl(net_leader_commit));
-    }
-};
 
 // 请求投票消息数据
 struct RequestVoteData
@@ -629,9 +602,8 @@ struct SnapshotInstallResponseData
 
 struct RaftMessage : public ProtocolBody
 {
-    RaftMessageType type = RaftMessageType::HEART_BEAT;                        // RPC 消息类型
+    RaftMessageType type = RaftMessageType::APPEND_ENTRIES;                    // RPC 消息类型
     uint32_t term = 0;                                                         // 请求发送者任期
-    std::optional<HeartBeatData> heartbeat_data;                               // 心跳数据
     std::optional<RequestVoteData> request_vote_data;                          // 请求投票数据
     std::optional<RequestVoteResponseData> request_vote_response_data;         // 请求投票响应数据
     std::optional<AppendEntriesData> append_entries_data;                      // 日志追加数据
@@ -651,15 +623,6 @@ struct RaftMessage : public ProtocolBody
         RaftMessage msg;
         msg.type = RaftMessageType::LEAVE_NODE;
         msg.leave_node_data = LeaveNodeData(addr);
-        return msg;
-    }
-
-    static RaftMessage heart_beat(uint32_t term, uint32_t leader_commit)
-    {
-        RaftMessage msg;
-        msg.type = RaftMessageType::HEART_BEAT;
-        msg.term = term;
-        msg.heartbeat_data = HeartBeatData(leader_commit);
         return msg;
     }
 
@@ -797,13 +760,6 @@ struct RaftMessage : public ProtocolBody
 
         switch (type)
         {
-        case RaftMessageType::HEART_BEAT:
-            if (heartbeat_data.has_value())
-            {
-                result.append(heartbeat_data->serialize());
-            }
-            break;
-
         case RaftMessageType::REQUEST_VOTE:
             if (request_vote_data.has_value())
             {
@@ -907,10 +863,6 @@ struct RaftMessage : public ProtocolBody
 
         switch (type)
         {
-        case RaftMessageType::HEART_BEAT:
-            heartbeat_data = HeartBeatData::deserialize(data, offset);
-            break;
-
         case RaftMessageType::REQUEST_VOTE:
             request_vote_data = RequestVoteData::deserialize(data, offset);
             break;

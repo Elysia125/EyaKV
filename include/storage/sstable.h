@@ -355,6 +355,14 @@ public:
         const std::string &start_key,
         const std::string &end_key) const;
 
+    /**
+     * @brief 是否为空
+     */
+    bool empty() const
+    {
+        return sstable_count_ == 0;
+    }
+
 private:
     std::string data_dir_;
     uint32_t sstable_count_;

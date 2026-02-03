@@ -310,7 +310,7 @@ private:
 class EYAKV_RAFT_API RaftNode : public TCPServer
 {
 private:
-    RaftLogArray log_array_; // 日志数组：管理Raft日志的存储和访问
+    std::unique_ptr<RaftLogArray> log_array_; // 日志数组：管理Raft日志的存储和访问
 
     // 持久化状态对象
     PersistentState persistent_state_; // 持久化状态：包含current_term、voted_for等需要持久化的状态
