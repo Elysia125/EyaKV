@@ -18,7 +18,13 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 # Include headers globally
 include_directories(${PROJECT_SOURCE_DIR}/include)
 add_definitions(-DPROJECT_ROOT_DIR="${CMAKE_CURRENT_BINARY_DIR}")
-add_definitions(-DEYAKV_STATIC)
+
+# 默认构建为共享库（src 下的各模块都是 SHARED），不应强制定义 EYAKV_STATIC。
+# EYAKV_STATIC 一旦定义，会让 export 宏为空，配合 -fvisibility=hidden 会导致 Linux 下符号不可见而链接失败。
+option(EYAKV_STATIC "Build as if using static linkage (disables export macros)" OFF)
+if(EYAKV_STATIC)
+    add_definitions(-DEYAKV_STATIC)
+endif()
 
 # Define include directory variable for subdirectories
 set(EYAKV_INCLUDE_DIR ${PROJECT_SOURCE_DIR}/include)
