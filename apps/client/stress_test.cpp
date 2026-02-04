@@ -309,7 +309,7 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    if (connect(socket_guard.get(), (struct sockaddr *)&server_addr, sizeof(server_addr)) == SOCKET_ERROR_VALUE)
+    if (connect(socket_guard.get(), reinterpret_cast<struct sockaddr *>(&server_addr), sizeof(server_addr)) == SOCKET_ERROR_VALUE)
     {
         std::cerr << "Connect failed" << std::endl;
         return 1;

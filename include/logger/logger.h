@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <type_traits>
 #include "config/config.h"
 #include "common/base/export.h"
 
@@ -27,6 +28,18 @@ public:
     // 初始化日志：指定日志目录 + 输出级别（低于该级别的日志不输出）
     // 示例：Init("./log", LogLevel::DEBUG) → 输出所有级别，且分级存储到./log下
     void Init(const std::string &log_dir, LogLevel level = LogLevel::INFO, unsigned long rotate_size = 1024 * 1024 * 5);
+
+    // 辅助：转换参数为 const char*
+    template <typename T>
+    const char* to_c_string(T&& arg) {
+        if constexpr (std::is_same_v<std::decay_t<T>, std::string>) {
+            return arg.c_str();
+        } else if constexpr (std::is_same_v<std::decay_t<T>, const char*> || std::is_same_v<std::decay_t<T>, char*>) {
+            return arg;
+        } else {
+            return reinterpret_cast<const char*>(arg);
+        }
+    }
 
     // 核心日志写入接口：按级别路由到对应文件
     template <typename... Args>
@@ -65,7 +78,7 @@ public:
         }
         else
         {
-            fprintf(target_fp, format, std::forward<Args>(args)...);
+            fprintf(target_fp, format, to_c_string(std::forward<Args>(args))...);
         }
         fprintf(target_fp, "\n");
         if (target_fp != stderr)
@@ -78,7 +91,7 @@ public:
             }
             else
             {
-                fprintf(stdout, format, std::forward<Args>(args)...);
+                fprintf(stdout, format, to_c_string(std::forward<Args>(args))...);
             }
             fprintf(stdout, "\n");
         }
@@ -156,7 +169,7 @@ private:
         }
         else
         {
-            fprintf(stderr, format, std::forward<Args>(args)...);
+            fprintf(stderr, format, to_c_string(std::forward<Args>(args))...);
         }
         fprintf(stderr, "\n");
     }

@@ -864,6 +864,7 @@ void SSTableManager::normalize_sstables()
             {
                 merge_sstables_by_strategy_0(i);
             }
+            return;
         }
         // 读取文件内容
         std::string content;

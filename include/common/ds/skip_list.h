@@ -280,7 +280,7 @@ public:
         : current_level_(other.current_level_),
           head_(other.head_),
           size_(other.size_),
-          current_size_(other.current_size_),
+          current_size_(other.current_size_.load(std::memory_order_relaxed)),
           MAX_LEVEL(other.MAX_LEVEL),
           PROBABILITY(other.PROBABILITY),
           compare_func_(other.compare_func_),
@@ -311,7 +311,7 @@ public:
         // 移动资源
         current_level_ = other.current_level_;
         head_ = other.head_;
-        current_size_ = other.current_size_;
+        current_size_.store(other.current_size_.load(std::memory_order_relaxed), std::memory_order_relaxed);
         size_ = other.size_;
         compare_func_ = other.compare_func_;
         calculate_key_size_func_ = other.calculate_key_size_func_;
@@ -340,7 +340,7 @@ public:
 
         SkipListNode<K, V> *current = head_;
         // 记录各层的前驱节点
-        SkipListNode<K, V> *update[MAX_LEVEL] = {nullptr};
+        std::vector<SkipListNode<K, V> *> update(MAX_LEVEL, nullptr);
         // 查找插入位置
         for (int i = current_level_ - 1; i >= 0; i--)
         {
@@ -454,7 +454,7 @@ public:
     {
         std::unique_lock<std::shared_mutex> lock(mutex_);
         SkipListNode<K, V> *current = head_;
-        SkipListNode<K, V> *update[MAX_LEVEL] = {nullptr};
+        std::vector<SkipListNode<K, V> *> update(MAX_LEVEL, nullptr);
         for (int i = current_level_ - 1; i >= 0; i--)
         {
             while (current->next[i] != nullptr && compare_func_(current->next[i]->key, key) < 0)
@@ -605,7 +605,7 @@ public:
         }
         size_t removed_count = 0;
         SkipListNode<K, V> *current = head_;
-        SkipListNode<K, V> *update[MAX_LEVEL] = {nullptr};
+        std::vector<SkipListNode<K, V> *> update(MAX_LEVEL, nullptr);
         // 查找起始位置
         for (int i = current_level_ - 1; i >= 0; i--)
         {
@@ -783,7 +783,7 @@ public:
         {
             current_level_ = MAX_LEVEL;
         }
-        SkipListNode<K, V> *level_nodes[current_level_] = {head_};
+        std::vector<SkipListNode<K, V> *> level_nodes(current_level_ + 1, head_);
         offset += sizeof(current_level);
         uint32_t size;
         std::memcpy(&size, data + offset, sizeof(size));
@@ -812,7 +812,7 @@ public:
      */
     void print()
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock<std::shared_mutex> lock(mutex_);
         std::cout << "SkipList current level: " << current_level_ << std::endl;
 
         for (int i = current_level_ - 1; i >= 0; --i)

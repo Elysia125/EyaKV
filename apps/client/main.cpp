@@ -303,7 +303,7 @@ int client_main(const std::string &host, int port, const std::string &password)
     }
 
     // Connect to server
-    if (connect(socket_guard.get(), (struct sockaddr *)&server_addr, sizeof(server_addr)) == SOCKET_ERROR_VALUE)
+    if (connect(socket_guard.get(), reinterpret_cast<struct sockaddr *>(&server_addr), sizeof(server_addr)) == SOCKET_ERROR_VALUE)
     {
         std::cerr << "Connect failed: " << socket_error_to_string(GET_SOCKET_ERROR()) << std::endl;
         return 1;
