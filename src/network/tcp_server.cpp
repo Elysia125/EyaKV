@@ -184,7 +184,7 @@ void EyaServer::handle_accept()
             char clientIp[INET_ADDRSTRLEN];
             inet_ntop(AF_INET, &client_addr.sin_addr, clientIp, INET_ADDRSTRLEN);
             LOG_INFO("Connection added to wait queue (current: %d, waiting: %zu)",
-                     current_connections_, wait_queue_.size() + 1);
+                     current_connections_.load(), wait_queue_.size() + 1);
 
             wait_queue_.push_back({client_sock,
                                    std::chrono::steady_clock::now(),
