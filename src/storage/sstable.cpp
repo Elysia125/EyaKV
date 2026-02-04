@@ -149,11 +149,23 @@ bool SSTable::load()
     // 读取level
     uint32_t level;
     fseek(file_, file_size - sizeof(level), SEEK_SET);
-    fread(&level, 1, sizeof(level), file_);
+    if (fread(&level, 1, sizeof(level), file_) != sizeof(level))
+    {
+        LOG_ERROR("Failed to read level from SSTable: %s", filepath_.c_str());
+        fclose(file_);
+        file_ = nullptr;
+        return false;
+    }
     // 读取 Footer
     fseek(file_, file_size - sizeof(level) - SSTableFooter::SIZE, SEEK_SET);
     std::vector<char> footer_data(SSTableFooter::SIZE);
-    fread(footer_data.data(), 1, SSTableFooter::SIZE, file_);
+    if (fread(footer_data.data(), 1, SSTableFooter::SIZE, file_) != SSTableFooter::SIZE)
+    {
+        LOG_ERROR("Failed to read footer from SSTable: %s", filepath_.c_str());
+        fclose(file_);
+        file_ = nullptr;
+        return false;
+    }
     footer_ = SSTableFooter::deserialize(footer_data.data());
 
     // 验证魔数
@@ -171,19 +183,37 @@ bool SSTable::load()
     {
         fseek(file_, footer_.min_key_offset, SEEK_SET);
         min_key.resize(footer_.min_key_size);
-        fread(&min_key[0], 1, footer_.min_key_size, file_);
+        if (fread(&min_key[0], 1, footer_.min_key_size, file_) != footer_.min_key_size)
+        {
+            LOG_ERROR("Failed to read min_key from SSTable: %s", filepath_.c_str());
+            fclose(file_);
+            file_ = nullptr;
+            return false;
+        }
     }
     if (footer_.max_key_size > 0)
     {
         fseek(file_, footer_.max_key_offset, SEEK_SET);
         max_key.resize(footer_.max_key_size);
-        fread(&max_key[0], 1, footer_.max_key_size, file_);
+        if (fread(&max_key[0], 1, footer_.max_key_size, file_) != footer_.max_key_size)
+        {
+            LOG_ERROR("Failed to read max_key from SSTable: %s", filepath_.c_str());
+            fclose(file_);
+            file_ = nullptr;
+            return false;
+        }
     }
 
     // 读取索引块
     fseek(file_, footer_.index_block_offset, SEEK_SET);
     std::vector<char> index_data(footer_.index_block_size);
-    fread(index_data.data(), 1, footer_.index_block_size, file_);
+    if (fread(index_data.data(), 1, footer_.index_block_size, file_) != footer_.index_block_size)
+    {
+        LOG_ERROR("Failed to read index block from SSTable: %s", filepath_.c_str());
+        fclose(file_);
+        file_ = nullptr;
+        return false;
+    }
 
     size_t offset = 0;
     while (offset < footer_.index_block_size)
@@ -194,7 +224,13 @@ bool SSTable::load()
     // 读取布隆过滤器
     fseek(file_, footer_.bloom_filter_offset, SEEK_SET);
     std::vector<char> bloom_data(footer_.bloom_filter_size);
-    fread(bloom_data.data(), 1, footer_.bloom_filter_size, file_);
+    if (fread(bloom_data.data(), 1, footer_.bloom_filter_size, file_) != footer_.bloom_filter_size)
+    {
+        LOG_ERROR("Failed to read bloom filter from SSTable: %s", filepath_.c_str());
+        fclose(file_);
+        file_ = nullptr;
+        return false;
+    }
     size_t bloom_offset = 0;
     bloom_filter_ = BloomFilter::deserialize(bloom_data.data(), bloom_offset);
 
@@ -273,7 +309,11 @@ std::vector<std::pair<std::string, EValue>> SSTable::read_data_block(size_t bloc
     // 读取数据块
     fseek(file_, idx.block_offset, SEEK_SET);
     std::vector<char> block_data(idx.block_size);
-    fread(block_data.data(), 1, idx.block_size, file_);
+    if (fread(block_data.data(), 1, idx.block_size, file_) != idx.block_size)
+    {
+        LOG_ERROR("Failed to read data block from SSTable: %s", filepath_.c_str());
+        return entries;
+    }
 
     // 解析数据块中的 KV 对
     size_t offset = 0;
@@ -830,7 +870,16 @@ void SSTableManager::normalize_sstables()
         fseek(file, 0, SEEK_END);
         content.resize(ftell(file));
         rewind(file);
-        fread(content.data(), 1, content.size(), file);
+        if (fread(content.data(), 1, content.size(), file) != content.size())
+        {
+            LOG_ERROR("Failed to read .smeta file: %s", smeta_file.c_str());
+            fclose(file);
+            for (int i = 0; i < max_level_; i++)
+            {
+                merge_sstables_by_strategy_0(i);
+            }
+            return;
+        }
         fclose(file);
         SSTableMergeStrategy last_strategy;
         try

@@ -59,13 +59,27 @@ public:
 
         // 3. 写入内核缓冲区（不手动刷盘）
         fprintf(target_fp, "%s ", header.c_str());
-        fprintf(target_fp, format, std::forward<Args>(args)...);
+        if constexpr (sizeof...(Args) == 0)
+        {
+            fprintf(target_fp, "%s", format);
+        }
+        else
+        {
+            fprintf(target_fp, format, std::forward<Args>(args)...);
+        }
         fprintf(target_fp, "\n");
         if (target_fp != stderr)
         {
             // 打印到控制台
             fprintf(stdout, "%s ", header.c_str());
-            fprintf(stdout, format, std::forward<Args>(args)...);
+            if constexpr (sizeof...(Args) == 0)
+            {
+                fprintf(stdout, "%s", format);
+            }
+            else
+            {
+                fprintf(stdout, format, std::forward<Args>(args)...);
+            }
             fprintf(stdout, "\n");
         }
         // 4. FATAL级别强制刷盘并退出
@@ -136,7 +150,14 @@ private:
     {
         std::string header = GetLogHeader(level);
         fprintf(stderr, "%s ", header.c_str());
-        fprintf(stderr, format, std::forward<Args>(args)...);
+        if constexpr (sizeof...(Args) == 0)
+        {
+            fprintf(stderr, "%s", format);
+        }
+        else
+        {
+            fprintf(stderr, format, std::forward<Args>(args)...);
+        }
         fprintf(stderr, "\n");
     }
 
