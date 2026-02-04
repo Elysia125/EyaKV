@@ -1,7 +1,7 @@
 # 1. 启用线程支持
 find_package(Threads REQUIRED)
 
-# 2. MinGW 环境强制动态 pthread + 符号隐藏（关键修复）
+# 2. MinGW 环境强制动态 pthread + 符号隐藏
 if(MINGW)
     set(CMAKE_THREAD_PREFER_PTHREAD ON)
     set(THREADS_PREFER_PTHREAD_FLAG ON)
@@ -37,7 +37,7 @@ elseif(APPLE)
 elseif(UNIX)
     set(PLATFORM_LIBS "")  # Threads::Threads 已包含 pthread，无需冗余
 endif()
-# 关键修复：给 Logger 显式链接线程库（强制动态）
+# 给 Logger 显式链接线程库（强制动态）
 target_link_libraries(eyakv_logger PRIVATE
     ${PLATFORM_LIBS}
     Threads::Threads
@@ -48,7 +48,7 @@ set_target_properties(eyakv_logger PROPERTIES
     VISIBILITY_INLINES_HIDDEN ON
 )
 
-# Module 1: Common（无需修改链接逻辑，继承动态 pthread）
+# Module 1: Common
 add_library(eyakv_common SHARED
     common/util/path_utils.cpp
     common/ds/zset.cpp
@@ -59,19 +59,19 @@ if(WIN32)
     target_compile_definitions(eyakv_common PRIVATE EYAKV_COMMON_EXPORTS)
     target_link_libraries(eyakv_common PRIVATE eyakv_logger ${PLATFORM_LIBS} Threads::Threads)
 else()
+    target_compile_definitions(eyakv_common PRIVATE EYAKV_COMMON_EXPORTS)
     target_link_libraries(eyakv_common PRIVATE eyakv_logger ${PLATFORM_LIBS} Threads::Threads)
 endif()
 target_include_directories(eyakv_common PUBLIC
     ${EYAKV_INCLUDE_DIR}
     ${CMAKE_CURRENT_BINARY_DIR}
 )
-# 隐藏 Common 的非导出符号（可选，增强安全性）
+# 隐藏 Common 的非导出符号
 set_target_properties(eyakv_common PROPERTIES
     CXX_VISIBILITY_PRESET hidden
     VISIBILITY_INLINES_HIDDEN ON
 )
 
-# 后续模块（Storage/Raft/Network/Starter）保持原样不变！
 # Module 2: Storage - 存储引擎库
 add_library(eyakv_storage SHARED
     storage/memtable.cpp
