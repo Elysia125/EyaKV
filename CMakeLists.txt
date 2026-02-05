@@ -5,6 +5,26 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# 设置默认构建类型为 Release（如果不指定）
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
+# Windows MSVC 编译优化选项
+if(MSVC)
+    # 使用多线程DLL运行时 (/MD)，避免静态链接
+    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /MD /O2 /Ob2 /DNDEBUG")
+    # 移除调试符号，减小体积
+    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /Zi /Gy")
+    # 链接器优化
+    set(CMAKE_SHARED_LINKER_FLAGS_RELEASE "${CMAKE_SHARED_LINKER_FLAGS_RELEASE} /OPT:REF /OPT:ICF /INCREMENTAL:NO")
+elseif(MINGW OR CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    # GCC/MinGW 优化选项
+    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3 -s")
+    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -fdata-sections -ffunction-sections")
+    set(CMAKE_SHARED_LINKER_FLAGS_RELEASE "${CMAKE_SHARED_LINKER_FLAGS_RELEASE} -Wl,--gc-sections -s")
+endif()
+
 # 修改动态库前缀（Windows 下去掉 lib 前缀）
 if(WIN32)
     set(CMAKE_SHARED_LIBRARY_PREFIX "")
@@ -24,6 +44,18 @@ add_definitions(-DPROJECT_ROOT_DIR="${CMAKE_CURRENT_BINARY_DIR}")
 option(EYAKV_STATIC "Build as if using static linkage (disables export macros)" OFF)
 if(EYAKV_STATIC)
     add_definitions(-DEYAKV_STATIC)
+endif()
+
+# 选项：最小化DLL体积（剥离所有符号）
+option(EYAKV_MINIMAL_SIZE "Build minimal size binaries (strip symbols)" OFF)
+if(EYAKV_MINIMAL_SIZE)
+    if(MSVC)
+        set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /Os")
+        set(CMAKE_SHARED_LINKER_FLAGS_RELEASE "${CMAKE_SHARED_LINKER_FLAGS_RELEASE} /DEBUG:NONE")
+    elseif(MINGW OR CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -Os -s")
+        set(CMAKE_SHARED_LINKER_FLAGS_RELEASE "${CMAKE_SHARED_LINKER_FLAGS_RELEASE} -s")
+    endif()
 endif()
 
 # Define include directory variable for subdirectories

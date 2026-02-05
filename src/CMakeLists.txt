@@ -1,6 +1,14 @@
 # 1. 启用线程支持
 find_package(Threads REQUIRED)
 
+# Windows MSVC 全局优化设置
+if(MSVC)
+    # 确保所有目标使用 /MD (动态链接运行时)，而不是 /MT (静态链接)
+    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /MD")
+    # 移除 RTTI 和异常处理可以进一步减小体积（如果需要的话，可以取消注释）
+    # set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /GR- /EHs-c-")
+endif()
+
 # 2. MinGW 环境强制动态 pthread + 符号隐藏
 if(MINGW)
     set(CMAKE_THREAD_PREFER_PTHREAD ON)
