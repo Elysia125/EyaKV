@@ -180,7 +180,8 @@ bool send_data(socket_t client_socket, const std::string &data)
 // Helper: Auth
 bool authenticate(SocketGuard &socket_guard, const std::string &password, std::string &auth_key)
 {
-    std::string data = serialize_request(RequestType::AUTH, password);
+    Request request = Request::auth(generate_random_string(16), password);
+    std::string data = request.serialize();
     if (!send_data(socket_guard.get(), data))
         return false;
 
@@ -209,8 +210,8 @@ bool authenticate(SocketGuard &socket_guard, const std::string &password, std::s
 void run_op(socket_t sock, const std::string &auth_key, const std::string &desc, const std::string &cmd)
 {
     std::cout << "[TEST] " << desc << " | Command: " << cmd << std::endl;
-    std::string req = serialize_request(RequestType::COMMAND, cmd, auth_key);
-    if (!send_data(sock, req))
+    Request request = Request::createCommand(generate_random_string(16), cmd, auth_key);
+    if (!send_data(sock, request.serialize()))
     {
         std::cout << "-> SEND FAILED" << std::endl;
         return;

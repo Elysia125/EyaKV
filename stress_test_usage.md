@@ -1,8 +1,13 @@
-# TinyKV 压力测试使用说明
+# EyaKV 压力测试使用说明
 
 ## 概述
 
-TinyKV 的压力测试系统现在支持选择性运行测试，你可以选择运行一个或多个测试。
+EyaKV 的压力测试系统支持选择性运行测试，你可以选择运行一个或多个测试。
+
+此外，单连接多数据结构测试支持两种“批量化”方式：
+
+- **`--batch`**：把多个元素拼到同一条命令里（例如 `rpush big_list v1 v2 ...`），仍然属于 **单条 COMMAND**。
+- **`--pipeline`**：把多条命令打包成一次 **BATCH_COMMAND** 请求发送（pipeline），服务端返回批量响应，客户端按响应头 `length` 读取响应体字符串后调用 `deserializeBatchResponse` 反序列化。
 
 ## 支持的测试类型
 
@@ -25,11 +30,14 @@ python stress_runner.py \
     --host 127.0.0.1 \
     --port 5210 \
     --count 50000 \
-    --batch \
+    --pipeline \
+    --pipeline-batch 50 \
     --conn-limit 1000 \
     --threads 10 \
     --output report.md
 ```
+
+> 提示：如果开启了 `--pipeline`，单连接多数据结构测试会优先使用 pipeline 方式发送；此时 `--batch` 对单连接测试不再生效（但你仍可保留该参数以兼容旧用法）。
 
 ### 选择性运行测试
 
@@ -102,7 +110,8 @@ build/bin/stress_test.exe \
     -h 127.0.0.1 \
     -p 5210 \
     -n 50000 \
-    --batch \
+    --pipeline \
+    --pipeline-batch 50 \
     --conn-limit 1000 \
     --threads 10
 
@@ -111,7 +120,8 @@ build/bin/stress_test.exe \
     -h 127.0.0.1 \
     -p 5210 \
     -n 50000 \
-    --batch
+    --pipeline \
+    --pipeline-batch 50
 
 # 跳过单连接测试，只运行连接数测试
 build/bin/stress_test.exe \
@@ -136,11 +146,13 @@ build/bin/stress_test.exe \
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
 | `--stress-bin` | stress_test 可执行文件路径 | `build/bin/stress_test[.exe]` |
-| `--host` | TinyKV 服务器地址 | `127.0.0.1` |
-| `--port` | TinyKV 服务器端口 | `5210` |
+| `--host` | EyaKV 服务器地址 | `127.0.0.1` |
+| `--port` | EyaKV 服务器端口 | `5210` |
 | `--password` | 认证密码 | 空 |
 | `--count` | 每类数据结构的操作数量 | `50000` |
 | `--batch` | 启用批量模式 | False |
+| `--pipeline` | 启用 pipeline 模式（BATCH_COMMAND） | False |
+| `--pipeline-batch` | pipeline 批次大小（每个 batch 含多少条子命令） | None（stress_test 默认 50） |
 | `--conn-limit` | 连接数上限测试的目标连接数 | None（不运行） |
 | `--threads` | 多线程测试的线程数 | None（不运行） |
 | `--skip-single` | 跳过单连接多数据结构测试 | False |
@@ -160,6 +172,8 @@ build/bin/stress_test.exe \
 | `-a` | 认证密码 | 空 |
 | `-n` | 每类数据结构的操作数量 | `50000` |
 | `--batch` | 启用批量模式 | False |
+| `--pipeline` | 启用 pipeline 模式（BATCH_COMMAND） | False |
+| `--pipeline-batch` | pipeline 批次大小 | 50 |
 | `--threads` | 多线程测试的线程数 | 0（不运行） |
 | `--conn-limit` | 连接数上限测试的目标连接数 | 0（不运行） |
 | `--skip-single` | 跳过单连接多数据结构测试 | False |
@@ -212,7 +226,8 @@ python stress_runner.py \
     --host 127.0.0.1 \
     --port 5210 \
     --count 50000 \
-    --batch \
+    --pipeline \
+    --pipeline-batch 100 \
     --conn-limit 1000 \
     --threads 10 \
     --output full_test.md
@@ -247,7 +262,12 @@ python stress_runner.py \
      2. 连接数上限测试
      3. 多线程吞吐量测试
 
-4. **性能考虑**
+4. **关于 `--batch` 与 `--pipeline`**
+   - `--batch`：通过“单条命令携带多个元素”的方式减少往返次数（本质仍是单条 COMMAND）。
+   - `--pipeline`：通过 BATCH_COMMAND 把多条命令合并发送（更贴近常见 KV 的 pipeline）。
+   - **同时指定时以 `--pipeline` 为准**（单连接测试优先使用 pipeline）。
+
+5. **性能考虑**
    - 建议先运行单个测试来评估性能
    - 根据服务器配置调整 `--count`、`--threads` 等参数
    - 生产环境测试时建议使用较小的测试规模

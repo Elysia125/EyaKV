@@ -7,7 +7,7 @@
 #include <optional>
 #include <thread>
 #include "common/util/path_utils.h"
-
+#include "common/util/string_utils.h"
 #undef ERROR // 避免与 LogLevel 枚举冲突
 
 // 日志级别枚举
@@ -81,7 +81,7 @@ enum class SSTableMergeStrategy
 #define DEFAULT_RAFT_NEED_MAJORITY_CONFIRM false     // 是否需要多数确认
 
 #define DEFAULT_BATCH_SIZE 100               // 默认批量大小
-#define DEFAULT_BATCH_TIMEOUT_MS 10          // 批量超时（ms）
+#define DEFAULT_BATCH_TIMEOUT_MS 200          // 批量超时（ms）
 #define DEFAULT_BATCH_MAX_SIZE_BYTES 1048576 // 单批次最大1MB
 
 #define PORT_KEY "port"
@@ -590,8 +590,7 @@ inline std::unordered_map<std::string, std::string> EyaKVConfig::init_env_key_ma
 
         {BATCH_SIZE_KEY, "EYAKV_BATCH_SIZE"},
         {BATCH_TIMEOUT_KEY, "EYAKV_BATCH_TIMEOUT"},
-        {BATCH_MAX_SIZE_KEY, "EYAKV_BATCH_MAX_SIZE"}
-    };
+        {BATCH_MAX_SIZE_KEY, "EYAKV_BATCH_MAX_SIZE"}};
 }
 
 // 静态成员变量定义

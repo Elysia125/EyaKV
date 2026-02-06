@@ -19,7 +19,7 @@
 #endif
 
 #include "network/protocol/protocol.h"
-
+#include "common/util/string_utils.h"
 #define DEFAULT_PORT 5210
 #define DEFAULT_HOST "127.0.0.1"
 const size_t HEADER_SIZE = ProtocolHeader::PROTOCOL_HEADER_SIZE;
@@ -178,7 +178,7 @@ void parse_arguments(int argc, char *argv[], std::string &host, int &port, std::
     }
 }
 
-// Receive server response
+// Receive server response (通用，反序列化为 Response)
 Response receive_server_response(socket_t client_socket)
 {
     // Receive header
@@ -220,6 +220,48 @@ Response receive_server_response(socket_t client_socket)
     return response;
 }
 
+// Receive raw body string according to header.length（用于 batch / pipeline）
+std::string receive_raw_body(socket_t client_socket)
+{
+    char head_buffer[HEADER_SIZE];
+    int recv_len = recv(client_socket, head_buffer, HEADER_SIZE, 0);
+    if (recv_len == 0)
+    {
+        std::cout << "server closed connection" << std::endl;
+        exit(0);
+    }
+    else if (recv_len == SOCKET_ERROR_VALUE)
+    {
+        throw std::runtime_error("recv header failed: " + socket_error_to_string(GET_SOCKET_ERROR()));
+    }
+    if (recv_len != static_cast<int>(HEADER_SIZE))
+    {
+        throw std::runtime_error("incomplete header received");
+    }
+
+    size_t offset = 0;
+    ProtocolHeader response_header;
+    response_header.deserialize(head_buffer, offset);
+
+    std::string body;
+    if (response_header.length > 0)
+    {
+        body.resize(response_header.length);
+        int total_recv = 0;
+        while (total_recv < static_cast<int>(response_header.length))
+        {
+            recv_len = recv(client_socket, &body[0] + total_recv,
+                            static_cast<int>(response_header.length) - total_recv, 0);
+            if (recv_len == SOCKET_ERROR_VALUE)
+            {
+                throw std::runtime_error("recv body failed: " + socket_error_to_string(GET_SOCKET_ERROR()));
+            }
+            total_recv += recv_len;
+        }
+    }
+    return body;
+}
+
 // Send data to server
 bool send_data(socket_t client_socket, const std::string &data)
 {
@@ -248,7 +290,8 @@ bool send_data(socket_t client_socket, const std::string &data)
 // Authenticate with server
 bool authenticate(SocketGuard &socket_guard, const std::string &password, std::string &auth_key)
 {
-    std::string data = serialize_request(RequestType::AUTH, password);
+    Request request = Request::auth(generate_random_string(16), password);
+    std::string data = request.serialize();
     if (!send_data(socket_guard.get(), data))
     {
         std::cerr << "Send auth message failed: " << socket_error_to_string(GET_SOCKET_ERROR()) << std::endl;
@@ -327,6 +370,7 @@ int client_main(const std::string &host, int port, const std::string &password)
 
     std::cout << "Connected to " << host << ":" << port << std::endl;
     std::cout << "Type 'exit' or 'quit' to quit" << std::endl;
+    std::cout << "Use 'pipeline cmd1; cmd2; ...' to send batched commands." << std::endl;
 
     // Command loop
     while (true)
@@ -344,8 +388,66 @@ int client_main(const std::string &host, int port, const std::string &password)
         {
             break;
         }
+        // ---------- pipeline 命令：pipeline cmd1; cmd2; ... ----------
+        if (command.rfind("pipeline", 0) == 0)
+        {
+            std::string rest = trim(command.substr(std::string("pipeline").size()));
+            if (rest.empty())
+            {
+                std::cout << "Usage: pipeline cmd1; cmd2; ..." << std::endl;
+                continue;
+            }
 
-        std::string req_data = serialize_request(RequestType::COMMAND, command, auth_key);
+            auto cmd_list = split(rest, ';');
+            if (cmd_list.empty())
+            {
+                std::cout << "No valid command found in pipeline." << std::endl;
+                continue;
+            }
+
+            std::vector<std::pair<std::string, std::string>> batch_cmds;
+            batch_cmds.reserve(cmd_list.size());
+            for (size_t i = 0; i < cmd_list.size(); ++i)
+            {
+                if (!cmd_list[i].empty())
+                {
+                    // 使用简单的序号作为每个子命令的 key
+                    batch_cmds.emplace_back("cmd_" + std::to_string(i), cmd_list[i]);
+                }
+            }
+            if (batch_cmds.empty())
+            {
+                std::cout << "No valid command found in pipeline." << std::endl;
+                continue;
+            }
+
+            Request req = Request::createBatchCommand(generate_random_string(16), batch_cmds, auth_key);
+            std::string req_data = req.serialize();
+            if (!send_data(socket_guard.get(), req_data))
+            {
+                std::cerr << "Send pipeline command failed: " << socket_error_to_string(GET_SOCKET_ERROR()) << std::endl;
+                return 1;
+            }
+
+            try
+            {
+                // 按你的协议：先按头中 length 读取 body 字符串
+                std::string raw_body = receive_raw_body(socket_guard.get());
+                size_t offset = 0;
+                auto batch_vec = deserializeBatchResponse(raw_body.data(), offset);
+                std::cout << to_string(batch_vec) << std::endl;
+            }
+            catch (const std::exception &e)
+            {
+                std::cerr << "Receive pipeline response failed: " << e.what() << std::endl;
+                return 1;
+            }
+            continue;
+        }
+
+        // ---------- 普通单条命令 ----------
+        Request req = Request::createCommand(generate_random_string(16), command, auth_key);
+        std::string req_data = req.serialize();
         if (!send_data(socket_guard.get(), req_data))
         {
             std::cerr << "Send command failed: " << socket_error_to_string(GET_SOCKET_ERROR()) << std::endl;

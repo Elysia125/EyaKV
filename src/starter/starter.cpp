@@ -261,6 +261,10 @@ void EyaKVStarter::initialize_raft()
     {
         raft_cfg.result_cache_capacity = static_cast<size_t>(std::stoull(*v));
     }
+    if (auto v = config.get_config(BATCH_TIMEOUT_KEY))
+    {
+        raft_cfg.batch_command_timeout_ms = std::stoul(*v);
+    }
     // 线程池
     ThreadPool::Config tp_cfg = raft_cfg.thread_pool_config;
     if (auto v = config.get_config(RAFT_THREADPOOL_WORKERS_KEY))

@@ -402,7 +402,7 @@ void EyaServer::handle_request(ProtocolBody *body, socket_t client_sock)
     }
     LOG_DEBUG("Processing request from fd %d: %s",
               client_sock, request->to_string().c_str());
-    Response response{0, std::monostate{}, ""};
+    Response response{0, std::monostate{}, "",""};
     try
     {
         if (request->type == RequestType::AUTH)

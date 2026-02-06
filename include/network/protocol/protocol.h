@@ -395,7 +395,7 @@ inline std::pair<std::string, std::vector<std::pair<std::string, Response>>> des
     return {batch_id, batch_responses};
 }
 
-inline std::string to_string(const std::pair<std::string, std::map<std::string, Response>> &batch_responses)
+inline std::string to_string(const std::pair<std::string, std::vector<std::pair<std::string, Response>>> &batch_responses)
 {
     std::stringstream ss;
     ss << "Batch ID: " << batch_responses.first << "\nResponses: (";
