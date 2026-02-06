@@ -624,7 +624,9 @@ bool RaftNode::become_follower(const Address &leader_addr, uint32_t term, bool i
             LOG_ERROR("Failed to connect to leader %s", leader_addr.to_string().c_str());
         }
         return false;
-    }else{
+    }
+    else
+    {
         LOG_ERROR("Failed to connect to leader %s", leader_addr.to_string().c_str());
         return false;
     }
@@ -1122,7 +1124,11 @@ bool RaftNode::handle_append_entries(const RaftMessage &msg)
         {
             persistent_state_.commit_index_.store(new_commit, std::memory_order_relaxed);
             save_persistent_state();
-            LOG_INFO("[Node=%s] COMMIT INDEX updated: %u -> %u", node_id.c_str(), old_commit, new_commit);
+            // 减少日志输出，只在批量更新时打印
+            if (new_commit % 100 == 0)
+            {
+                LOG_DEBUG("[Node=%s] COMMIT INDEX updated: %u -> %u", node_id.c_str(), old_commit, new_commit);
+            }
             apply_committed_entries_nolock(); // Follower 也要应用日志
         }
     }
@@ -1323,19 +1329,28 @@ void RaftNode::apply_committed_entries_nolock()
             // 执行实际的业务逻辑
             result = execute_command(entry.cmd);
             result.request_id_ = entry.request_id;
-            LOG_INFO("[Node=%s] Applied log index %u (term %u), cmd: %s,result:%s",
-                     node_id.c_str(),
-                     last_applied,
-                     entry.term,
-                     entry.cmd.c_str(), result.to_string().c_str());
+            // 只记录摘要信息，避免打印完整命令（特别是批量命令会非常长）
+            size_t cmd_len = entry.cmd.length();
+            std::string cmd_summary = cmd_len > 100 ? entry.cmd.substr(0, 100) + "..." : entry.cmd;
+            LOG_DEBUG("[Node=%s] Applied log index %u (term %u), cmd_len=%zu, cmd: %s",
+                      node_id.c_str(),
+                      last_applied,
+                      entry.term,
+                      cmd_len,
+                      cmd_summary.c_str());
+            // 只在错误时打印详细信息
+            if (result.code_ == 0)
+            {
+                LOG_ERROR("[Node=%s] Failed to apply log %u: %s", node_id.c_str(), last_applied, result.error_msg_.c_str());
+            }
             // 如果是写操作且带有 request_id，将结果写入缓存
             if (!entry.request_id.empty())
             {
                 // 插入缓存
                 result_cache_.put(entry.request_id, result);
-                LOG_INFO("[Node=%s] Cached result for request_id: %s",
-                         node_id.c_str(),
-                         entry.request_id.c_str());
+                LOG_DEBUG("[Node=%s] Cached result for request_id: %s",
+                          node_id.c_str(),
+                          entry.request_id.c_str());
             }
         }
         else
@@ -1404,12 +1419,16 @@ void RaftNode::try_commit_entries()
 
         if (log_term == current_term)
         {
-            LOG_INFO("[Node=%s][Role=Leader][Term=%u] COMMIT ADVANCED: %u -> %u (Majority Index), LogTerm=%u",
-                     node_id.c_str(),
-                     current_term,
-                     commit_index,
-                     majority_index,
-                     log_term);
+            // 减少日志输出，只记录关键信息
+            if (commit_index % 100 == 0)
+            {
+                LOG_DEBUG("[Node=%s][Role=Leader][Term=%u] COMMIT ADVANCED: %u -> %u (Majority Index), LogTerm=%u",
+                          node_id.c_str(),
+                          current_term,
+                          commit_index,
+                          majority_index,
+                          log_term);
+            }
 
             persistent_state_.commit_index_.store(majority_index);
             save_persistent_state(); // 持久化
@@ -2072,7 +2091,11 @@ Response RaftNode::submit_command(const std::string &request_id, const std::stri
                 save_persistent_state();
             }
             uint32_t log_index = entry.index;
-            LOG_INFO("Leader appended log index %u, term %u, waiting for commit...", log_index, entry.term);
+            // 减少日志输出频率，只在批量提交时打印
+            if (log_index % 100 == 0 || log_index == log_array_->get_last_index())
+            {
+                LOG_DEBUG("Leader appended log index %u, term %u, waiting for commit...", log_index, entry.term);
+            }
 
             // 2. 注册等待通知
             {
@@ -2164,18 +2187,18 @@ Response RaftNode::handle_raft_command(const std::vector<std::string> &command_p
                 // 清空现有的数据，避免脏数据
                 static Storage *storage_ = Storage::get_instance();
                 // 设置log_array_为空
-            log_array_ = nullptr;
-            if (!storage_->clear_and_backup_data())
-            {
-                log_array_ = std::make_unique<RaftLogArray>(
-                    PathUtils::combine_path(root_dir_, ".raft"),
-                    config_.log_config);
+                log_array_ = nullptr;
+                if (!storage_->clear_and_backup_data())
+                {
+                    log_array_ = std::make_unique<RaftLogArray>(
+                        PathUtils::combine_path(root_dir_, ".raft"),
+                        config_.log_config);
                     response = Response::error("clear data failed");
                     return response;
                 }
-            log_array_ = std::make_unique<RaftLogArray>(
-                PathUtils::combine_path(root_dir_, ".raft"),
-                config_.log_config);
+                log_array_ = std::make_unique<RaftLogArray>(
+                    PathUtils::combine_path(root_dir_, ".raft"),
+                    config_.log_config);
                 {
                     std::lock_guard<std::recursive_mutex> lock(mutex_);
                     persistent_state_.last_applied_.store(0);

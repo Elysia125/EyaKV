@@ -264,11 +264,20 @@ public:
 #else
             // Windows (select)
             fd_set readSet = master_set_; // select会修改集合，需要拷贝
+            // 注意：Windows 下 select 的第一个参数会被忽略，但需要正确设置 FD_SETSIZE
+            // 在 socket.h 中已将 FD_SETSIZE 重新定义为 1024 以支持更多连接
             int activity = select(0, &readSet, NULL, NULL, NULL);
 
             if (activity == SOCKET_ERROR_VALUE)
             {
-                LOG_ERROR("select error: %s", socket_error_to_string(activity).c_str());
+                int error = GET_SOCKET_ERROR();
+                LOG_ERROR("select error: %d - %s", error, socket_error_to_string(error).c_str());
+                // WSAENOTSOCK (10038): descriptor set contains invalid socket
+                // 可能是 fd_set 溢出
+                if (error == 10038)
+                {
+                    LOG_ERROR("select failed: possibly too many sockets for FD_SETSIZE=%d", FD_SETSIZE);
+                }
             }
             // 遍历所有可能的socket
             for (uint32_t i = 0; i < master_set_.fd_count; i++)
@@ -461,6 +470,15 @@ public:
         }
 #else // Windows
         FD_SET(client_sock, &master_set_);
+
+        // 检查是否接近 FD_SETSIZE 限制
+        uint32_t total_sockets = master_set_.fd_count + 1; // +1 for listen_socket
+        if (total_sockets >= FD_SETSIZE - 10)
+        {
+            LOG_WARN("Approaching FD_SETSIZE limit: %u sockets (FD_SETSIZE=%d)",
+                     total_sockets, FD_SETSIZE);
+            LOG_WARN("Consider increasing FD_SETSIZE in socket.h or using WSAPoll instead of select");
+        }
 #endif
     }
 

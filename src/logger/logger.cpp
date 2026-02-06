@@ -8,7 +8,7 @@ Logger &Logger::GetInstance()
 }
 
 // 初始化日志
-void Logger::Init(const std::string &log_dir, LogLevel level, unsigned long rotate_size)
+void Logger::Init(const std::string &log_dir, LogLevel level, uint64_t rotate_size)
 {
     std::lock_guard<std::mutex> lock(mtx_);
     log_level_ = level;
@@ -28,7 +28,7 @@ void Logger::Init(const std::string &log_dir, LogLevel level, unsigned long rota
     fatal_fp_ = OpenLogFile("fatal.log");
 
     is_init_ = true;
-    std::cout << "日志初始化成功，日志目录：" << log_dir_ << std::endl;
+    std::cout << "Logger initialized in directory: " << log_dir_ << std::endl;
 }
 
 // 析构函数
@@ -59,7 +59,7 @@ FILE *Logger::OpenLogFile(const std::string &filename)
     FILE *fp = fopen(full_path.c_str(), "a");
     if (fp == nullptr)
     {
-        std::cerr << "打开日志文件失败：" << full_path << "，降级到stderr" << std::endl;
+        std::cerr << "open log file failed:" << full_path << ",to stderr" << std::endl;
         return stderr;
     }
     return fp;
@@ -112,7 +112,7 @@ void Logger::RotateLogFile(FILE **old_file, const std::string &old_filename)
     fclose(*old_file);
 
     std::string full_path = PathUtils::combine_path(log_dir_, old_filename);
-    std::string new_filename = old_filename + ".1";
+    std::string new_filename = old_filename + "." + std::to_string(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
     std::string full_new_path = PathUtils::combine_path(log_dir_, new_filename);
     std::filesystem::rename(full_path, full_new_path);
     *old_file = OpenLogFile(old_filename);

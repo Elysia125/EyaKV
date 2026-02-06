@@ -27,7 +27,7 @@ public:
 
     // 初始化日志：指定日志目录 + 输出级别（低于该级别的日志不输出）
     // 示例：Init("./log", LogLevel::DEBUG) → 输出所有级别，且分级存储到./log下
-    void Init(const std::string &log_dir, LogLevel level = LogLevel::INFO, unsigned long rotate_size = 1024 * 1024 * 5);
+    void Init(const std::string &log_dir, LogLevel level = LogLevel::INFO, uint64_t rotate_size = 1024 * 1024 * 5);
 
     // 辅助：转换参数为 const char*
     template <typename T>
@@ -52,10 +52,9 @@ public:
         }
 
         std::lock_guard<std::mutex> lock(mtx_);
-        // std::cout << "is log init:" << is_init_ << std::endl;
         if (!is_init_)
         {
-            std::cerr << "日志未初始化！所有日志输出到stderr" << std::endl;
+            std::cerr << "Logger not initialized, outputting to stderr" << std::endl;
             OutputToStderr(level, format, std::forward<Args>(args)...);
             return;
         }
@@ -182,7 +181,7 @@ private:
     LogLevel log_level_;            // 全局日志输出级别（过滤低级别日志）
     bool is_init_;                  // 是否初始化
     mutable std::mutex mtx_;        // 线程安全锁
-    unsigned long log_rotate_size_; // 日志轮转大小（字节）
+    uint64_t log_rotate_size_; // 日志轮转大小（字节）
     // 各级别对应的文件句柄（核心：按级别分类存储）
     FILE *debug_fp_;
     FILE *info_fp_;

@@ -445,6 +445,9 @@ int main(int argc, char *argv[])
     bool batch_mode = false;
     int multi_threads = 0;      // 多线程压测时的线程数
     int conn_limit_max = 0;     // 连接数上限测试的最大尝试连接数
+    bool skip_single_test = false;  // 跳过单连接多数据结构测试
+    bool skip_conn_limit = false;   // 跳过连接数上限测试
+    bool skip_multi_thread = false;  // 跳过多线程吞吐量测试
 
     for (int i = 1; i < argc; i++)
     {
@@ -462,6 +465,12 @@ int main(int argc, char *argv[])
             multi_threads = atoi(argv[++i]);
         else if (strcmp(argv[i], "--conn-limit") == 0 && i + 1 < argc)
             conn_limit_max = atoi(argv[++i]);
+        else if (strcmp(argv[i], "--skip-single") == 0)
+            skip_single_test = true;
+        else if (strcmp(argv[i], "--skip-conn-limit") == 0)
+            skip_conn_limit = true;
+        else if (strcmp(argv[i], "--skip-multi-thread") == 0)
+            skip_multi_thread = true;
     }
 
 #ifdef _WIN32
@@ -478,88 +487,92 @@ int main(int argc, char *argv[])
     std::cout << "Authenticated. Starting Stress Test with " << count << " items per type." << std::endl
               << std::endl;
 
-    // String Test
-    run_benchmark(socket_guard.get(), auth_key, "String SET", count, [](int i)
-                  { return "set key1_" + std::to_string(i) + " value_" + std::to_string(i); });
+    // 单连接多数据结构测试
+    if (!skip_single_test)
+    {
+        // String Test
+        run_benchmark(socket_guard.get(), auth_key, "String SET", count, [](int i)
+                      { return "set key1_" + std::to_string(i) + " value_" + std::to_string(i); });
 
-    // List Test (Batching push 1 item effectively behaves like single, but if we want large list we can push 1 by 1)
-    // To properly stress test list structure size, we push to the same LIST.
-    if (batch_mode)
-    {
-        // Implement batch mode logic if needed, but for now let's stick to simple insertions or batched insertions
-        // Batch Push to List
-        run_batch_benchmark(socket_guard.get(), auth_key, "List RPUSH (Batch)", count, 100, [](int start, int size)
-                            {
-             std::string cmd = "rpush big_list";
-             for(int i=0; i<size; ++i) cmd += " v_" + std::to_string(start + i);
-             return cmd; });
-    }
-    else
-    {
-        run_benchmark(socket_guard.get(), auth_key, "List RPUSH", count, [](int i)
-                      { return "rpush big_list v_" + std::to_string(i); });
-    }
+        // List Test (Batching push 1 item effectively behaves like single, but if we want large list we can push 1 by 1)
+        // To properly stress test list structure size, we push to the same LIST.
+        if (batch_mode)
+        {
+            // Implement batch mode logic if needed, but for now let's stick to simple insertions or batched insertions
+            // Batch Push to List
+            run_batch_benchmark(socket_guard.get(), auth_key, "List RPUSH (Batch)", count, 100, [](int start, int size)
+                                {
+                 std::string cmd = "rpush big_list";
+                 for(int i=0; i<size; ++i) cmd += " v_" + std::to_string(start + i);
+                 return cmd; });
+        }
+        else
+        {
+            run_benchmark(socket_guard.get(), auth_key, "List RPUSH", count, [](int i)
+                          { return "rpush big_list v_" + std::to_string(i); });
+        }
 
-    // Set Test
-    if (batch_mode)
-    {
-        run_batch_benchmark(socket_guard.get(), auth_key, "Set SADD (Batch)", count, 100, [](int start, int size)
-                            {
-             std::string cmd = "sadd big_set";
-             for(int i=0; i<size; ++i) cmd += " m_" + std::to_string(start + i);
-             return cmd; });
-    }
-    else
-    {
-        run_benchmark(socket_guard.get(), auth_key, "Set SADD", count, [](int i)
-                      { return "sadd big_set m_" + std::to_string(i); });
-    }
+        // Set Test
+        if (batch_mode)
+        {
+            run_batch_benchmark(socket_guard.get(), auth_key, "Set SADD (Batch)", count, 100, [](int start, int size)
+                                {
+                 std::string cmd = "sadd big_set";
+                 for(int i=0; i<size; ++i) cmd += " m_" + std::to_string(start + i);
+                 return cmd; });
+        }
+        else
+        {
+            run_benchmark(socket_guard.get(), auth_key, "Set SADD", count, [](int i)
+                          { return "sadd big_set m_" + std::to_string(i); });
+        }
 
-    // ZSet Test
-    // Adding randomly distributed scores for skiplist testing
-    if (batch_mode)
-    {
-        run_batch_benchmark(socket_guard.get(), auth_key, "ZSet ZADD (Batch)", count, 100, [](int start, int size)
-                            {
-             std::string cmd = "zadd big_zset";
-             for(int i=0; i<size; ++i) {
-                cmd += " " + std::to_string((start+i) * 1.5) + " m_" + std::to_string(start + i); // score member
-             }
-             return cmd; });
-    }
-    else
-    {
-        run_benchmark(socket_guard.get(), auth_key, "ZSet ZADD", count, [](int i)
-                      {
-            // member score
-            return "zadd big_zset " + std::to_string(i * 1.5) + " m_" + std::to_string(i); });
-    }
+        // ZSet Test
+        // Adding randomly distributed scores for skiplist testing
+        if (batch_mode)
+        {
+            run_batch_benchmark(socket_guard.get(), auth_key, "ZSet ZADD (Batch)", count, 100, [](int start, int size)
+                                {
+                 std::string cmd = "zadd big_zset";
+                 for(int i=0; i<size; ++i) {
+                    cmd += " " + std::to_string((start+i) * 1.5) + " m_" + std::to_string(start + i); // score member
+                 }
+                 return cmd; });
+        }
+        else
+        {
+            run_benchmark(socket_guard.get(), auth_key, "ZSet ZADD", count, [](int i)
+                          {
+                // member score
+                return "zadd big_zset " + std::to_string(i * 1.5) + " m_" + std::to_string(i); });
+        }
 
-    // Hash Test
-    if (batch_mode)
-    {
-        run_batch_benchmark(socket_guard.get(), auth_key, "Hash HSET (Batch)", count, 100, [](int start, int size)
-                            {
-             std::string cmd = "hset big_hash";
-             for(int i=0; i<size; ++i) {
-                cmd += " f_" + std::to_string(start+i) + " v_" + std::to_string(start + i); 
-             }
-             return cmd; });
-    }
-    else
-    {
-        run_benchmark(socket_guard.get(), auth_key, "Hash HSET", count, [](int i)
-                      { return "hset big_hash f_" + std::to_string(i) + " v_" + std::to_string(i); });
+        // Hash Test
+        if (batch_mode)
+        {
+            run_batch_benchmark(socket_guard.get(), auth_key, "Hash HSET (Batch)", count, 100, [](int start, int size)
+                                {
+                 std::string cmd = "hset big_hash";
+                 for(int i=0; i<size; ++i) {
+                    cmd += " f_" + std::to_string(start+i) + " v_" + std::to_string(start + i);
+                 }
+                 return cmd; });
+        }
+        else
+        {
+            run_benchmark(socket_guard.get(), auth_key, "Hash HSET", count, [](int i)
+                          { return "hset big_hash f_" + std::to_string(i) + " v_" + std::to_string(i); });
+        }
     }
 
     // 连接数上限测试（可选）
-    if (conn_limit_max > 0)
+    if (!skip_conn_limit && conn_limit_max > 0)
     {
         run_connection_limit_test(host, port, password, conn_limit_max);
     }
 
     // 多连接（多线程）吞吐量测试（可选）
-    if (multi_threads > 0)
+    if (!skip_multi_thread && multi_threads > 0)
     {
         run_multi_thread_throughput(host, port, password, multi_threads, count);
     }

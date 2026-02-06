@@ -1,13 +1,11 @@
 #ifndef SOCKET_H
 #define SOCKET_H
-#include <string>
-#include <stdexcept>
-#include <cstdint>
-#include <cstring>
-#include <chrono>
-#include <iostream>
-#include <functional>
+
 #ifdef _WIN32
+// 必须在包含 winsock2.h 之前重新定义 FD_SETSIZE
+// 默认 FD_SETSIZE = 64，限制了 select 模型的连接数
+// 重新定义为 1024 以支持更多连接（注意：最大不能超过 1024）
+#define FD_SETSIZE 1024
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #pragma comment(lib, "ws2_32.lib")
@@ -17,6 +15,14 @@
 #include <unistd.h>
 #include <netdb.h>
 #endif
+#include <string>
+#include <stdexcept>
+#include <cstdint>
+#include <cstring>
+#include <chrono>
+#include <iostream>
+#include <functional>
+
 // 统一平台的一些变量
 #ifdef _WIN32
 typedef SOCKET socket_t;

@@ -80,6 +80,9 @@ def run_stress_test(
     batch: bool,
     threads: Optional[int] = None,
     conn_limit: Optional[int] = None,
+    skip_single: bool = False,
+    skip_conn_limit: bool = False,
+    skip_multi_thread: bool = False,
     extra_env: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """
@@ -88,6 +91,8 @@ def run_stress_test(
       1）单连接下多种数据结构吞吐测试
       2）连接数上限测试
       3）多连接（多线程）吞吐量测试
+
+    通过 skip_single / skip_conn_limit / skip_multi_thread 控制跳过哪些测试。
     """
     if not os.path.isfile(stress_bin):
         raise FileNotFoundError(f"stress_test 可执行文件不存在: {stress_bin}")
@@ -101,6 +106,12 @@ def run_stress_test(
         cmd.extend(["--conn-limit", str(conn_limit)])
     if threads is not None and threads > 0:
         cmd.extend(["--threads", str(threads)])
+    if skip_single:
+        cmd.append("--skip-single")
+    if skip_conn_limit:
+        cmd.append("--skip-conn-limit")
+    if skip_multi_thread:
+        cmd.append("--skip-multi-thread")
 
     env = os.environ.copy()
     if extra_env:
@@ -215,6 +226,29 @@ def format_markdown_report(
         f"- stress_test 路径: {test_config.get('stress_bin')}",
     ]
 
+    # 添加测试选择信息
+    test_selection_lines = []
+    if not test_config.get('skip_single'):
+        test_selection_lines.append(f"- 单连接多数据结构测试: 运行")
+    else:
+        test_selection_lines.append(f"- 单连接多数据结构测试: 跳过")
+
+    if test_config.get('conn_limit') is not None and test_config.get('conn_limit') > 0:
+        if not test_config.get('skip_conn_limit'):
+            test_selection_lines.append(f"- 连接数上限测试: 运行（目标连接数: {test_config.get('conn_limit')}）")
+        else:
+            test_selection_lines.append(f"- 连接数上限测试: 跳过")
+    else:
+        test_selection_lines.append(f"- 连接数上限测试: 未启用（未指定 --conn-limit 参数）")
+
+    if test_config.get('threads') is not None and test_config.get('threads') > 0:
+        if not test_config.get('skip_multi_thread'):
+            test_selection_lines.append(f"- 多线程吞吐量测试: 运行（线程数: {test_config.get('threads')}）")
+        else:
+            test_selection_lines.append(f"- 多线程吞吐量测试: 跳过")
+    else:
+        test_selection_lines.append(f"- 多线程吞吐量测试: 未启用（未指定 --threads 参数）")
+
     # 单连接多数据结构测试结果表
     parsed_results: List[Dict[str, Any]] = stress_result.get("parsed_results", [])
     if parsed_results:
@@ -282,25 +316,31 @@ def format_markdown_report(
 
 ---
 
-## 三、单连接多数据结构吞吐测试结果
+## 三、测试选择
+
+{os.linesep.join(test_selection_lines)}
+
+---
+
+## 四、单连接多数据结构吞吐测试结果
 
 {single_table}
 
 ---
 
-## 四、连接数上限测试结果
+## 五、连接数上限测试结果
 
 {conn_table}
 
 ---
 
-## 五、多连接（多线程）吞吐量测试结果
+## 六、多连接（多线程）吞吐量测试结果
 
 {mt_table}
 
 ---
 
-## 六、stress_test 原始标准输出
+## 七、stress_test 原始标准输出
 
 ```text
 {textwrap.dedent(raw_stdout).strip()}
@@ -311,7 +351,7 @@ def format_markdown_report(
     if raw_stderr.strip():
         md += f"""
 
-## 七、stress_test 原始标准错误输出
+## 八、stress_test 原始标准错误输出
 
 ```text
 {textwrap.dedent(raw_stderr).strip()}
@@ -353,6 +393,42 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="连接数上限测试的目标连接数，对应 stress_test 的 --conn-limit 参数",
     )
+
+    # 测试选择参数
+    test_selection_group = parser.add_argument_group("测试选择（默认运行所有启用的测试）")
+    test_selection_group.add_argument(
+        "--skip-single",
+        action="store_true",
+        help="跳过单连接多数据结构测试（String/List/Set/ZSet/Hash）",
+    )
+    test_selection_group.add_argument(
+        "--skip-conn-limit",
+        action="store_true",
+        help="跳过连接数上限测试",
+    )
+    test_selection_group.add_argument(
+        "--skip-multi-thread",
+        action="store_true",
+        help="跳过多线程吞吐量测试",
+    )
+
+    # 便捷选项：只运行特定测试
+    test_selection_group.add_argument(
+        "--only-single",
+        action="store_true",
+        help="只运行单连接多数据结构测试",
+    )
+    test_selection_group.add_argument(
+        "--only-conn-limit",
+        action="store_true",
+        help="只运行连接数上限测试（需要同时指定 --conn-limit）",
+    )
+    test_selection_group.add_argument(
+        "--only-multi-thread",
+        action="store_true",
+        help="只运行多线程吞吐量测试（需要同时指定 --threads）",
+    )
+
     parser.add_argument(
         "--output",
         default=None,
@@ -363,6 +439,27 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+
+    # 处理便捷选项（--only-*）
+    skip_single = args.skip_single
+    skip_conn_limit = args.skip_conn_limit
+    skip_multi_thread = args.skip_multi_thread
+
+    if args.only_single:
+        skip_conn_limit = True
+        skip_multi_thread = True
+    elif args.only_conn_limit:
+        if args.conn_limit is None or args.conn_limit <= 0:
+            print("错误：使用 --only-conn-limit 必须同时指定 --conn-limit 参数")
+            return
+        skip_single = True
+        skip_multi_thread = True
+    elif args.only_multi_thread:
+        if args.threads is None or args.threads <= 0:
+            print("错误：使用 --only-multi-thread 必须同时指定 --threads 参数")
+            return
+        skip_single = True
+        skip_conn_limit = True
 
     system_info = collect_system_info()
 
@@ -375,10 +472,27 @@ def main() -> None:
         "stress_bin": args.stress_bin,
         "threads": args.threads,
         "conn_limit": args.conn_limit,
+        "skip_single": skip_single,
+        "skip_conn_limit": skip_conn_limit,
+        "skip_multi_thread": skip_multi_thread,
     }
+
+    # 显示将要运行的测试
+    tests_to_run = []
+    if not skip_single:
+        tests_to_run.append("单连接多数据结构测试")
+    if not skip_conn_limit and args.conn_limit is not None and args.conn_limit > 0:
+        tests_to_run.append(f"连接数上限测试（目标：{args.conn_limit}）")
+    if not skip_multi_thread and args.threads is not None and args.threads > 0:
+        tests_to_run.append(f"多线程吞吐量测试（线程数：{args.threads}）")
+
+    if not tests_to_run:
+        print("错误：没有选择任何测试运行。请使用 --only-* 或相应的 --conn-limit/--threads 参数来选择测试。")
+        return
 
     print(">>> 收集系统信息完成")
     print(">>> 准备运行 stress_test:", args.stress_bin)
+    print(">>> 将要运行的测试:", "、".join(tests_to_run))
 
     stress_result = run_stress_test(
         stress_bin=args.stress_bin,
@@ -389,6 +503,9 @@ def main() -> None:
         batch=args.batch,
         threads=args.threads,
         conn_limit=args.conn_limit,
+        skip_single=skip_single,
+        skip_conn_limit=skip_conn_limit,
+        skip_multi_thread=skip_multi_thread,
     )
 
     if stress_result["returncode"] != 0:
