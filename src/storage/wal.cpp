@@ -71,8 +71,9 @@ bool Wal::write_record(uint8_t type, const std::string &key, const std::string &
     }
     else
     {
-        // 刷新到内核缓冲区
-        fflush(wal_file_);
+        // 性能优化：移除fflush，依赖后台线程定期刷新或内核缓冲区自动刷新
+        // 减少I/O操作次数，提升写入性能
+        // 数据安全性由后台线程的sync()保证
     }
     return !ferror(wal_file_);
 }

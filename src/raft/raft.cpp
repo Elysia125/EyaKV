@@ -943,7 +943,7 @@ void RaftNode::send_append_entries_nolock(const socket_t &sock)
         std::set<LogEntry> entry_set(entries.begin(), entries.end());
         msg = RaftMessage::append_entries_with_data(term, prev_log_index, prev_log_term, entry_set, leader_commit);
 
-        LOG_INFO("[Node=%s][Role=Leader][Term=%u] LOG REPLICATION: Socket=%d, PrevIndex=%u, PrevTerm=%u, Entries=%zu, LeaderCommit=%u",
+        LOG_DEBUG("[Node=%s][Role=Leader][Term=%u] LOG REPLICATION: Socket=%d, PrevIndex=%u, PrevTerm=%u, Entries=%zu, LeaderCommit=%u",
                  node_id.c_str(),
                  term,
                  sock,

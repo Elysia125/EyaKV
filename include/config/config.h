@@ -66,8 +66,8 @@ enum class SSTableMergeStrategy
 #define DEFAULT_RAFT_FOLLOWER_IDLE_WAIT 1000     // Follower 空闲等待(ms)
 #define DEFAULT_RAFT_JOIN_MAX_RETRIES 3          // Follower 加入集群最大重试次数
 #define DEFAULT_RAFT_REQUEST_VOTE_TIMEOUT 200    // RequestVote 响应超时(ms)
-#define DEFAULT_RAFT_SUBMIT_TIMEOUT 2000         // 提交命令等待超时(ms)
-#define DEFAULT_RAFT_APPEND_BATCH 100            // 单次 AppendEntries 最大日志条数
+#define DEFAULT_RAFT_SUBMIT_TIMEOUT 500          // 提交命令等待超时(ms) - 优化: 从2000ms降低到500ms
+#define DEFAULT_RAFT_APPEND_BATCH 1000           // 单次 AppendEntries 最大日志条数 - 优化: 从100增加到1000
 #define DEFAULT_RAFT_SNAPSHOT_CHUNK (64 * 1024)  // 快照 chunk 大小(bytes)
 #define DEFAULT_RAFT_RESULT_CACHE_CAPACITY 10000 // 结果缓存容量
 #define DEFAULT_RAFT_THREADPOOL_WORKERS 4        // Raft 内部线程池工作线程数
