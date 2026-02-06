@@ -78,6 +78,7 @@ enum class SSTableMergeStrategy
 #define DEFAULT_RAFT_LOG_TRUNCATE_RATIO 0.25         // 截断比例
 #define DEFAULT_RAFT_WAL_FILENAME "raft_wal.log"     // WAL 文件名
 #define DEFAULT_RAFT_INDEX_FILENAME "raft_index.idx" // 索引文件名
+#define DEFAULT_RAFT_NEED_MAJORITY_CONFIRM false     // 是否需要多数确认
 
 #define PORT_KEY "port"
 #define IP_KEY "ip"
@@ -131,6 +132,7 @@ enum class SSTableMergeStrategy
 #define RAFT_LOG_TRUNCATE_RATIO_KEY "raft_log_truncate_ratio"
 #define RAFT_WAL_FILENAME_KEY "raft_wal_filename"
 #define RAFT_INDEX_FILENAME_KEY "raft_index_filename"
+#define RAFT_NEED_MAJORITY_CONFIRM_KEY "raft_need_majority_confirm"
 
 class EyaKVConfig
 {
@@ -269,6 +271,7 @@ private:
         config_map_[RAFT_LOG_TRUNCATE_RATIO_KEY] = std::to_string(DEFAULT_RAFT_LOG_TRUNCATE_RATIO);
         config_map_[RAFT_WAL_FILENAME_KEY] = DEFAULT_RAFT_WAL_FILENAME;
         config_map_[RAFT_INDEX_FILENAME_KEY] = DEFAULT_RAFT_INDEX_FILENAME;
+        config_map_[RAFT_NEED_MAJORITY_CONFIRM_KEY] = std::to_string(DEFAULT_RAFT_NEED_MAJORITY_CONFIRM);
     }
 
     void check_config()
@@ -577,7 +580,7 @@ inline std::unordered_map<std::string, std::string> EyaKVConfig::init_env_key_ma
         {RAFT_LOG_TRUNCATE_RATIO_KEY, "EYAKV_RAFT_LOG_TRUNCATE_RATIO"},
         {RAFT_WAL_FILENAME_KEY, "EYAKV_RAFT_WAL_FILENAME"},
         {RAFT_INDEX_FILENAME_KEY, "EYAKV_RAFT_INDEX_FILENAME"},
-
+        {RAFT_NEED_MAJORITY_CONFIRM_KEY, "EYAKV_RAFT_NEED_MAJORITY_CONFIRM"},
         // Raft 快照配置
         {RAFT_SNAPSHOT_CHUNK_KEY, "EYAKV_RAFT_SNAPSHOT_CHUNK_SIZE_BYTES"},
         {RAFT_RESULT_CACHE_CAPACITY_KEY, "EYAKV_RAFT_RESULT_CACHE_CAPACITY"},
@@ -586,6 +589,7 @@ inline std::unordered_map<std::string, std::string> EyaKVConfig::init_env_key_ma
         {RAFT_THREADPOOL_WORKERS_KEY, "EYAKV_RAFT_THREADPOOL_WORKERS"},
         {RAFT_THREADPOOL_QUEUE_KEY, "EYAKV_RAFT_THREADPOOL_QUEUE_SIZE"},
         {RAFT_THREADPOOL_WAIT_KEY, "EYAKV_RAFT_THREADPOOL_WAIT_TIMEOUT_MS"},
+
     };
 }
 

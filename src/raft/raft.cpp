@@ -63,7 +63,8 @@ RaftNode::RaftNode(const std::string root_dir,
       result_cache_(config.result_cache_capacity),
       thread_pool_(nullptr),
       config_(config),
-      rng_(std::chrono::steady_clock::now().time_since_epoch().count())
+      rng_(std::chrono::steady_clock::now().time_since_epoch().count()),
+      need_majority_confirm_(config.need_majority_confirm)
 {
     std::string node_id = ip + ":" + std::to_string(port);
     LOG_INFO("[Node=%s] Initializing RaftNode", node_id.c_str());
@@ -944,13 +945,13 @@ void RaftNode::send_append_entries_nolock(const socket_t &sock)
         msg = RaftMessage::append_entries_with_data(term, prev_log_index, prev_log_term, entry_set, leader_commit);
 
         LOG_DEBUG("[Node=%s][Role=Leader][Term=%u] LOG REPLICATION: Socket=%d, PrevIndex=%u, PrevTerm=%u, Entries=%zu, LeaderCommit=%u",
-                 node_id.c_str(),
-                 term,
-                 sock,
-                 prev_log_index,
-                 prev_log_term,
-                 entries.size(),
-                 leader_commit);
+                  node_id.c_str(),
+                  term,
+                  sock,
+                  prev_log_index,
+                  prev_log_term,
+                  entries.size(),
+                  leader_commit);
     }
     else
     {
@@ -1450,7 +1451,70 @@ void RaftNode::try_commit_entries()
         apply_committed_entries_nolock();
     }
 }
+void RaftNode::commit_entries()
+{
+    std::string node_id = get_node_id();
+    // 需持有锁以读取 match_index_ 等状态
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
 
+    uint32_t commit_index = persistent_state_.commit_index_.load();
+    uint32_t last_log_index = log_array_->get_last_index();
+
+    // 如果没有新日志，不需要计算
+    if (commit_index >= last_log_index)
+        return;
+
+    LOG_DEBUG("[Node=%s][Role=Leader][Term=%u] Checking commit eligibility: CommitIndex=%u, LastLogIndex=%u",
+              node_id.c_str(),
+              persistent_state_.current_term_.load(),
+              commit_index,
+              last_log_index);
+    persistent_state_.commit_index_.store(last_log_index);
+    uint32_t last_applied = persistent_state_.last_applied_.load();
+    while (last_applied < last_log_index)
+    {
+        last_applied++;
+        LogEntry entry;
+        Response result;
+        if (log_array_->get(last_applied, entry))
+        {
+            // 执行实际的业务逻辑
+            result = execute_command(entry.cmd);
+            result.request_id_ = entry.request_id;
+            // 只记录摘要信息，避免打印完整命令（特别是批量命令会非常长）
+            size_t cmd_len = entry.cmd.length();
+            std::string cmd_summary = cmd_len > 100 ? entry.cmd.substr(0, 100) + "..." : entry.cmd;
+            LOG_DEBUG("[Node=%s] Applied log index %u (term %u), cmd_len=%zu, cmd: %s",
+                      node_id.c_str(),
+                      last_applied,
+                      entry.term,
+                      cmd_len,
+                      cmd_summary.c_str());
+            // 只在错误时打印详细信息
+            if (result.code_ == 0)
+            {
+                LOG_ERROR("[Node=%s] Execute command %s error at index %u: %s", node_id.c_str(), cmd_summary.c_str(), last_applied, result.error_msg_.c_str());
+            }
+            // 如果是写操作且带有 request_id，将结果写入缓存
+            if (!entry.request_id.empty())
+            {
+                // 插入缓存
+                result_cache_.put(entry.request_id, result);
+                LOG_DEBUG("[Node=%s] Cached result for request_id: %s",
+                          node_id.c_str(),
+                          entry.request_id.c_str());
+            }
+        }
+        else
+        {
+            LOG_ERROR("[Node=%s] Failed to read log at apply index %u", node_id.c_str(), last_applied);
+            result = Response::error("log read error");
+        }
+    }
+    persistent_state_.last_applied_.store(last_log_index);
+    save_persistent_state();
+    LOG_INFO("[Node=%s] Log application completed: LastApplied=%u", node_id.c_str(), last_applied);
+}
 void RaftNode::notify_request_applied(uint32_t index, const Response &response)
 {
     std::lock_guard<std::mutex> lock(pending_requests_mutex_);
@@ -2069,8 +2133,6 @@ Response RaftNode::submit_command(const std::string &request_id, const std::stri
         }
         else
         {
-            std::shared_ptr<PendingRequest> pending_req = std::make_shared<PendingRequest>();
-
             // 1. 本地写入日志 (Phase 1 Start)
             LogEntry entry;
             entry.term = persistent_state_.current_term_.load();
@@ -2097,36 +2159,57 @@ Response RaftNode::submit_command(const std::string &request_id, const std::stri
                 LOG_DEBUG("Leader appended log index %u, term %u, waiting for commit...", log_index, entry.term);
             }
 
-            // 2. 注册等待通知
+            if (need_majority_confirm_)
             {
-                std::lock_guard<std::mutex> pending_lock(pending_requests_mutex_);
-                pending_requests_[log_index] = pending_req;
-            }
-
-            // 3. 广播给 Followers
-            {
-                std::shared_lock<std::shared_mutex> sock_lock(follower_sockets_mutex_);
-                for (const auto &sock : follower_sockets_)
+                // 需要多数确认
+                // 2. 注册等待通知
+                std::shared_ptr<PendingRequest> pending_req = std::make_shared<PendingRequest>();
                 {
-                    send_append_entries(sock);
+                    std::lock_guard<std::mutex> pending_lock(pending_requests_mutex_);
+                    pending_requests_[log_index] = pending_req;
                 }
-            }
-            // 4. 先调用一次try_commit_entries
-            try_commit_entries();
-            // 5. 阻塞等待结果
-            std::future_status status = pending_req->future.wait_for(
-                std::chrono::milliseconds(config_.submit_command_timeout_ms));
-            if (status == std::future_status::ready)
-            {
-                return pending_req->future.get();
+
+                // 3. 广播给 Followers
+                {
+                    std::shared_lock<std::shared_mutex> sock_lock(follower_sockets_mutex_);
+                    for (const auto &sock : follower_sockets_)
+                    {
+                        send_append_entries(sock);
+                    }
+                }
+                // 4. 先调用一次try_commit_entries
+                try_commit_entries();
+                // 5. 阻塞等待结果
+                std::future_status status = pending_req->future.wait_for(
+                    std::chrono::milliseconds(config_.submit_command_timeout_ms));
+                if (status == std::future_status::ready)
+                {
+                    return pending_req->future.get();
+                }
+                else
+                {
+                    // 超时处理
+                    std::lock_guard<std::mutex> pending_lock(pending_requests_mutex_);
+                    pending_requests_.erase(log_index);
+                    response = Response::error("command timeout");
+                    response.request_id_ = request_id;
+                }
             }
             else
             {
-                // 超时处理
-                std::lock_guard<std::mutex> pending_lock(pending_requests_mutex_);
-                pending_requests_.erase(log_index);
-                response = Response::error("command timeout");
-                response.request_id_ = request_id;
+                // 不需要多数确认，直接提交，entry由心跳发送
+                commit_entries();
+                // 从LRU缓存中获取结果
+                if (result_cache_.get(request_id, response))
+                {
+                    LOG_INFO("Duplicate request_id %s found, returning cached response", request_id.c_str());
+                    return response;
+                }
+                else
+                {
+                    response = Response::error("execute failed");
+                    response.request_id_ = request_id;
+                }
             }
         }
     }

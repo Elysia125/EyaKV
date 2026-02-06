@@ -222,9 +222,9 @@ struct Response : public ProtocolBody
 };
 enum RequestType
 {
-    NONE,   // 无操作
-    AUTH,   // 权限认证
-    COMMAND // 命令
+    NONE,         // 无操作
+    AUTH,         // 权限认证
+    COMMAND      // 命令
 };
 struct Request : public ProtocolBody
 {

@@ -53,6 +53,9 @@ struct RaftNodeConfig
     // 结果缓存
     size_t result_cache_capacity = DEFAULT_RAFT_RESULT_CACHE_CAPACITY;
 
+    // 是否需要超半数节点确认
+    bool need_majority_confirm = DEFAULT_RAFT_NEED_MAJORITY_CONFIRM;
+
     // Raft 内部线程池
     ThreadPool::Config thread_pool_config{
         DEFAULT_RAFT_THREADPOOL_WORKERS,
@@ -379,7 +382,8 @@ private:
     std::mt19937 rng_;                                          // 随机数生成器：用于生成随机选举超时
     int election_timeout_;                                      // 当前选举超时值：在[election_timeout_min_, election_timeout_max_]范围内随机
     std::chrono::steady_clock::time_point last_heartbeat_time_; // 最后心跳时间：用于检测选举超时
-
+    // 是否需要超半数节点确认
+    bool need_majority_confirm_; // 是否需要超半数节点确认
     // 互斥锁（保证多线程安全）
     mutable std::recursive_mutex mutex_; // 互斥锁：保护易失性状态的并发访问
 
@@ -647,7 +651,8 @@ private:
 
     /// @brief 尝试提交日志（检查是否有多数派副本已复制）
     void try_commit_entries();
-
+    /// @brief  直接提交日志，不检查
+    void commit_entries();
     /// @brief 应用已提交的日志到状态机
     void apply_committed_entries();
 

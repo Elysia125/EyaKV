@@ -20,6 +20,9 @@ MemTable::MemTable(const size_t &memtable_size,
             calculateStringSize,
             estimateEValueSize));
 
+        // 初始化分片锁
+        shard_locks_.push_back(std::make_unique<std::shared_mutex>());
+
         // 假设原本 1000000 是总期望元素数量，分片后每个分片期望数量为 total / shards
         bloom_filters_.push_back(std::make_unique<BloomFilter>(1000000 / k_num_shards_));
         bloom_locks_.push_back(std::make_unique<std::shared_mutex>());
@@ -41,10 +44,14 @@ void MemTable::put(const std::string &key, const EValue &value)
     }
 
     size_t idx = get_shard_index(key);
+
+    // 获取写锁（独占锁）
+    std::unique_lock<std::shared_mutex> shard_lock(*shard_locks_[idx]);
+
     // 获取插入前的分片大小
     size_t old_shard_size = tables_[idx]->size();
 
-    // 插入跳表 (SkipList 内部有锁)
+    // 插入跳表（SkipList 内部无锁，由分片锁保护）
     tables_[idx]->insert(key, value);
 
     // 获取插入后的分片大小，判断是否为新增
@@ -73,6 +80,9 @@ std::optional<EValue> MemTable::get(const std::string &key) const
         }
     }
 
+    // 获取读锁（共享锁）
+    std::shared_lock<std::shared_mutex> shard_lock(*shard_locks_[idx]);
+
     try
     {
         auto result = tables_[idx]->get(key);
@@ -90,6 +100,8 @@ bool MemTable::remove(const std::string &key)
 {
     LOG_DEBUG("MemTable::remove key=%s", key.c_str());
     size_t idx = get_shard_index(key);
+
+    // 检查 BloomFilter
     {
         std::shared_lock<std::shared_mutex> lock(*bloom_locks_[idx]);
         if (!bloom_filters_[idx]->may_contain(key))
@@ -97,6 +109,10 @@ bool MemTable::remove(const std::string &key)
             return false;
         }
     }
+
+    // 获取写锁（独占锁）
+    std::unique_lock<std::shared_mutex> shard_lock(*shard_locks_[idx]);
+
     bool removed = tables_[idx]->remove(key);
     if (removed)
     {
@@ -117,11 +133,14 @@ size_t MemTable::memory_usage() const
     size_t usage = sizeof(MemTable);
     for (size_t i = 0; i < k_num_shards_; ++i)
     {
+        // 获取读锁
+        std::shared_lock<std::shared_mutex> shard_lock(*shard_locks_[i]);
+
         usage += tables_[i]->memory_usage();
-        {
-            std::shared_lock<std::shared_mutex> lock(*bloom_locks_[i]);
-            usage += bloom_filters_[i]->size();
-        }
+
+        // BloomFilter锁保持独立
+        std::shared_lock<std::shared_mutex> lock(*bloom_locks_[i]);
+        usage += bloom_filters_[i]->size();
     }
     return usage;
 }
@@ -140,10 +159,13 @@ void MemTable::clear()
 {
     for (size_t i = 0; i < k_num_shards_; ++i)
     {
+        // 获取写锁（独占锁）
+        std::unique_lock<std::shared_mutex> shard_lock(*shard_locks_[i]);
+
         tables_[i]->clear();
 
+        // 重置 BloomFilter（已有bloom_locks_保护）
         std::unique_lock<std::shared_mutex> lock(*bloom_locks_[i]);
-        // 重置 BloomFilter
         bloom_filters_[i] = std::make_unique<BloomFilter>(1000000 / k_num_shards_);
     }
     // 重置总数
@@ -155,6 +177,14 @@ std::vector<std::pair<std::string, EValue>> MemTable::get_all_entries() const
     // 获取所有分片的有序数据
     std::vector<std::vector<std::pair<std::string, EValue>>> shard_entries(k_num_shards_);
     size_t total_elements = 0;
+
+    // 对所有分片获取读锁
+    std::vector<std::shared_lock<std::shared_mutex>> locks;
+    locks.reserve(k_num_shards_);
+    for (size_t i = 0; i < k_num_shards_; ++i)
+    {
+        locks.emplace_back(*shard_locks_[i]);
+    }
 
     for (size_t i = 0; i < k_num_shards_; ++i)
     {
@@ -215,6 +245,8 @@ void MemTable::for_each(const std::function<void(const std::string &, const EVal
 EValue MemTable::handle_value(const std::string &key, std::function<EValue &(EValue &)> value_handle)
 {
     size_t idx = get_shard_index(key);
+
+    // 检查 BloomFilter
     {
         std::shared_lock<std::shared_mutex> lock(*bloom_locks_[idx]);
         if (!bloom_filters_[idx]->may_contain(key))
@@ -222,6 +254,10 @@ EValue MemTable::handle_value(const std::string &key, std::function<EValue &(EVa
             throw std::out_of_range("Key not found");
         }
     }
+
+    // 获取写锁（独占锁）
+    std::unique_lock<std::shared_mutex> shard_lock(*shard_locks_[idx]);
+
     return tables_[idx]->handle_value(key, value_handle);
 }
 
