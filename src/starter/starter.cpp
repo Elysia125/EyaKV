@@ -1,12 +1,16 @@
+#include "raft/raft.h"
+#include "network/tcp_server.h"
+#include "starter/starter.h"
+#include "storage/storage.h"
+#include "config/config.h"
+#include "logger/logger.h"
 #include <csignal>
 #include <cstdlib>
 #include <atomic>
-#include "starter/starter.h"
-#include "storage/storage.h"
-#include "network/tcp_server.h"
-#include "config/config.h"
-#include "logger/logger.h"
-#include "raft/raft.h"
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
 EyaKVConfig &config = EyaKVConfig::get_instance();
 
 EyaServer *EyaKVStarter::server = nullptr;
@@ -15,6 +19,22 @@ std::unique_ptr<std::thread> EyaKVStarter::raft_thread = nullptr;
 
 void EyaKVStarter::print_banner()
 {
+#ifdef _WIN32
+    // Windows 平台：设置控制台编码为 UTF-8
+    SetConsoleCP(CP_UTF8);
+    SetConsoleOutputCP(CP_UTF8);
+
+    // 启用虚拟终端序列以支持 ANSI 颜色代码
+    HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (hConsole != INVALID_HANDLE_VALUE) {
+        DWORD mode = 0;
+        if (GetConsoleMode(hConsole, &mode)) {
+            mode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+            SetConsoleMode(hConsole, mode);
+        }
+    }
+#endif
+
     // 定义颜色（粉色/洋红色）
     std::string PINK = "\033[1;38;5;213m";
     std::string RESET = "\033[0m";

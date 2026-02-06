@@ -36,13 +36,13 @@ enum class SSTableMergeStrategy
 #define DEFAULT_RAFT_TRUST_IP "127.0.0.1"
 #define DEFAULT_READ_ONLY false
 #define DEFAULT_LOG_LEVEL LogLevel::INFO
-#define DEFAULT_LOG_ROTATE_SIZE 1024 * 5 // 日志轮转阈值，避免日志文件过大
+#define DEFAULT_LOG_ROTATE_SIZE 1024 * 1024 // KB 日志轮转阈值，避免日志文件过大
 #define DEFAULT_SKIPLIST_MAX_LEVEL 16
 #define DEFAULT_SKIPLIST_PROBABILITY 0.5
 #define DEFAULT_SKIPLIST_MAX_NODE_COUNT 10000000
-#define DEFAULT_MEMTABLE_SIZE 1024 * 1024 * 1024 // kb
+#define DEFAULT_MEMTABLE_SIZE 1024 * 1024 // kb
 #define DEFAULT_WAL_ENABLE true
-#define DEFAULT_WAL_FILE_SIZE 1024 * 1024 * 1024 // kb
+#define DEFAULT_WAL_FILE_SIZE 1024 * 1024 * 10 // kb
 #define DEFAULT_WAL_FILE_MAX_COUNT 10
 #define DEFAULT_WAL_FLUSH_INTERVAL 1000                                             // ms wal刷新间隔
 #define DEFAULT_WAL_FLUSH_STRATEGY WALFlushStrategy::BACKGROUND_THREAD              // wal刷新策略
@@ -59,25 +59,25 @@ enum class SSTableMergeStrategy
 #define DEFAULT_WORKER_WAIT_TIMEOUT 30
 
 // Raft 相关默认配置
-#define DEFAULT_RAFT_ELECTION_TIMEOUT_MIN 150           // 选举超时最小值(ms)
-#define DEFAULT_RAFT_ELECTION_TIMEOUT_MAX 300           // 选举超时最大值(ms)
-#define DEFAULT_RAFT_HEARTBEAT_INTERVAL 30              // 心跳间隔(ms)
-#define DEFAULT_RAFT_RPC_TIMEOUT 2000                   // Raft RPC 超时(ms)
-#define DEFAULT_RAFT_FOLLOWER_IDLE_WAIT 1000            // Follower 空闲等待(ms)
-#define DEFAULT_RAFT_JOIN_MAX_RETRIES 3                 // Follower 加入集群最大重试次数
-#define DEFAULT_RAFT_REQUEST_VOTE_TIMEOUT 200           // RequestVote 响应超时(ms)
-#define DEFAULT_RAFT_SUBMIT_TIMEOUT 2000                // 提交命令等待超时(ms)
-#define DEFAULT_RAFT_APPEND_BATCH 100                   // 单次 AppendEntries 最大日志条数
-#define DEFAULT_RAFT_SNAPSHOT_CHUNK (64 * 1024)         // 快照 chunk 大小(bytes)
-#define DEFAULT_RAFT_RESULT_CACHE_CAPACITY 10000        // 结果缓存容量
-#define DEFAULT_RAFT_THREADPOOL_WORKERS 4               // Raft 内部线程池工作线程数
-#define DEFAULT_RAFT_THREADPOOL_QUEUE 10000             // Raft 内部线程池队列大小
-#define DEFAULT_RAFT_THREADPOOL_WAIT 1000               // Raft 内部线程池等待超时(ms)
+#define DEFAULT_RAFT_ELECTION_TIMEOUT_MIN 150    // 选举超时最小值(ms)
+#define DEFAULT_RAFT_ELECTION_TIMEOUT_MAX 300    // 选举超时最大值(ms)
+#define DEFAULT_RAFT_HEARTBEAT_INTERVAL 30       // 心跳间隔(ms)
+#define DEFAULT_RAFT_RPC_TIMEOUT 2000            // Raft RPC 超时(ms)
+#define DEFAULT_RAFT_FOLLOWER_IDLE_WAIT 1000     // Follower 空闲等待(ms)
+#define DEFAULT_RAFT_JOIN_MAX_RETRIES 3          // Follower 加入集群最大重试次数
+#define DEFAULT_RAFT_REQUEST_VOTE_TIMEOUT 200    // RequestVote 响应超时(ms)
+#define DEFAULT_RAFT_SUBMIT_TIMEOUT 2000         // 提交命令等待超时(ms)
+#define DEFAULT_RAFT_APPEND_BATCH 100            // 单次 AppendEntries 最大日志条数
+#define DEFAULT_RAFT_SNAPSHOT_CHUNK (64 * 1024)  // 快照 chunk 大小(bytes)
+#define DEFAULT_RAFT_RESULT_CACHE_CAPACITY 10000 // 结果缓存容量
+#define DEFAULT_RAFT_THREADPOOL_WORKERS 4        // Raft 内部线程池工作线程数
+#define DEFAULT_RAFT_THREADPOOL_QUEUE 10000      // Raft 内部线程池队列大小
+#define DEFAULT_RAFT_THREADPOOL_WAIT 1000        // Raft 内部线程池等待超时(ms)
 
-#define DEFAULT_RAFT_LOG_THRESHOLD 1000000              // 触发日志截断的阈值(条数)
-#define DEFAULT_RAFT_LOG_TRUNCATE_RATIO 0.25            // 截断比例
-#define DEFAULT_RAFT_WAL_FILENAME "raft_wal.log"        // WAL 文件名
-#define DEFAULT_RAFT_INDEX_FILENAME "raft_index.idx"    // 索引文件名
+#define DEFAULT_RAFT_LOG_THRESHOLD 1000000           // 触发日志截断的阈值(条数)
+#define DEFAULT_RAFT_LOG_TRUNCATE_RATIO 0.25         // 截断比例
+#define DEFAULT_RAFT_WAL_FILENAME "raft_wal.log"     // WAL 文件名
+#define DEFAULT_RAFT_INDEX_FILENAME "raft_index.idx" // 索引文件名
 
 #define PORT_KEY "port"
 #define IP_KEY "ip"
@@ -157,7 +157,7 @@ private:
         }
         load_default_config();
         load_config();
-        load_config_from_env();  // 从环境变量加载配置
+        load_config_from_env(); // 从环境变量加载配置
         check_config();
     }
     void load_config()

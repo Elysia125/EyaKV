@@ -6,6 +6,7 @@
 #include "storage/storage.h"
 #include "common/types/operation_type.h"
 #include "common/util/file_utils.h"
+
 namespace fs = std::filesystem;
 
 const auto remove_evalue = [](EValue &value) -> EValue &
@@ -259,18 +260,14 @@ bool Storage::write_memtable(const std::string &key, EValue &value)
 std::optional<EyaValue> Storage::get(const std::string &key) const
 {
     std::optional<EValue> result;
-    LOG_INFO("Get from latest memtable: %s", key.c_str());
     if (get_from_latest(key, result))
     {
         return result->value;
     }
-    LOG_WARN("Get from latest memtable failed, try to get from old memtable: %s", key.c_str());
-    LOG_INFO("Get from old memtable: %s", key.c_str());
     if (get_from_old(key, result))
     {
         return result->value;
     }
-    LOG_WARN("Get from old memtable failed, key: %s not found", key.c_str());
     return std::nullopt;
 }
 
@@ -491,7 +488,8 @@ void Storage::start_background_flush_thread()
     LOG_INFO("Background flush thread starting....");
     background_flush_thread_running_ = true;
     flush_thread_ = std::thread(&Storage::background_flush_task, this);
-    flush_thread_.detach();
+    // 移除 detach()，确保线程可以被正确停止
+    // flush_thread_.detach();
 
     LOG_INFO("Background flush thread started completely.");
 }

@@ -88,7 +88,7 @@ public:
                      const bool &enable_wal = true,
                      const std::optional<uint32_t> &wal_flush_interval = 1000,
                      const WALFlushStrategy &wal_flush_strategy = WALFlushStrategy::BACKGROUND_THREAD,
-                     const size_t &memtable_size = 1024 * 1024 * 1024,
+                     const size_t &memtable_size = 1024 * 1024,
                      const size_t &skiplist_max_level = 16,
                      const double &skiplist_probability = 0.5,
                      const SSTableMergeStrategy &sstable_merge_strategy = SSTableMergeStrategy::SIZE_TIERED_COMPACTION,
