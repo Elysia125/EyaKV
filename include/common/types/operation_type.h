@@ -7,7 +7,8 @@
 namespace OperationType
 {
     // 通用
-    constexpr uint8_t kExists = 0;
+    constexpr uint8_t kKeys = 0;
+    constexpr uint8_t kExists = kKeys + 1;
     constexpr uint8_t kRemove = kExists + 1;
     constexpr uint8_t kRange = kRemove + 1;
     constexpr uint8_t kExpire = kRange + 1;
@@ -46,8 +47,15 @@ namespace OperationType
     constexpr uint8_t kHKeys = kHDel + 1;
     constexpr uint8_t kHValues = kHKeys + 1;
     constexpr uint8_t kHEntries = kHValues + 1;
+    // raft相关命令
+    constexpr uint8_t kGetMaster = kHEntries + 1;
+    constexpr uint8_t kSetMaster = kGetMaster + 1;
+    constexpr uint8_t kRemoveNode = kSetMaster + 1;
+    constexpr uint8_t kListNodes = kRemoveNode + 1;
+    constexpr uint8_t kGetStatus = kListNodes + 1;
 }
 static std::unordered_map<std::string, uint8_t> operationTypeMap = {
+    {"keys", OperationType::kKeys},
     {"exists", OperationType::kExists},
     {"remove", OperationType::kRemove},
     {"range", OperationType::kRange},
@@ -81,8 +89,14 @@ static std::unordered_map<std::string, uint8_t> operationTypeMap = {
     {"hdel", OperationType::kHDel},
     {"hkeys", OperationType::kHKeys},
     {"hvalues", OperationType::kHValues},
-    {"hentries", OperationType::kHEntries}};
+    {"hentries", OperationType::kHEntries},
+    {"get_master", OperationType::kGetMaster},
+    {"set_master", OperationType::kSetMaster},
+    {"remove_node", OperationType::kRemoveNode},
+    {"list_nodes", OperationType::kListNodes},
+    {"get_status", OperationType::kGetStatus}};
 static std::unordered_set<uint8_t> read_types = {
+    OperationType::kKeys,
     OperationType::kExists,
     OperationType::kGet,
     OperationType::kSMembers,
@@ -118,6 +132,12 @@ static std::unordered_set<uint8_t> write_types = {
     OperationType::kRPopN,
     OperationType::kHSet,
     OperationType::kHDel};
+static std::unordered_set<uint8_t> raft_types = {
+    OperationType::kGetMaster,
+    OperationType::kSetMaster,
+    OperationType::kRemoveNode,
+    OperationType::kListNodes,
+    OperationType::kGetStatus};
 inline uint8_t stringToOperationType(const std::string &cmd)
 {
     std::string lower_cmd = cmd;
@@ -138,6 +158,11 @@ inline bool isReadOperation(uint8_t op_type)
 inline bool isWriteOperation(uint8_t op_type)
 {
     return write_types.find(op_type) != write_types.end();
+}
+
+inline bool isRaftOperation(uint8_t op_type)
+{
+    return raft_types.find(op_type) != raft_types.end();
 }
 
 #endif

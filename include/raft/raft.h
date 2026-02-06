@@ -56,6 +56,9 @@ struct RaftNodeConfig
     // 是否需要超半数节点确认
     bool need_majority_confirm = DEFAULT_RAFT_NEED_MAJORITY_CONFIRM;
 
+    // 命令批处理超时时间
+    uint32_t batch_command_timeout_ms = DEFAULT_BATCH_TIMEOUT_MS;
+
     // Raft 内部线程池
     ThreadPool::Config thread_pool_config{
         DEFAULT_RAFT_THREADPOOL_WORKERS,
@@ -735,12 +738,21 @@ private:
     /// @param cmd 命令字符串
     /// @return 执行结果
     Response execute_command(const std::string &cmd);
-
+    /// @brief 执行批量读命令
+    /// @param cmds 命令字符串列表
+    /// @param responses 批量执行结果
+    /// @param timeout_ms 超时时间（默认200ms）
+    void execute_batch_read_command(const std::vector<std::pair<std::string, std::string>> &cmds, std::unordered_map<std::string, Response> &responses, uint32_t timeout_ms = 200);
+    /// @brief 执行批量写命令
+    /// @param cmds 命令字符串列表
+    /// @param responses 批量执行结果
+    /// @param timeout_ms 超时时间（默认200ms）
+    void execute_batch_write_command(const std::vector<std::pair<std::string, std::string>> &cmds, std::unordered_map<std::string, Response> &responses, uint32_t timeout_ms = 200);
     /// @brief 处理Raft命令（集群管理命令）
-    /// @param command_parts 命令分段数组
-    /// @param is_exec 输出参数，表示是否执行了命令
+    /// @param type 命令类型
+    /// @param args 命令参数列表
     /// @return 命令响应
-    Response handle_raft_command(const std::vector<std::string> &command_parts, bool &is_exec);
+    Response handle_raft_command(uint8_t type, const std::vector<std::string> &args);
 
     /// @brief 添加新连接（TCPServer接口实现）
     /// @param client_sock 客户端套接字
@@ -766,10 +778,16 @@ public:
     /// @param cmd 命令字符串
     /// @return 命令执行结果（异步等待日志提交和应用）
     Response submit_command(const std::string &request_id, const std::string &cmd);
-
+    /// @brief 批量提交命令：客户端调用，将命令提交到Raft日志
+    /// @param commands 命令映射，键为请求ID，值为命令字符串
+    /// @return 命令执行结果映射
+    std::vector<std::pair<std::string, Response>> submit_batch_command(const std::vector<std::pair<std::string, std::string>> &commands);
     /// @brief 获取当前角色
     /// @return 当前角色（Follower、Candidate或Leader）
-    RaftRole get_role() const { return role_.load(); }
+    RaftRole get_role() const
+    {
+        return role_.load();
+    }
 
     /// @brief 获取节点ID（用于日志记录）
     /// @return 节点标识字符串，格式为 "ip:port"

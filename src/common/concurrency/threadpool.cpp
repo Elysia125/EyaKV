@@ -25,17 +25,6 @@ ThreadPool::~ThreadPool()
 {
     // 调用优雅停止
     stop();
-
-    // 等待所有工作线程结束
-    for (auto &worker : workers_)
-    {
-        if (worker.joinable())
-        {
-            worker.join();
-        }
-    }
-
-    workers_.clear();
     LOG_INFO("ThreadPool destroyed");
 }
 

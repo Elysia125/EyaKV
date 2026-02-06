@@ -24,11 +24,13 @@ protected:
         return header;
     }
 
-    TCPBase(const std::string &ip, u_short port)
-        : ip_(ip), port_(port)
-
+    virtual uint32_t get_header_length() const
     {
+        return ProtocolHeader::PROTOCOL_HEADER_SIZE;
     }
+
+    TCPBase(const std::string &ip, u_short port)
+        : ip_(ip), port_(port) {}
 
     virtual int send(const ProtocolBody &body, socket_t socket)
     {
@@ -37,11 +39,18 @@ protected:
         return send_data(socket, request);
     }
 
+    virtual int send(const std::string &body, socket_t socket)
+    {
+        std::string request = build_header(body.length()) + body;
+        return send_data(socket, request);
+    }
+
     virtual int receive(ProtocolBody &body, socket_t socket, uint32_t timeout = 0)
     {
         std::string sheader;
-        int result = receive_data(socket, sheader, ProtocolHeader::PROTOCOL_HEADER_SIZE, timeout);
-        if (result != ProtocolHeader::PROTOCOL_HEADER_SIZE)
+        uint32_t header_length = get_header_length();
+        int result = receive_data(socket, sheader, header_length, timeout);
+        if (result != header_length)
         {
             return result;
         }

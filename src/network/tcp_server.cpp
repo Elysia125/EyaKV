@@ -409,7 +409,7 @@ void EyaServer::handle_request(ProtocolBody *body, socket_t client_sock)
         {
             // 处理认证请求
             LOG_DEBUG("Processing AUTH request on fd %d", client_sock);
-            if (request->command == password_)
+            if (request->password == password_)
             {
                 response = Response::success(auth_key_);
                 // 从未认证集合中移除
@@ -421,7 +421,7 @@ void EyaServer::handle_request(ProtocolBody *body, socket_t client_sock)
                 response = Response::error("Authentication failed");
             }
         }
-        else if (request->type == RequestType::COMMAND)
+        else if (request->type == RequestType::COMMAND||request->type==RequestType::BATCH_COMMAND)
         {
             // 处理命令请求
             LOG_DEBUG("Processing COMMAND request on fd %d: %s",
@@ -442,7 +442,14 @@ void EyaServer::handle_request(ProtocolBody *body, socket_t client_sock)
                     exit(1);
                 }
                 static RaftNode*raft_node=RaftNode::get_instance();
-                response=raft_node->submit_command(request->request_id,request->command);
+                if(request->type == RequestType::COMMAND){
+                    response=raft_node->submit_command(request->id,request->command);
+                }else{
+                    auto batch_responses=raft_node->submit_batch_command(request->commands);
+                    send(serialize({request->id,batch_responses}),client_sock);
+                    delete body;
+                    return;
+                }
             }
         }
         else
