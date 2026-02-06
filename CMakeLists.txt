@@ -15,9 +15,11 @@ if(MSVC)
     # 使用多线程DLL运行时 (/MD)，避免静态链接
     set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /MD /O2 /Ob2 /DNDEBUG")
     # 移除调试符号，减小体积
-    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /Zi /Gy")
+    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /Gy")
     # 链接器优化
     set(CMAKE_SHARED_LINKER_FLAGS_RELEASE "${CMAKE_SHARED_LINKER_FLAGS_RELEASE} /OPT:REF /OPT:ICF /INCREMENTAL:NO")
+    # 移除调试信息
+    set(CMAKE_SHARED_LINKER_FLAGS_RELEASE "${CMAKE_SHARED_LINKER_FLAGS_RELEASE} /DEBUG:NONE")
 elseif(MINGW OR CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     # GCC/MinGW 优化选项
     set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3 -s")
@@ -47,7 +49,7 @@ if(EYAKV_STATIC)
 endif()
 
 # 选项：最小化DLL体积（剥离所有符号）
-option(EYAKV_MINIMAL_SIZE "Build minimal size binaries (strip symbols)" OFF)
+option(EYAKV_MINIMAL_SIZE "Build minimal size binaries (strip symbols)" ON)
 if(EYAKV_MINIMAL_SIZE)
     if(MSVC)
         set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /Os")
