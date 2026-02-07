@@ -2306,6 +2306,7 @@ std::vector<std::pair<std::string, Response>> RaftNode::submit_batch_command(con
     {
         auto res = responses[id];
         res.request_id_ = id;
+        //LOG_INFO("Command %s in batch executed result: %s", cmd.c_str(), res.to_string().c_str());
         result.emplace_back(id, std::move(res));
     }
     return result;

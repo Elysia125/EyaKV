@@ -10,7 +10,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-echo -e "${GREEN}=== TinyKV 连接数限制测试 ===${NC}"
+echo -e "${GREEN}=== EyaKV 连接数限制测试 ===${NC}"
 
 # 默认参数
 HOST="127.0.0.1"

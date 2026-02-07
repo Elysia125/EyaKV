@@ -124,7 +124,7 @@ choco install mingw
 
 ```bash
 # 1. 克隆代码库
-git clone https://github.com/Elysia125/TinyKV.git
+git clone https://github.com/Elysia125/EyaKV.git
 cd EyaKV
 
 # 2. 创建构建目录
@@ -146,7 +146,7 @@ ninja
 
 ```cmd
 :: 1. 克隆代码库
-git clone https://github.com/Elysia125/TinyKV.git
+git clone https://github.com/Elysia125/EyaKV.git
 cd EyaKV
 
 :: 2. 打开 "Developer Command Prompt for VS 2019"

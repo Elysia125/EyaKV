@@ -21,7 +21,7 @@ EyaKV 全面压力测试脚本
         --password 123456 \
         --count 50000 \
         --batch \
-        --output tinykv_stress_report.md
+        --output eyakv_stress_report.md
 """
 
 import argparse
@@ -122,6 +122,12 @@ def run_stress_test(
     env = os.environ.copy()
     if extra_env:
         env.update(extra_env)
+
+    if pipeline:
+        print(">>> 已启用 pipeline，将向 stress_test 传递: --pipeline" + (
+            f" --pipeline-batch {pipeline_batch}" if pipeline_batch and pipeline_batch > 0 else ""
+        ))
+    print(">>> 执行命令:", " ".join(cmd))
 
     proc = subprocess.run(
         cmd,
@@ -455,7 +461,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output",
         default=None,
-        help="输出报告文件路径（默认：tinykv_stress_report_时间戳.md）",
+        help="输出报告文件路径（默认：eyakv_stress_report_时间戳.md）",
     )
     return parser.parse_args()
 
@@ -547,7 +553,7 @@ def main() -> None:
         output_path = args.output
     else:
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_path = f"tinykv_stress_report_{ts}.md"
+        output_path = f"eyakv_stress_report_{ts}.md"
 
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(report_md)
