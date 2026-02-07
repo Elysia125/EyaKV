@@ -510,7 +510,7 @@ public:
             {
                 if (errno == EAGAIN || errno == EWOULDBLOCK)
                 {
-                    break; // 数据已全部读取完毕
+                    return; // 数据已全部读取完毕
                 }
                 LOG_ERROR("Recv error on fd %d: %s", client_sock, socket_error_to_string(GET_SOCKET_ERROR()).c_str());
                 goto cleanup;
