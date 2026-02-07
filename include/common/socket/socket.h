@@ -14,6 +14,7 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <netdb.h>
+#include <poll.h>
 #endif
 #include <string>
 #include <stdexcept>
@@ -227,12 +228,47 @@ inline int send_data(socket_t client_socket, const std::string &data)
 #ifdef _WIN32
         sent = send(client_socket, data.c_str() + total_sent,
                     static_cast<int>(remaining), 0);
+        // Windows下处理WSAEWOULDBLOCK错误（非阻塞socket缓冲区满）
+        if (sent == SOCKET_ERROR_VALUE && GET_SOCKET_ERROR() == WSAEWOULDBLOCK)
+        {
+            // 使用select等待socket可写
+            fd_set write_fds;
+            FD_ZERO(&write_fds);
+            FD_SET(client_socket, &write_fds);
+            struct timeval tv;
+            tv.tv_sec = 1;  // 等待1秒
+            tv.tv_usec = 0;
+            int select_result = select((int)client_socket + 1, NULL, &write_fds, NULL, &tv);
+            if (select_result > 0 && FD_ISSET(client_socket, &write_fds))
+            {
+                continue;  // 可写，重试send
+            }
+            // 超时或错误，返回失败
+            return SOCKET_ERROR_VALUE;
+        }
 #else
         // Linux下处理EINTR信号中断：重试send
         do
         {
             sent = send(client_socket, data.c_str() + total_sent, remaining, 0);
         } while (sent == SOCKET_ERROR_VALUE && GET_SOCKET_ERROR() == EINTR);
+        
+        // Linux下处理EAGAIN/EWOULDBLOCK错误（非阻塞socket缓冲区满）
+        if (sent == SOCKET_ERROR_VALUE && 
+            (GET_SOCKET_ERROR() == EAGAIN || GET_SOCKET_ERROR() == EWOULDBLOCK))
+        {
+            // 使用poll等待socket可写
+            struct pollfd pfd;
+            pfd.fd = client_socket;
+            pfd.events = POLLOUT;
+            int poll_result = poll(&pfd, 1, 1000);  // 等待1秒（1000毫秒）
+            if (poll_result > 0 && (pfd.revents & POLLOUT))
+            {
+                continue;  // 可写，重试send
+            }
+            // 超时或错误，返回失败
+            return SOCKET_ERROR_VALUE;
+        }
 #endif
 
         // 处理发送错误
