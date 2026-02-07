@@ -1,6 +1,7 @@
 #include <filesystem>
 #include <iostream>
 #include <thread>
+#include <regex>
 #include "logger/logger.h"
 #include "storage/processors/structure_processors.h"
 #include "storage/storage.h"
@@ -404,7 +405,53 @@ std::vector<std::pair<std::string, EyaValue>> Storage::range(
 
     return result;
 }
+std::set<std::string> Storage::keys(const std::string &pattern) const
+{
+    std::unordered_set<std::string> result;
+    std::regex regex(pattern);
+    // 1. 从 SSTable 获取范围数据（最旧的数据）
+    if (sstable_manager_)
+    {
+        sstable_manager_->for_each_oldest([&](const std::string &key, const EValue &value) -> bool
+                                          {
+                                              if(value.is_deleted() || value.is_expired()) {
+                                                    result.erase(key);
+                                                    return true;
+                                              }
+                                              if (std::regex_match(key, regex)) {
+                                                    result.insert(key);
+                                              }
+                                              return true; });
+    }
+    // 2. 从 Immutable MemTables 获取并覆盖
+    {
+        std::shared_lock<std::shared_mutex> lock(immutable_mutex_);
+        for (auto it = immutable_memtables_.rbegin(); it != immutable_memtables_.rend(); ++it)
+        {
+            (*it).second->for_each([&](const std::string &key, const EValue &value)
+                                   {
+                                        if(value.is_deleted() || value.is_expired()) {
+                                            result.erase(key);
+                                            return;
+                                        }
+                                        if (std::regex_match(key, regex)) {
+                                            result.insert(key);
+                                        } });
+        }
+    }
 
+    // 3. 从 MemTable 获取并覆盖（最新的数据）
+    memtable_->for_each([&](const std::string &key, const EValue &value)
+                        {
+                            if(value.is_deleted() || value.is_expired()) {
+                                result.erase(key);
+                                return;
+                            }
+                            if (std::regex_match(key, regex)) {
+                                result.insert(key);
+                            } });
+    return std::set<std::string>(result.begin(), result.end());
+}
 void Storage::rotate_memtable()
 {
     // 将当前 MemTable 转换为 Immutable
@@ -718,7 +765,16 @@ Response Storage::execute(uint8_t type, std::vector<std::string> &args)
     try
     {
         Response response;
-        if (type == OperationType::kRemove)
+        if (type == OperationType::kKeys)
+        {
+            if (args.size() > 1)
+            {
+                return Response::error("too many arguments");
+            }
+            auto result = keys(args.empty() ? "^.*$" : args[0]);
+            response = Response::success(std::vector<std::string>(result.begin(), result.end()));
+        }
+        else if (type == OperationType::kRemove)
         {
             if (args.empty())
             {

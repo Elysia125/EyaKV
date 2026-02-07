@@ -5,6 +5,7 @@
 #include <memory>
 #include <optional>
 #include <vector>
+#include <set>
 #include <shared_mutex>
 #include <filesystem>
 #include "storage/memtable.h"
@@ -355,6 +356,12 @@ private:
      * @brief 根据key从旧数据中获取
      */
     bool get_from_old(const std::string &key, std::optional<EValue> &value) const;
+
+    /**
+     * @brief 获取所有的keys
+     */
+    std::set<std::string> keys(const std::string &pattern) const;
+
     // 设置友元类
     friend class StringProcessor;
     friend class SetProcessor;

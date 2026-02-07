@@ -1251,3 +1251,25 @@ std::map<std::string, EValue> SSTableManager::range_query(
     }
     return map;
 }
+
+void SSTableManager::for_each_newest(std::function<bool(const std::string &key, const EValue &value)> callback) const
+{
+    for (auto it = level_sstables_.begin(); it != level_sstables_.end(); it++)
+    {
+        for (auto sit = it->begin(); sit != it->end(); sit++)
+        {
+            (*sit)->for_each(callback);
+        }
+    }
+}
+
+void SSTableManager::for_each_oldest(std::function<bool(const std::string &key, const EValue &value)> callback) const
+{
+    for (auto it = level_sstables_.rbegin(); it != level_sstables_.rend(); it++)
+    {
+        for (auto sit = it->rbegin(); sit != it->rend(); sit++)
+        {
+            (*sit)->for_each(callback);
+        }
+    }
+}
