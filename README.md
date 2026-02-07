@@ -191,7 +191,7 @@ cmake --build build --config Release
 
 ```cmd
 :: 1. 克隆代码库
-git clone https://github.com/your-username/EyaKV.git
+git clone https://github.com/Elysia125/EyaKV.git
 cd EyaKV
 
 :: 2. 配置并编译（推荐方式，一步完成）
