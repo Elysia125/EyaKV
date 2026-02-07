@@ -2913,3 +2913,26 @@ void RaftNode::handle_new_master(const RaftMessage &msg, const socket_t &client_
     // 转换为Follower并连接新Leader
     become_follower(data.leader_address, leader_term, true, persistent_state_.commit_index_.load());
 }
+
+void RaftNode::stop()
+{
+    election_thread_running_.store(false);
+    election_cv_.notify_all();
+    if (election_thread_.joinable())
+    {
+        election_thread_.join();
+    }
+    heartbeat_thread_running_.store(false);
+    heartbeat_cv_.notify_all();
+    if (heartbeat_thread_.joinable())
+    {
+        heartbeat_thread_.join();
+    }
+    follower_client_thread_running_.store(false);
+    follower_client_cv_.notify_all();
+    if (follower_client_thread_.joinable())
+    {
+        follower_client_thread_.join();
+    }
+    TCPServer::stop();
+}

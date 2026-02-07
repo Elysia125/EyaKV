@@ -81,7 +81,7 @@ enum class SSTableMergeStrategy
 #define DEFAULT_RAFT_NEED_MAJORITY_CONFIRM false     // 是否需要多数确认
 
 #define DEFAULT_BATCH_SIZE 100               // 默认批量大小
-#define DEFAULT_BATCH_TIMEOUT_MS 200          // 批量超时（ms）
+#define DEFAULT_BATCH_TIMEOUT_MS 500          // 批量超时（ms）
 #define DEFAULT_BATCH_MAX_SIZE_BYTES 1048576 // 单批次最大1MB
 
 #define PORT_KEY "port"

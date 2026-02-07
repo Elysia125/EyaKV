@@ -769,6 +769,9 @@ private:
     /// @return 受信任返回true，否则返回false
     bool is_trust(const Address &addr);
 
+    /// @brief 停止节点
+    void stop() override;
+
 public:
     /// @brief 析构函数：释放资源，停止后台线程
     ~RaftNode();
