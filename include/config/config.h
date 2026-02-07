@@ -80,9 +80,7 @@ enum class SSTableMergeStrategy
 #define DEFAULT_RAFT_INDEX_FILENAME "raft_index.idx" // 索引文件名
 #define DEFAULT_RAFT_NEED_MAJORITY_CONFIRM false     // 是否需要多数确认
 
-#define DEFAULT_BATCH_SIZE 100               // 默认批量大小
-#define DEFAULT_BATCH_TIMEOUT_MS 500          // 批量超时（ms）
-#define DEFAULT_BATCH_MAX_SIZE_BYTES 1048576 // 单批次最大1MB
+#define DEFAULT_BATCH_TIMEOUT_MS 500 // 批量超时（ms）
 
 #define PORT_KEY "port"
 #define IP_KEY "ip"
@@ -138,9 +136,7 @@ enum class SSTableMergeStrategy
 #define RAFT_INDEX_FILENAME_KEY "raft_index_filename"
 #define RAFT_NEED_MAJORITY_CONFIRM_KEY "raft_need_majority_confirm"
 
-#define BATCH_SIZE_KEY "batch_size"
 #define BATCH_TIMEOUT_KEY "batch_timeout"
-#define BATCH_MAX_SIZE_KEY "batch_max_size"
 
 class EyaKVConfig
 {
@@ -281,9 +277,7 @@ private:
         config_map_[RAFT_INDEX_FILENAME_KEY] = DEFAULT_RAFT_INDEX_FILENAME;
         config_map_[RAFT_NEED_MAJORITY_CONFIRM_KEY] = std::to_string(DEFAULT_RAFT_NEED_MAJORITY_CONFIRM);
 
-        config_map_[BATCH_SIZE_KEY] = std::to_string(DEFAULT_BATCH_SIZE);
         config_map_[BATCH_TIMEOUT_KEY] = std::to_string(DEFAULT_BATCH_TIMEOUT_MS);
-        config_map_[BATCH_MAX_SIZE_KEY] = std::to_string(DEFAULT_BATCH_MAX_SIZE_BYTES);
     }
 
     void check_config()
@@ -588,9 +582,7 @@ inline std::unordered_map<std::string, std::string> EyaKVConfig::init_env_key_ma
         {RAFT_THREADPOOL_QUEUE_KEY, "EYAKV_RAFT_THREADPOOL_QUEUE_SIZE"},
         {RAFT_THREADPOOL_WAIT_KEY, "EYAKV_RAFT_THREADPOOL_WAIT_TIMEOUT_MS"},
 
-        {BATCH_SIZE_KEY, "EYAKV_BATCH_SIZE"},
-        {BATCH_TIMEOUT_KEY, "EYAKV_BATCH_TIMEOUT"},
-        {BATCH_MAX_SIZE_KEY, "EYAKV_BATCH_MAX_SIZE"}};
+        {BATCH_TIMEOUT_KEY, "EYAKV_BATCH_TIMEOUT"}};
 }
 
 // 静态成员变量定义

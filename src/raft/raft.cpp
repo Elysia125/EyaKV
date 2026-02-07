@@ -2278,7 +2278,7 @@ std::vector<std::pair<std::string, Response>> RaftNode::submit_batch_command(con
                                                     parts.erase(parts.begin());
                                                     responses[id] = handle_raft_command(type, parts);
                                                 }else if(isWriteOperation(type)){
-                                                    if(is_read){
+                                                    if(!is_read){
                                                         current_cmds.emplace_back(id,cmd);
                                                     }else if(current_cmds.empty()){
                                                         current_cmds.emplace_back(id,cmd);
@@ -2306,6 +2306,7 @@ std::vector<std::pair<std::string, Response>> RaftNode::submit_batch_command(con
     {
         auto res = responses[id];
         res.request_id_ = id;
+        //LOG_INFO("Command %s in batch executed result: %s", cmd.c_str(), res.to_string().c_str());
         result.emplace_back(id, std::move(res));
     }
     return result;

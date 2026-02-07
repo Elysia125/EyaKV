@@ -389,11 +389,15 @@ void run_connection_limit_test(const std::string &host, int port, const std::str
 }
 
 // 多连接（多线程）下的字符串写入吞吐量压测
+// use_pipeline 为 true 时使用 BATCH_COMMAND，否则使用单条 COMMAND
 void run_multi_thread_throughput(const std::string &host, int port, const std::string &password,
-                                 int threads, int count_per_thread)
+                                 int threads, int count_per_thread,
+                                 bool use_pipeline, int pipeline_batch_size)
 {
     std::cout << "Starting multi-thread throughput test: " << threads
-              << " threads, " << count_per_thread << " ops per thread (String SET)..." << std::endl;
+              << " threads, " << count_per_thread << " ops per thread (String SET)"
+              << (use_pipeline ? ", pipeline batch " + std::to_string(pipeline_batch_size) : "")
+              << "..." << std::endl;
 
     std::vector<ThreadBenchmarkResult> results(threads);
 
@@ -409,32 +413,78 @@ void run_multi_thread_throughput(const std::string &host, int port, const std::s
 
         auto start = std::chrono::high_resolution_clock::now();
         int done = 0;
-        for (int i = 0; i < count_per_thread; ++i)
-        {
-            std::string cmd = "set mt_key_" + std::to_string(tid) + "_" + std::to_string(i) +
-                              " mt_value_" + std::to_string(i);
-            Request req = Request::createCommand(generate_random_string(16), cmd, auth_key);
 
-            if (!send_data(socket_guard.get(), req.serialize()))
+        if (use_pipeline)
+        {
+            int index = 0;
+            while (index < count_per_thread)
             {
-                std::cerr << "Thread " << tid << ": send failed at op " << i << std::endl;
-                break;
-            }
-            try
-            {
-                Response resp = receive_server_response(socket_guard.get());
-                if (resp.code_ == 0)
+                std::vector<std::pair<std::string, std::string>> cmds;
+                cmds.reserve(pipeline_batch_size);
+                for (int j = 0; j < pipeline_batch_size && index < count_per_thread; ++j, ++index)
                 {
-                    std::cerr << "Thread " << tid << ": op " << i << " failed: " << resp.error_msg_ << std::endl;
+                    std::string cmd = "set mt_key_" + std::to_string(tid) + "_" + std::to_string(index) +
+                                      " mt_value_" + std::to_string(index);
+                    cmds.emplace_back("cmd_" + std::to_string(index), cmd);
                 }
+                Request req = Request::createBatchCommand(generate_random_string(16), cmds, auth_key);
+                if (!send_data(socket_guard.get(), req.serialize()))
+                {
+                    std::cerr << "Thread " << tid << ": pipeline send failed at index " << index << std::endl;
+                    break;
+                }
+                try
+                {
+                    std::string raw_body = receive_raw_body(socket_guard.get());
+                    size_t offset = 0;
+                    auto batch_res = deserializeBatchResponse(raw_body.data(), offset);
+                    for (const auto &kv : batch_res.second)
+                    {
+                        if (!kv.second.is_success())
+                        {
+                            std::cerr << "Thread " << tid << ": sub " << kv.first << " failed: "
+                                      << kv.second.error_msg_ << std::endl;
+                        }
+                    }
+                }
+                catch (const std::exception &e)
+                {
+                    std::cerr << "Thread " << tid << ": pipeline recv exception: " << e.what() << std::endl;
+                    break;
+                }
+                done = index;
             }
-            catch (...)
-            {
-                std::cerr << "Thread " << tid << ": exception at op " << i << std::endl;
-                break;
-            }
-            ++done;
         }
+        else
+        {
+            for (int i = 0; i < count_per_thread; ++i)
+            {
+                std::string cmd = "set mt_key_" + std::to_string(tid) + "_" + std::to_string(i) +
+                                  " mt_value_" + std::to_string(i);
+                Request req = Request::createCommand(generate_random_string(16), cmd, auth_key);
+
+                if (!send_data(socket_guard.get(), req.serialize()))
+                {
+                    std::cerr << "Thread " << tid << ": send failed at op " << i << std::endl;
+                    break;
+                }
+                try
+                {
+                    Response resp = receive_server_response(socket_guard.get());
+                    if (resp.code_ == 0)
+                    {
+                        std::cerr << "Thread " << tid << ": op " << i << " failed: " << resp.error_msg_ << std::endl;
+                    }
+                }
+                catch (...)
+                {
+                    std::cerr << "Thread " << tid << ": exception at op " << i << std::endl;
+                    break;
+                }
+                ++done;
+            }
+        }
+
         auto end = std::chrono::high_resolution_clock::now();
         std::chrono::duration<double> diff = end - start;
 
@@ -583,7 +633,18 @@ int main(int argc, char *argv[])
         else if (strcmp(argv[i], "--pipeline") == 0)
             pipeline_mode = true;
         else if (strcmp(argv[i], "--pipeline-batch") == 0 && i + 1 < argc)
+        {
             pipeline_batch_size = atoi(argv[++i]);
+            if (pipeline_batch_size <= 0)
+            {
+                std::cerr << "Invalid --pipeline-batch value, use default 50" << std::endl;
+                pipeline_batch_size = 50;
+            }
+        }
+        else
+        {
+            std::cerr << "Unknown argument: " << argv[i] << std::endl;
+        }
     }
 
 #ifdef _WIN32
@@ -601,7 +662,12 @@ int main(int argc, char *argv[])
               << " items per type." << std::endl;
     if (pipeline_mode)
     {
-        std::cout << "Pipeline mode: ON, batch size = " << pipeline_batch_size << std::endl;
+        std::cout << "Pipeline mode: ON, batch size = " << pipeline_batch_size
+                  << " (using BATCH_COMMAND)" << std::endl;
+    }
+    else
+    {
+        std::cout << "Pipeline mode: OFF (using single COMMAND per request)" << std::endl;
     }
     std::cout << std::endl;
 
@@ -747,7 +813,8 @@ int main(int argc, char *argv[])
     // 多连接（多线程）吞吐量测试（可选）
     if (!skip_multi_thread && multi_threads > 0)
     {
-        run_multi_thread_throughput(host, port, password, multi_threads, count);
+        run_multi_thread_throughput(host, port, password, multi_threads, count,
+                                    pipeline_mode, pipeline_batch_size);
     }
 
     std::cout << "Stress Test Complete." << std::endl;

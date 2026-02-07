@@ -846,6 +846,9 @@ public:
         }
         instance_ = std::unique_ptr<RaftNode>(new RaftNode(root_dir, ip, port, trusted_nodes, max_follower_count, config));
     }
+
+    /// @brief 停止节点
+    void stop() override;
 };
 
 #endif
