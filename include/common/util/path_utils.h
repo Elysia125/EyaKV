@@ -179,18 +179,41 @@ public:
                 full_path += file;
 
                 // 简化路径（处理../ ./ 等），比如 /opt/kvdb/bin/../log → /opt/kvdb/log
+                // 注意：realpath() 要求路径必须实际存在，否则返回 nullptr
+                // 这里我们先尝试解析，如果失败则使用简化的路径拼接（不验证文件是否存在）
                 char resolved_path[PATH_MAX] = {0};
                 char *result = nullptr;
 
 #ifdef _WIN32
                 result = _fullpath(resolved_path, full_path.c_str(), sizeof(resolved_path));
 #else
-                result = realpath(full_path.c_str(), resolved_path);
+                // 对于Linux/macOS，使用realpath需要文件存在
+                // 我们先检查文件/目录是否存在，如果不存在则手动简化路径
+                if (std::filesystem::exists(full_path))
+                {
+                        result = realpath(full_path.c_str(), resolved_path);
+                }
+                else
+                {
+                        // 文件不存在，使用std::filesystem::weakly_canonical来简化路径
+                        // 这不会验证文件是否存在，但会解析..和.
+                        try
+                        {
+                                std::filesystem::path path(full_path);
+                                std::filesystem::path canonical = std::filesystem::weakly_canonical(path);
+                                return canonical.string();
+                        }
+                        catch (const std::filesystem::filesystem_error& e)
+                        {
+                                // 如果weakly_canonical也失败，返回原始路径
+                                return full_path;
+                        }
+                }
 #endif
 
                 if (result == nullptr)
                 {
-                        std::cerr << "PathUtils: Failed to resolve path " << full_path << ", returning original." << std::endl;
+                        // realpath失败，返回简化后的路径但不警告（文件可能不存在是正常的）
                         return full_path;
                 }
 

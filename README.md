@@ -612,3 +612,296 @@ Leader（领导者）
 - **Serializer**：序列化工具
 - **TCPBase/TCPClient/TCPServer**：跨平台 Socket 封装
 - **EyaValue**：值类型封装（支持 String、List、Set、Hash、ZSet）
+
+---
+
+## Linux 常见问题
+
+### Q1: 出现 "PathUtils: Failed to resolve path" 警告？
+
+**现象**：
+```
+PathUtils: Failed to resolve path /home/user/EyaKV/build/conf/eyakv.conf, returning original.
+PathUtils: Failed to resolve path /home/user/EyaKV/build/data/wal/xxx.wal, returning original.
+```
+
+**答案**：这是正常的警告，不影响程序功能。
+
+**原因**：
+- 程序在创建新文件时会先检查路径
+- `realpath()` 函数要求路径必须实际存在才能解析
+- 对于新创建的文件（如WAL文件、Raft元数据文件等），路径解析会失败
+- 程序已正确处理这种情况（使用原始路径），所以不影响功能
+
+**如何减少这些警告**：
+- 可以忽略这些警告，它们不影响功能
+- 这些警告只在文件首次创建或首次运行时出现
+- 程序正常运行后不会再出现这些警告
+- 已在最新代码中修复，使用 `std::filesystem::weakly_canonical()` 来避免此问题
+
+### Q2: 如何设置动态库搜索路径？
+
+**答案**：如果程序启动时提示找不到动态库（.so），可以使用以下方法：
+
+**临时设置**（当前终端有效）：
+```bash
+# Linux
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$(pwd)/build/lib
+
+# macOS
+export DYLD_LIBRARY_PATH=$DYLD_LIBRARY_PATH:$(pwd)/build/lib
+
+# 然后运行程序
+./build/bin/eyakv_server
+```
+
+**永久设置**（添加到 `~/.bashrc` 或 `~/.zshrc`）：
+```bash
+echo 'export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/home/xiao/EyaKV/build/lib' >> ~/.bashrc
+source ~/.bashrc
+```
+
+**系统级设置**（需要sudo权限）：
+```bash
+# 创建软链接到系统库目录
+sudo ln -s $(pwd)/build/lib/libeyakv_*.so /usr/local/lib/
+
+# 更新动态库缓存
+sudo ldconfig
+```
+
+### Q3: 编译时出现 "error: 'readlink' was not declared"？
+
+**答案**：这是因为缺少必要的头文件。
+
+**解决方法**：
+```bash
+# Ubuntu/Debian
+sudo apt-get install build-essential libc6-dev
+
+# Fedora/RHEL
+sudo dnf install gcc-c++ glibc-devel
+
+# Arch Linux
+sudo pacman -S base-devel
+```
+
+如果问题依然存在，确保代码中正确包含了 `<unistd.h>` 头文件（path_utils.h已包含）。
+
+### Q4: 程序崩溃或出现 Segmentation Fault？
+
+**答案**：常见原因和解决方法：
+
+**1. 动态库未找到**：
+```bash
+# 检查是否能找到所有依赖的库
+ldd ./build/bin/eyakv_server
+
+# 如果显示 "not found"，使用Q2的方法设置LD_LIBRARY_PATH
+```
+
+**2. 文件权限问题**：
+```bash
+# 确保数据目录有写权限
+chmod -R 755 build/data
+chmod -R 755 build/logs
+```
+
+**3. 使用GDB调试**：
+```bash
+# 编译Debug版本
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build --config Debug
+
+# 使用GDB运行
+gdb ./build/bin/eyakv_server
+(gdb) run
+# 程序崩溃后
+(gdb) bt  # 查看调用栈
+(gdb) info locals  # 查看局部变量
+```
+
+**4. 检查系统资源限制**：
+```bash
+# 查看最大文件描述符数量
+ulimit -n
+
+# 如果太小，可以增加
+ulimit -n 65535
+
+# 永久设置（添加到 ~/.bashrc）
+echo "ulimit -n 65535" >> ~/.bashrc
+```
+
+### Q5: 如何在Linux后台运行服务器？
+
+**答案**：使用以下方法：
+
+**方法1：使用 nohup**
+```bash
+nohup ./build/bin/eyakv_server > server.log 2>&1 &
+
+# 查看进程
+ps aux | grep eyakv_server
+
+# 查看日志
+tail -f server.log
+
+# 停止服务
+kill <PID>
+```
+
+**方法2：使用 screen/tmux**
+```bash
+# 使用screen
+screen -S eyakv
+./build/bin/eyakv_server
+# 按 Ctrl+A, D 分离会话
+
+# 重新连接
+screen -r eyakv
+
+# 或使用tmux
+tmux new -s eyakv
+./build/bin/eyakv_server
+# 按 Ctrl+B, D 分离会话
+tmux attach -t eyakv
+```
+
+**方法3：使用 systemd（生产环境推荐）**
+```bash
+# 创建服务文件
+sudo vim /etc/systemd/system/eyakv.service
+```
+
+服务文件内容：
+```ini
+[Unit]
+Description=EyaKV Server
+After=network.target
+
+[Service]
+Type=simple
+User=xiao
+WorkingDirectory=/home/xiao/EyaKV
+ExecStart=/home/xiao/EyaKV/build/bin/eyakv_server
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+启动服务：
+```bash
+sudo systemctl daemon-reload
+sudo systemctl start eyakv
+sudo systemctl enable eyakv  # 开机自启
+sudo systemctl status eyakv
+sudo journalctl -u eyakv -f  # 查看日志
+```
+
+### Q6: 如何查看日志和调试？
+
+**答案**：
+
+**查看日志文件**：
+```bash
+# 查看最新日志
+tail -f build/logs/info.log
+
+# 查看错误日志
+tail -f build/logs/warning.log
+tail -f build/logs/error.log
+
+# 查看所有日志
+ls -lh build/logs/
+```
+
+**使用 strace 跟踪系统调用**：
+```bash
+# 跟踪系统调用和信号
+strace -o trace.log ./build/bin/eyakv_server
+
+# 只跟踪文件操作
+strace -e trace=open,openat,read,write ./build/bin/eyakv_server
+```
+
+**使用 ltrace 跟踪库函数调用**：
+```bash
+sudo apt-get install ltrace
+ltrace ./build/bin/eyakv_server
+```
+
+### Q7: Linux下文件描述符耗尽？
+
+**答案**：
+
+**查看当前进程打开的文件描述符**：
+```bash
+# 查看进程PID
+ps aux | grep eyakv_server
+
+# 查看该进程打开的文件描述符数量
+ls /proc/<PID>/fd | wc -l
+
+# 查看每个文件描述符的详情
+ls -l /proc/<PID>/fd
+```
+
+**增加系统限制**：
+```bash
+# 查看当前限制
+ulimit -n
+
+# 临时增加
+ulimit -n 65535
+
+# 永久设置（编辑 /etc/security/limits.conf）
+sudo vim /etc/security/limits.conf
+
+# 添加以下行
+* soft nofile 65535
+* hard nofile 65535
+```
+
+**程序内配置**：
+```bash
+# 通过环境变量设置最大连接数
+export EYAKV_MAX_CONNECTIONS=1000
+./build/bin/eyakv_server
+```
+
+### Q8: 如何在不同端口启动多个实例？
+
+**答案**：
+
+```bash
+# 实例1（默认端口）
+./build/bin/eyakv_server
+
+# 实例2（指定端口）
+export EYAKV_PORT=5211
+export EYAKV_RAFT_PORT=5212
+./build/bin/eyakv_server
+
+# 实例3（指定数据目录）
+export EYAKV_PORT=5212
+export EYAKV_RAFT_PORT=5213
+export EYAKV_DATA_DIR=/home/xiao/EyaKV/data/node3
+./build/bin/eyakv_server
+```
+
+或者使用不同的配置文件：
+```bash
+# 创建配置文件
+cat > conf/node2.conf << EOF
+port=5211
+raft_port=5212
+data_dir=/home/xiao/EyaKV/data/node2
+EOF
+
+# 使用配置文件启动
+export EYAKV_CONFIG_PATH=conf/node2.conf
+./build/bin/eyakv_server
+```
