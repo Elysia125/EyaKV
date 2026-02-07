@@ -227,7 +227,9 @@ cmake --build build --config Release --target eyakv_server
 ```
 
 编译成功后，可执行文件位于：`build/bin/`
-动态库文件（.dll）位于：`build/bin/`（Windows）或 `build/lib/`（Linux/macOS）
+动态库文件：
+- **Windows**: `.dll` 文件位于 `build/bin/`
+- **Linux/macOS**: `.so` 文件位于 `build/lib/`
 ### 配置说明
 
 EyaKV 支持通过配置文件、环境变量和编译选项进行配置。
@@ -263,15 +265,15 @@ cmake --build build --config Release
 编译完成后，可以通过以下方式验证编译选项是否正确应用：
 
 ```bash
-# Linux/macOS
-ls -lh build/bin/*.dll build/bin/eyakv*
+# Linux/macOS（检查 .so 文件）
+ls -lh build/lib/*.so build/bin/eyakv*
 
-# Windows
+# Windows（检查 .dll 文件）
 dir build\bin\*.dll
 dir build\bin\eyakv*.exe
 ```
 
-如果DLL文件大小在1-2MB范围内，说明最小体积优化已生效。如果文件大小超过10MB，可能需要重新配置CMake。
+如果动态库文件（.so 或 .dll）大小在1-2MB范围内，说明最小体积优化已生效。如果文件大小超过10MB，可能需要重新配置CMake。
 
 #### 配置文件
 
@@ -728,7 +730,7 @@ cmake --build build --config Release --clean-first
 
 | 平台 | 命令 |
 |------|------|
-| Linux/macOS | `ls -lh build/bin/eyakv*.dll` |
+| Linux/macOS | `ls -lh build/lib/eyakv*.so` |
 | Windows | `dir build\bin\*.dll` |
 
 **预期大小**：
@@ -805,16 +807,30 @@ cmake --build build --config Release -- /maxcpucount  # Windows
 cmake --build build --config Release --parallel 4
 ```
 
-### Q7: 编译后的程序无法运行，提示找不到DLL？
+### Q7: 编译后的程序无法运行，提示找不到动态库？
 
-**A**: Windows系统需要确保DLL文件在可执行文件目录或系统PATH中：
+**A**: 
 
+**Windows系统**（.dll）：
 ```cmd
 # 方法1：将DLL复制到exe所在目录（推荐）
-copy build\bin\*.dll build\bin\eyakv_server.exe 所在目录
+copy build\bin\*.dll build\bin\
 
 # 方法2：将DLL所在目录添加到PATH
 set PATH=%PATH%;e:\TinyKV\build\bin
+```
+
+**Linux/macOS系统**（.so）：
+```bash
+# 方法1：设置LD_LIBRARY_PATH（Linux）
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$(pwd)/build/lib
+
+# 方法2：设置DYLD_LIBRARY_PATH（macOS）
+export DYLD_LIBRARY_PATH=$DYLD_LIBRARY_PATH:$(pwd)/build/lib
+
+# 方法3：创建软链接到系统库目录
+sudo ln -s $(pwd)/build/lib/libeyakv_*.so /usr/local/lib/
+sudo ldconfig  # Linux
 ```
 
 ### Q8: 如何切换到Debug模式进行调试？
