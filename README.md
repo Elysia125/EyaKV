@@ -120,6 +120,28 @@ choco install mingw
 
 ### 编译项目
 
+#### 通用编译说明
+
+**重要提示**：为了保证编译产物的大小最优，建议使用以下CMake配置选项：
+- `-DCMAKE_BUILD_TYPE=Release`：使用Release模式编译
+- `-DEYAKV_MINIMAL_SIZE=ON`：启用最小体积优化（默认已开启）
+
+**编译命令格式（推荐）**：
+```bash
+# 配置并编译（推荐，一步完成）
+cmake -S <源码目录> -B <构建目录> -DCMAKE_BUILD_TYPE=Release -DEYAKV_MINIMAL_SIZE=ON
+cmake --build <构建目录> --config Release
+```
+
+**两步编译命令**：
+```bash
+# 第一步：配置CMake
+cmake -S <源码目录> -B <构建目录> -DCMAKE_BUILD_TYPE=Release -DEYAKV_MINIMAL_SIZE=ON
+
+# 第二步：编译项目
+cmake --build <构建目录> --config Release
+```
+
 #### Linux / macOS
 
 ```bash
@@ -127,19 +149,18 @@ choco install mingw
 git clone https://github.com/Elysia125/EyaKV.git
 cd EyaKV
 
-# 2. 创建构建目录
-mkdir -p build
-cd build
+# 2. 配置并编译（推荐方式，一步完成）
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DEYAKV_MINIMAL_SIZE=ON
+cmake --build build --config Release
 
-# 3. 配置 CMake（使用 Ninja 可加速）
-cmake .. -G Ninja
+# 或使用 Ninja（更快的构建工具）
+# cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DEYAKV_MINIMAL_SIZE=ON
+# cmake --build build --config Release
 
-# 4. 编译项目
-ninja
-
-# 或使用 Unix Makefiles
-# cmake ..
-# make -j$(nproc)
+# 如果分两步操作：
+# cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DEYAKV_MINIMAL_SIZE=ON
+# cd build
+# cmake --build . --config Release
 ```
 
 #### Windows（使用 Visual Studio）
@@ -149,17 +170,21 @@ ninja
 git clone https://github.com/Elysia125/EyaKV.git
 cd EyaKV
 
-:: 2. 打开 "Developer Command Prompt for VS 2019"
+:: 2. 配置并编译（推荐方式，一步完成）
+cmake -S . -B build -G "Visual Studio 16 2019" -A x64 -DCMAKE_BUILD_TYPE=Release -DEYAKV_MINIMAL_SIZE=ON
+cmake --build build --config Release
 
-:: 3. 创建构建目录
-mkdir build
-cd build
+:: 或使用分步操作：
+:: 第一步：配置CMake
+:: cmake -S . -B build -G "Visual Studio 16 2019" -A x64 -DCMAKE_BUILD_TYPE=Release -DEYAKV_MINIMAL_SIZE=ON
 
-:: 4. 配置 CMake
-cmake .. -G "Visual Studio 16 2019" -A x64
+:: 第二步：编译项目
+:: cmake --build build --config Release
 
-:: 5. 编译项目
-cmake --build . --config Release
+:: 第三步（可选）：仅编译特定模块
+:: cmake --build build --config Release --target eyakv_storage
+:: cmake --build build --config Release --target eyakv_raft
+:: cmake --build build --config Release --target eyakv_network
 ```
 
 #### Windows（使用 MinGW）
@@ -169,21 +194,84 @@ cmake --build . --config Release
 git clone https://github.com/your-username/EyaKV.git
 cd EyaKV
 
-:: 2. 创建构建目录
-mkdir build
-cd build
+:: 2. 配置并编译（推荐方式，一步完成）
+cmake -S . -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release -DEYAKV_MINIMAL_SIZE=ON
+cmake --build build --config Release
 
-:: 3. 配置 CMake
-cmake .. -G "MinGW Makefiles"
+:: 或分步操作：
+:: cmake -S . -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release -DEYAKV_MINIMAL_SIZE=ON
+:: cd build
+:: mingw32-make -j
+```
 
-:: 4. 编译项目
-mingw32-make -j
+#### 重新编译和清理
+
+**清理构建产物**：
+```bash
+# 清理所有编译产物（保留CMake配置）
+cmake --build build --config Release --clean-first
+
+# 或手动删除build目录后重新配置
+rm -rf build
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DEYAKV_MINIMAL_SIZE=ON
+cmake --build build --config Release
+```
+
+**增量编译**：
+```bash
+# 只编译修改过的文件
+cmake --build build --config Release
+
+# 编译特定目标
+cmake --build build --config Release --target eyakv_server
 ```
 
 编译成功后，可执行文件位于：`build/bin/`
+动态库文件（.dll）位于：`build/bin/`（Windows）或 `build/lib/`（Linux/macOS）
 ### 配置说明
 
-EyaKV 支持通过配置文件或环境变量进行配置。
+EyaKV 支持通过配置文件、环境变量和编译选项进行配置。
+
+#### 编译优化配置
+
+**推荐编译选项**：
+
+为了获得最优的DLL/可执行文件大小，建议在编译时使用以下选项：
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DEYAKV_MINIMAL_SIZE=ON
+cmake --build build --config Release
+```
+
+**编译选项说明**：
+
+| 选项 | 说明 | 默认值 |
+|------|------|--------|
+| `CMAKE_BUILD_TYPE` | 编译模式：`Debug`（包含调试信息，文件大）或 `Release`（优化版本） | Release |
+| `EYAKV_MINIMAL_SIZE` | 是否启用最小体积优化（移除调试符号，使用体积优先编译） | ON |
+
+**编译选项对文件大小的影响**：
+
+| 配置 | DLL大小范围 | 说明 |
+|------|-------------|------|
+| Debug 模式 | 10-30 MB | 包含完整调试符号，适合调试 |
+| Release 模式（默认优化） | 8-10 MB | 基本优化，适合生产环境 |
+| Release 模式 + `EYAKV_MINIMAL_SIZE=ON` | 1-2 MB | 最小体积，推荐用于部署 |
+
+**验证编译选项**：
+
+编译完成后，可以通过以下方式验证编译选项是否正确应用：
+
+```bash
+# Linux/macOS
+ls -lh build/bin/*.dll build/bin/eyakv*
+
+# Windows
+dir build\bin\*.dll
+dir build\bin\eyakv*.exe
+```
+
+如果DLL文件大小在1-2MB范围内，说明最小体积优化已生效。如果文件大小超过10MB，可能需要重新配置CMake。
 
 #### 配置文件
 
@@ -612,3 +700,136 @@ Leader（领导者）
 - **Serializer**：序列化工具
 - **TCPBase/TCPClient/TCPServer**：跨平台 Socket 封装
 - **EyaValue**：值类型封装（支持 String、List、Set、Hash、ZSet）
+
+---
+
+## 常见问题解答（FAQ）
+
+### Q1: 为什么编译后的DLL文件这么大？
+
+**A**: 如果DLL文件大小超过10MB，可能是因为：
+
+1. **使用了Debug模式**：Debug模式包含完整的调试符号，文件会很大（10-30MB）
+2. **CMake缓存未更新**：修改了CMakeLists.txt但未重新配置
+3. **未启用最小体积优化**：`EYAKV_MINIMAL_SIZE` 选项未开启
+
+**解决方法**：
+```bash
+# 重新配置CMake缓存
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DEYAKV_MINIMAL_SIZE=ON
+
+# 清理并重新编译
+cmake --build build --config Release --clean-first
+```
+
+### Q2: 如何验证编译选项是否正确应用？
+
+**A**: 检查编译后的文件大小：
+
+| 平台 | 命令 |
+|------|------|
+| Linux/macOS | `ls -lh build/bin/eyakv*.dll` |
+| Windows | `dir build\bin\*.dll` |
+
+**预期大小**：
+- Release + `EYAKV_MINIMAL_SIZE=ON`：1-2 MB
+- Release（默认）：8-10 MB
+- Debug：10-30 MB
+
+### Q3: CMake配置后修改了源码，但编译产物没有变小？
+
+**A**: CMake缓存可能导致旧的编译选项被保留。需要：
+
+```bash
+# 方案1：清理并重新配置（推荐）
+rm -rf build  # Linux/macOS
+# 或
+rmdir /s /q build  # Windows
+
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DEYAKV_MINIMAL_SIZE=ON
+cmake --build build --config Release
+```
+
+### Q4: 如何只编译某个模块？
+
+**A**: 使用 `--target` 选项：
+
+```bash
+# 只编译存储模块
+cmake --build build --config Release --target eyakv_storage
+
+# 只编译Raft模块
+cmake --build build --config Release --target eyakv_raft
+
+# 只编译网络模块
+cmake --build build --config Release --target eyakv_network
+```
+
+### Q5: 编译时出现链接错误或找不到库？
+
+**A**: 检查以下几点：
+
+1. 确保CMake版本 >= 3.15
+2. 删除build目录后重新配置
+3. 检查网络连接（依赖下载需要网络）
+4. Windows用户确保使用Visual Studio 2019或更高版本
+
+```bash
+# 完全清理后重新构建
+rm -rf build  # Linux/macOS
+# 或
+rmdir /s /q build  # Windows
+
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release
+```
+
+### Q6: 如何加速编译过程？
+
+**A**: 使用以下方法：
+
+1. **使用Ninja生成器**（Linux/macOS）：
+```bash
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release
+```
+
+2. **使用多线程编译**：
+```bash
+cmake --build build --config Release -- -j$(nproc)  # Linux/macOS
+cmake --build build --config Release -- /maxcpucount  # Windows
+```
+
+3. **并行编译多个目标**：
+```bash
+cmake --build build --config Release --parallel 4
+```
+
+### Q7: 编译后的程序无法运行，提示找不到DLL？
+
+**A**: Windows系统需要确保DLL文件在可执行文件目录或系统PATH中：
+
+```cmd
+# 方法1：将DLL复制到exe所在目录（推荐）
+copy build\bin\*.dll build\bin\eyakv_server.exe 所在目录
+
+# 方法2：将DLL所在目录添加到PATH
+set PATH=%PATH%;e:\TinyKV\build\bin
+```
+
+### Q8: 如何切换到Debug模式进行调试？
+
+**A**: 使用Debug模式编译：
+
+```bash
+# 配置为Debug模式
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+
+# 编译
+cmake --build build --config Debug
+
+# 运行调试程序（Windows）
+build\bin\Debug\eyakv_server.exe
+```
+
+**注意**：Debug模式编译产物会大很多（10-30MB），仅用于开发调试。
