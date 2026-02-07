@@ -109,6 +109,7 @@ private:
 };
 #endif
 
+// 通用：读取响应并反序列化为 Response
 Response receive_server_response(socket_t client_socket)
 {
     char head_buffer[HEADER_SIZE];
@@ -139,29 +140,69 @@ Response receive_server_response(socket_t client_socket)
     return response;
 }
 
+// 专门给 batch / pipeline 用：按响应头中的 length 读取原始 body 字符串
+std::string receive_raw_body(socket_t client_socket)
+{
+    char head_buffer[HEADER_SIZE];
+    int recv_len = recv(client_socket, head_buffer, HEADER_SIZE, 0);
+    if (recv_len == 0)
+        throw std::runtime_error("server closed connection");
+    if (recv_len == SOCKET_ERROR_VALUE)
+        throw std::runtime_error("recv header failed: " + socket_error_to_string(GET_SOCKET_ERROR()));
+    if (recv_len != static_cast<int>(HEADER_SIZE))
+        throw std::runtime_error("incomplete header received");
+
+    size_t offset = 0;
+    ProtocolHeader response_header;
+    response_header.deserialize(head_buffer, offset);
+
+    std::string body;
+    if (response_header.length > 0)
+    {
+        body.resize(response_header.length);
+        int total_recv = 0;
+        while (total_recv < static_cast<int>(response_header.length))
+        {
+            recv_len = recv(client_socket, &body[0] + total_recv,
+                            static_cast<int>(response_header.length) - total_recv, 0);
+            if (recv_len == SOCKET_ERROR_VALUE)
+                throw std::runtime_error("recv body failed: " + socket_error_to_string(GET_SOCKET_ERROR()));
+            total_recv += recv_len;
+        }
+    }
+    return body;
+}
+
 bool send_data(socket_t client_socket, const std::string &data)
 {
+    ProtocolHeader header(data.size());
+    std::string rdata = header.serialize() + data;
     int total_sent = 0;
-    int remaining = static_cast<int>(data.size());
+    int remaining = static_cast<int>(rdata.size());
+
     while (remaining > 0)
     {
-        int sent = send(client_socket, data.c_str() + total_sent, remaining, 0);
+        int sent = send(client_socket, rdata.c_str() + total_sent, remaining, 0);
         if (sent == 0)
         {
-            std::cerr << "server closed connection" << std::endl;
+            std::cout << "server closed connection" << std::endl;
             exit(0);
         }
         if (sent == SOCKET_ERROR_VALUE)
+        {
             return false;
+        }
         total_sent += sent;
         remaining -= sent;
     }
+
     return true;
 }
 
 bool authenticate(SocketGuard &socket_guard, const std::string &password, std::string &auth_key)
 {
-    std::string data = serialize_request(RequestType::AUTH, password);
+    Request req=Request::auth(generate_random_string(16),password);
+    std::string data = req.serialize();
     if (!send_data(socket_guard.get(), data))
         return false;
     try
@@ -183,7 +224,7 @@ bool authenticate(SocketGuard &socket_guard, const std::string &password, std::s
     }
 }
 
-// 建立到 TinyKV 的连接并完成握手和认证
+// 建立到 EyaKV 的连接并完成握手和认证
 bool setup_connection(const std::string &host, int port, const std::string &password,
                       SocketGuard &socket_guard, std::string &auth_key)
 {
@@ -257,8 +298,8 @@ void run_benchmark(socket_t sock, const std::string &auth_key, const std::string
     for (int i = 0; i < count; ++i)
     {
         std::string cmd = cmd_gen(i);
-        std::string req = serialize_request(RequestType::COMMAND, cmd, auth_key);
-        if (!send_data(sock, req))
+        Request request = Request::createCommand(generate_random_string(16), cmd, auth_key);
+        if (!send_data(sock, request.serialize()))
             break;
         try
         {
@@ -296,8 +337,8 @@ void run_batch_benchmark(socket_t sock, const std::string &auth_key, const std::
     for (int i = 0; i < batches; ++i)
     {
         std::string cmd = batch_cmd_gen(i * batch_size, batch_size);
-        std::string req = serialize_request(RequestType::COMMAND, cmd, auth_key);
-        if (!send_data(sock, req))
+        Request request = Request::createCommand(generate_random_string(16), cmd, auth_key);
+        if (!send_data(sock, request.serialize()))
             break;
         try
         {
@@ -372,8 +413,9 @@ void run_multi_thread_throughput(const std::string &host, int port, const std::s
         {
             std::string cmd = "set mt_key_" + std::to_string(tid) + "_" + std::to_string(i) +
                               " mt_value_" + std::to_string(i);
-            std::string req = serialize_request(RequestType::COMMAND, cmd, auth_key);
-            if (!send_data(socket_guard.get(), req))
+            Request req = Request::createCommand(generate_random_string(16), cmd, auth_key);
+
+            if (!send_data(socket_guard.get(), req.serialize()))
             {
                 std::cerr << "Thread " << tid << ": send failed at op " << i << std::endl;
                 break;
@@ -436,6 +478,71 @@ void run_multi_thread_throughput(const std::string &host, int port, const std::s
               << std::endl;
 }
 
+// 使用 BATCH_COMMAND + pipeline 的压测
+void run_pipeline_benchmark(socket_t sock, const std::string &auth_key,
+                            const std::string &type_name, int count, int batch_size,
+                            std::function<std::string(int)> cmd_gen)
+{
+    std::cout << "Starting " << type_name << " Pipeline Benchmark (" << count
+              << " items, pipeline batch size " << batch_size << ")..." << std::endl;
+    auto start = std::chrono::high_resolution_clock::now();
+
+    int sent_ops = 0;
+    int index = 0;
+    while (index < count)
+    {
+        std::vector<std::pair<std::string, std::string>> cmds;
+        cmds.reserve(batch_size);
+        for (int j = 0; j < batch_size && index < count; ++j, ++index)
+        {
+            std::string cmd = cmd_gen(index);
+            cmds.emplace_back("cmd_" + std::to_string(index), cmd);
+        }
+
+        Request req = Request::createBatchCommand(generate_random_string(16), cmds, auth_key);
+        if (!send_data(sock, req.serialize()))
+        {
+            std::cerr << "Pipeline send failed." << std::endl;
+            break;
+        }
+
+        try
+        {
+            // 按响应头长度读取 body 字符串，并用 deserializeBatchResponse 反序列化
+            std::string raw_body = receive_raw_body(sock);
+            size_t offset = 0;
+            auto batch_vec = deserializeBatchResponse(raw_body.data(), offset);
+            // 遍历子响应，检查是否有错误
+            for (const auto &kv : batch_vec.second)
+            {
+                if (!kv.second.is_success())
+                {
+                    std::cerr << "Sub command " << kv.first << " failed: "
+                              << kv.second.error_msg_ << std::endl;
+                }
+            }
+        }
+        catch (const std::exception &e)
+        {
+            std::cerr << "Exception in pipeline batch: " << e.what() << std::endl;
+            break;
+        }
+
+        sent_ops = index;
+        if (sent_ops > 0 && sent_ops % 10000 == 0)
+            std::cout << "Pipeline processed " << sent_ops << "..." << std::endl;
+    }
+
+    auto end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> diff = end - start;
+    double ops_per_sec = sent_ops > 0 && diff.count() > 0.0 ? sent_ops / diff.count() : 0.0;
+
+    std::cout << "Finished " << type_name << " (Pipeline): " << std::fixed
+              << std::setprecision(2) << ops_per_sec << " items/sec (" << diff.count()
+              << "s total)" << std::endl
+              << std::endl;
+}
+
 int main(int argc, char *argv[])
 {
     std::string host = DEFAULT_HOST;
@@ -443,11 +550,13 @@ int main(int argc, char *argv[])
     std::string password = "";
     int count = 50000;
     bool batch_mode = false;
-    int multi_threads = 0;      // 多线程压测时的线程数
-    int conn_limit_max = 0;     // 连接数上限测试的最大尝试连接数
+    int multi_threads = 0;          // 多线程压测时的线程数
+    int conn_limit_max = 0;         // 连接数上限测试的最大尝试连接数
     bool skip_single_test = false;  // 跳过单连接多数据结构测试
     bool skip_conn_limit = false;   // 跳过连接数上限测试
-    bool skip_multi_thread = false;  // 跳过多线程吞吐量测试
+    bool skip_multi_thread = false; // 跳过多线程吞吐量测试
+    bool pipeline_mode = false;     // 是否启用 pipeline
+    int pipeline_batch_size = 50;   // pipeline 批次大小
 
     for (int i = 1; i < argc; i++)
     {
@@ -471,6 +580,10 @@ int main(int argc, char *argv[])
             skip_conn_limit = true;
         else if (strcmp(argv[i], "--skip-multi-thread") == 0)
             skip_multi_thread = true;
+        else if (strcmp(argv[i], "--pipeline") == 0)
+            pipeline_mode = true;
+        else if (strcmp(argv[i], "--pipeline-batch") == 0 && i + 1 < argc)
+            pipeline_batch_size = atoi(argv[++i]);
     }
 
 #ifdef _WIN32
@@ -484,27 +597,49 @@ int main(int argc, char *argv[])
     if (!setup_connection(host, port, password, socket_guard, auth_key))
         return 1;
 
-    std::cout << "Authenticated. Starting Stress Test with " << count << " items per type." << std::endl
-              << std::endl;
+    std::cout << "Authenticated. Starting Stress Test with " << count
+              << " items per type." << std::endl;
+    if (pipeline_mode)
+    {
+        std::cout << "Pipeline mode: ON, batch size = " << pipeline_batch_size << std::endl;
+    }
+    std::cout << std::endl;
 
     // 单连接多数据结构测试
     if (!skip_single_test)
     {
         // String Test
-        run_benchmark(socket_guard.get(), auth_key, "String SET", count, [](int i)
-                      { return "set key1_" + std::to_string(i) + " value_" + std::to_string(i); });
-
-        // List Test (Batching push 1 item effectively behaves like single, but if we want large list we can push 1 by 1)
-        // To properly stress test list structure size, we push to the same LIST.
-        if (batch_mode)
+        if (pipeline_mode)
         {
-            // Implement batch mode logic if needed, but for now let's stick to simple insertions or batched insertions
-            // Batch Push to List
-            run_batch_benchmark(socket_guard.get(), auth_key, "List RPUSH (Batch)", count, 100, [](int start, int size)
+            run_pipeline_benchmark(socket_guard.get(), auth_key, "String SET (Pipeline)", count,
+                                   pipeline_batch_size,
+                                   [](int i)
+                                   { return "set key1_" + std::to_string(i) + " value_" + std::to_string(i); });
+        }
+        else
+        {
+            run_benchmark(socket_guard.get(), auth_key, "String SET", count, [](int i)
+                          { return "set key1_" + std::to_string(i) + " value_" + std::to_string(i); });
+        }
+
+        // List Test
+        if (pipeline_mode)
+        {
+            run_pipeline_benchmark(socket_guard.get(), auth_key, "List RPUSH (Pipeline)", count,
+                                   pipeline_batch_size,
+                                   [](int i)
+                                   { return "rpush big_list v_" + std::to_string(i); });
+        }
+        else if (batch_mode)
+        {
+            run_batch_benchmark(socket_guard.get(), auth_key, "List RPUSH (Batch)", count, 100,
+                                [](int start, int size)
                                 {
-                 std::string cmd = "rpush big_list";
-                 for(int i=0; i<size; ++i) cmd += " v_" + std::to_string(start + i);
-                 return cmd; });
+                                    std::string cmd = "rpush big_list";
+                                    for (int i = 0; i < size; ++i)
+                                        cmd += " v_" + std::to_string(start + i);
+                                    return cmd;
+                                });
         }
         else
         {
@@ -513,13 +648,23 @@ int main(int argc, char *argv[])
         }
 
         // Set Test
-        if (batch_mode)
+        if (pipeline_mode)
         {
-            run_batch_benchmark(socket_guard.get(), auth_key, "Set SADD (Batch)", count, 100, [](int start, int size)
+            run_pipeline_benchmark(socket_guard.get(), auth_key, "Set SADD (Pipeline)", count,
+                                   pipeline_batch_size,
+                                   [](int i)
+                                   { return "sadd big_set m_" + std::to_string(i); });
+        }
+        else if (batch_mode)
+        {
+            run_batch_benchmark(socket_guard.get(), auth_key, "Set SADD (Batch)", count, 100,
+                                [](int start, int size)
                                 {
-                 std::string cmd = "sadd big_set";
-                 for(int i=0; i<size; ++i) cmd += " m_" + std::to_string(start + i);
-                 return cmd; });
+                                    std::string cmd = "sadd big_set";
+                                    for (int i = 0; i < size; ++i)
+                                        cmd += " m_" + std::to_string(start + i);
+                                    return cmd;
+                                });
         }
         else
         {
@@ -528,35 +673,63 @@ int main(int argc, char *argv[])
         }
 
         // ZSet Test
-        // Adding randomly distributed scores for skiplist testing
-        if (batch_mode)
+        if (pipeline_mode)
         {
-            run_batch_benchmark(socket_guard.get(), auth_key, "ZSet ZADD (Batch)", count, 100, [](int start, int size)
+            run_pipeline_benchmark(socket_guard.get(), auth_key, "ZSet ZADD (Pipeline)", count,
+                                   pipeline_batch_size,
+                                   [](int i)
+                                   {
+                                       return "zadd big_zset " + std::to_string(i * 1.5) +
+                                              " m_" + std::to_string(i);
+                                   });
+        }
+        else if (batch_mode)
+        {
+            run_batch_benchmark(socket_guard.get(), auth_key, "ZSet ZADD (Batch)", count, 100,
+                                [](int start, int size)
                                 {
-                 std::string cmd = "zadd big_zset";
-                 for(int i=0; i<size; ++i) {
-                    cmd += " " + std::to_string((start+i) * 1.5) + " m_" + std::to_string(start + i); // score member
-                 }
-                 return cmd; });
+                                    std::string cmd = "zadd big_zset";
+                                    for (int i = 0; i < size; ++i)
+                                    {
+                                        cmd += " " + std::to_string((start + i) * 1.5) +
+                                               " m_" + std::to_string(start + i); // score member
+                                    }
+                                    return cmd;
+                                });
         }
         else
         {
             run_benchmark(socket_guard.get(), auth_key, "ZSet ZADD", count, [](int i)
                           {
-                // member score
-                return "zadd big_zset " + std::to_string(i * 1.5) + " m_" + std::to_string(i); });
+                              // member score
+                              return "zadd big_zset " + std::to_string(i * 1.5) + " m_" + std::to_string(i);
+                          });
         }
 
         // Hash Test
-        if (batch_mode)
+        if (pipeline_mode)
         {
-            run_batch_benchmark(socket_guard.get(), auth_key, "Hash HSET (Batch)", count, 100, [](int start, int size)
+            run_pipeline_benchmark(socket_guard.get(), auth_key, "Hash HSET (Pipeline)", count,
+                                   pipeline_batch_size,
+                                   [](int i)
+                                   {
+                                       return "hset big_hash f_" + std::to_string(i) + " v_" +
+                                              std::to_string(i);
+                                   });
+        }
+        else if (batch_mode)
+        {
+            run_batch_benchmark(socket_guard.get(), auth_key, "Hash HSET (Batch)", count, 100,
+                                [](int start, int size)
                                 {
-                 std::string cmd = "hset big_hash";
-                 for(int i=0; i<size; ++i) {
-                    cmd += " f_" + std::to_string(start+i) + " v_" + std::to_string(start + i);
-                 }
-                 return cmd; });
+                                    std::string cmd = "hset big_hash";
+                                    for (int i = 0; i < size; ++i)
+                                    {
+                                        cmd += " f_" + std::to_string(start + i) +
+                                               " v_" + std::to_string(start + i);
+                                    }
+                                    return cmd;
+                                });
         }
         else
         {

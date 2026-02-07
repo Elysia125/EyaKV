@@ -1,6 +1,8 @@
 #ifndef UTILS_H
 #define UTILS_H
 #include <string>
+#include <random>
+#include <vector>
 /**
  * @brief 计算 std::string 的实际大小
  */

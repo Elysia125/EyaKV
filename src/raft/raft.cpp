@@ -63,7 +63,8 @@ RaftNode::RaftNode(const std::string root_dir,
       result_cache_(config.result_cache_capacity),
       thread_pool_(nullptr),
       config_(config),
-      rng_(std::chrono::steady_clock::now().time_since_epoch().count())
+      rng_(std::chrono::steady_clock::now().time_since_epoch().count()),
+      need_majority_confirm_(config.need_majority_confirm)
 {
     std::string node_id = ip + ":" + std::to_string(port);
     LOG_INFO("[Node=%s] Initializing RaftNode", node_id.c_str());
@@ -943,14 +944,14 @@ void RaftNode::send_append_entries_nolock(const socket_t &sock)
         std::set<LogEntry> entry_set(entries.begin(), entries.end());
         msg = RaftMessage::append_entries_with_data(term, prev_log_index, prev_log_term, entry_set, leader_commit);
 
-        LOG_INFO("[Node=%s][Role=Leader][Term=%u] LOG REPLICATION: Socket=%d, PrevIndex=%u, PrevTerm=%u, Entries=%zu, LeaderCommit=%u",
-                 node_id.c_str(),
-                 term,
-                 sock,
-                 prev_log_index,
-                 prev_log_term,
-                 entries.size(),
-                 leader_commit);
+        LOG_DEBUG("[Node=%s][Role=Leader][Term=%u] LOG REPLICATION: Socket=%d, PrevIndex=%u, PrevTerm=%u, Entries=%zu, LeaderCommit=%u",
+                  node_id.c_str(),
+                  term,
+                  sock,
+                  prev_log_index,
+                  prev_log_term,
+                  entries.size(),
+                  leader_commit);
     }
     else
     {
@@ -1450,7 +1451,70 @@ void RaftNode::try_commit_entries()
         apply_committed_entries_nolock();
     }
 }
+void RaftNode::commit_entries()
+{
+    std::string node_id = get_node_id();
+    // 需持有锁以读取 match_index_ 等状态
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
 
+    uint32_t commit_index = persistent_state_.commit_index_.load();
+    uint32_t last_log_index = log_array_->get_last_index();
+
+    // 如果没有新日志，不需要计算
+    if (commit_index >= last_log_index)
+        return;
+
+    LOG_DEBUG("[Node=%s][Role=Leader][Term=%u] Checking commit eligibility: CommitIndex=%u, LastLogIndex=%u",
+              node_id.c_str(),
+              persistent_state_.current_term_.load(),
+              commit_index,
+              last_log_index);
+    persistent_state_.commit_index_.store(last_log_index);
+    uint32_t last_applied = persistent_state_.last_applied_.load();
+    while (last_applied < last_log_index)
+    {
+        last_applied++;
+        LogEntry entry;
+        Response result;
+        if (log_array_->get(last_applied, entry))
+        {
+            // 执行实际的业务逻辑
+            result = execute_command(entry.cmd);
+            result.request_id_ = entry.request_id;
+            // 只记录摘要信息，避免打印完整命令（特别是批量命令会非常长）
+            size_t cmd_len = entry.cmd.length();
+            std::string cmd_summary = cmd_len > 100 ? entry.cmd.substr(0, 100) + "..." : entry.cmd;
+            LOG_DEBUG("[Node=%s] Applied log index %u (term %u), cmd_len=%zu, cmd: %s",
+                      node_id.c_str(),
+                      last_applied,
+                      entry.term,
+                      cmd_len,
+                      cmd_summary.c_str());
+            // 只在错误时打印详细信息
+            if (result.code_ == 0)
+            {
+                LOG_ERROR("[Node=%s] Execute command %s error at index %u: %s", node_id.c_str(), cmd_summary.c_str(), last_applied, result.error_msg_.c_str());
+            }
+            // 如果是写操作且带有 request_id，将结果写入缓存
+            if (!entry.request_id.empty())
+            {
+                // 插入缓存
+                result_cache_.put(entry.request_id, result);
+                LOG_DEBUG("[Node=%s] Cached result for request_id: %s",
+                          node_id.c_str(),
+                          entry.request_id.c_str());
+            }
+        }
+        else
+        {
+            LOG_ERROR("[Node=%s] Failed to read log at apply index %u", node_id.c_str(), last_applied);
+            result = Response::error("log read error");
+        }
+    }
+    persistent_state_.last_applied_.store(last_log_index);
+    save_persistent_state();
+    LOG_INFO("[Node=%s] Log application completed: LastApplied=%u", node_id.c_str(), last_applied);
+}
 void RaftNode::notify_request_applied(uint32_t index, const Response &response)
 {
     std::lock_guard<std::mutex> lock(pending_requests_mutex_);
@@ -1883,8 +1947,11 @@ void RaftNode::handle_append_entries_response(const RaftMessage &msg, const sock
                   old_match,
                   new_match);
 
-        // 检查是否可以提交
-        try_commit_entries();
+        if (need_majority_confirm_)
+        {
+            // 检查是否可以提交
+            try_commit_entries();
+        }
     }
     else
     {
@@ -2047,15 +2114,14 @@ Response RaftNode::submit_command(const std::string &request_id, const std::stri
     }
     else
     {
-        bool is_exec = false;
-        response = handle_raft_command(command_parts, is_exec);
-        if (is_exec)
-        {
-            response.request_id_ = request_id;
-            return response;
-        }
         uint8_t operation = stringToOperationType(command_parts[0]);
-        if (isReadOperation(operation))
+        if (isRaftOperation(operation))
+        {
+            command_parts.erase(command_parts.begin());
+            response = handle_raft_command(operation, command_parts);
+            response.request_id_ = request_id;
+        }
+        else if (isReadOperation(operation))
         {
             // 读操作直接执行
             command_parts.erase(command_parts.begin());
@@ -2069,8 +2135,6 @@ Response RaftNode::submit_command(const std::string &request_id, const std::stri
         }
         else
         {
-            std::shared_ptr<PendingRequest> pending_req = std::make_shared<PendingRequest>();
-
             // 1. 本地写入日志 (Phase 1 Start)
             LogEntry entry;
             entry.term = persistent_state_.current_term_.load();
@@ -2097,198 +2161,423 @@ Response RaftNode::submit_command(const std::string &request_id, const std::stri
                 LOG_DEBUG("Leader appended log index %u, term %u, waiting for commit...", log_index, entry.term);
             }
 
-            // 2. 注册等待通知
+            if (need_majority_confirm_)
             {
-                std::lock_guard<std::mutex> pending_lock(pending_requests_mutex_);
-                pending_requests_[log_index] = pending_req;
-            }
-
-            // 3. 广播给 Followers
-            {
-                std::shared_lock<std::shared_mutex> sock_lock(follower_sockets_mutex_);
-                for (const auto &sock : follower_sockets_)
+                // 需要多数确认
+                // 2. 注册等待通知
+                std::shared_ptr<PendingRequest> pending_req = std::make_shared<PendingRequest>();
                 {
-                    send_append_entries(sock);
+                    std::lock_guard<std::mutex> pending_lock(pending_requests_mutex_);
+                    pending_requests_[log_index] = pending_req;
                 }
-            }
-            // 4. 先调用一次try_commit_entries
-            try_commit_entries();
-            // 5. 阻塞等待结果
-            std::future_status status = pending_req->future.wait_for(
-                std::chrono::milliseconds(config_.submit_command_timeout_ms));
-            if (status == std::future_status::ready)
-            {
-                return pending_req->future.get();
+
+                // 3. 广播给 Followers
+                {
+                    std::shared_lock<std::shared_mutex> sock_lock(follower_sockets_mutex_);
+                    for (const auto &sock : follower_sockets_)
+                    {
+                        send_append_entries(sock);
+                    }
+                }
+                // 4. 先调用一次try_commit_entries
+                try_commit_entries();
+                // 5. 阻塞等待结果
+                std::future_status status = pending_req->future.wait_for(
+                    std::chrono::milliseconds(config_.submit_command_timeout_ms));
+                if (status == std::future_status::ready)
+                {
+                    return pending_req->future.get();
+                }
+                else
+                {
+                    // 超时处理
+                    std::lock_guard<std::mutex> pending_lock(pending_requests_mutex_);
+                    pending_requests_.erase(log_index);
+                    response = Response::error("command timeout");
+                    response.request_id_ = request_id;
+                }
             }
             else
             {
-                // 超时处理
-                std::lock_guard<std::mutex> pending_lock(pending_requests_mutex_);
-                pending_requests_.erase(log_index);
-                response = Response::error("command timeout");
-                response.request_id_ = request_id;
+                // 不需要多数确认，直接提交，entry由心跳发送
+                commit_entries();
+                // 从LRU缓存中获取结果
+                if (result_cache_.get(request_id, response))
+                {
+                    LOG_INFO("Request %s executed successfully", request_id.c_str());
+                    return response;
+                }
+                else
+                {
+                    response = Response::error("execute failed");
+                    response.request_id_ = request_id;
+                }
             }
         }
     }
     return response;
 }
 
-Response RaftNode::handle_raft_command(const std::vector<std::string> &command_parts, bool &is_exec)
+std::vector<std::pair<std::string, Response>> RaftNode::submit_batch_command(const std::vector<std::pair<std::string, std::string>> &commands)
 {
-    Response response;
-    is_exec = true;
-    auto &leader_address_ = persistent_state_.cluster_metadata_.current_leader_;
-    if (command_parts[0] == "get_master")
+    if (commands.empty())
     {
-        if (command_parts.size() == 1)
-        {
-            // 返回当前leader地址
-            if (leader_address_.is_null() || role_ == RaftRole::Leader)
+        return {};
+    }
+    LOG_INFO("Submitting batch command with %u commands", commands.size());
+    std::unordered_map<std::string, Response> responses;
+    responses.reserve(commands.size());
+    // 预先设置超时响应
+    for (const auto &[id, cmd] : commands)
+    {
+        responses.emplace(id, Response::error("timeout", id));
+    }
+    std::future<void> future = std::async(std::launch::async, [this, &commands, &responses]()
+                                          {
+                                              std::vector<std::pair<std::string, std::string>> current_cmds;
+                                              current_cmds.reserve(commands.size());
+                                              bool is_read=false;
+                                              for (int i=0;i<commands.size();i++)
+                                              {
+                                                const auto&[id,cmd]=commands[i];
+                                                if(cmd.empty()){
+                                                    responses[id] = Response::error("command cannot be empty",id);
+                                                    continue;
+                                                }
+                                                if(id.empty()){
+                                                    responses[id] = Response::error("request_id cannot be empty",id);
+                                                    continue;
+                                                }
+                                                Response cached_resp;
+                                                if (result_cache_.get(id, cached_resp))
+                                                {
+                                                    responses[id] = cached_resp;
+                                                    continue;
+                                                }
+                                                auto parts = split_by_spacer(cmd);
+                                                uint8_t type=stringToOperationType(parts[0]);
+                                                if(isReadOperation(type)){
+                                                    if(is_read){
+                                                        current_cmds.emplace_back(id,cmd);
+                                                    }else if(current_cmds.empty()){
+                                                        current_cmds.emplace_back(id,cmd);
+                                                        is_read = true;
+                                                    }else{
+                                                        execute_batch_write_command(current_cmds,responses,config_.batch_command_timeout_ms);
+                                                        current_cmds.clear();
+                                                    }
+                                                }else if(isRaftOperation(type)){
+                                                    if(!current_cmds.empty()){
+                                                        if(is_read){
+                                                            execute_batch_read_command(current_cmds, responses, config_.batch_command_timeout_ms);
+                                                        }else{
+                                                            execute_batch_write_command(current_cmds, responses, config_.batch_command_timeout_ms);
+                                                        }
+                                                        current_cmds.clear();
+                                                    }
+                                                    parts.erase(parts.begin());
+                                                    responses[id] = handle_raft_command(type, parts);
+                                                }else if(isWriteOperation(type)){
+                                                    if(!is_read){
+                                                        current_cmds.emplace_back(id,cmd);
+                                                    }else if(current_cmds.empty()){
+                                                        current_cmds.emplace_back(id,cmd);
+                                                        is_read = false;
+                                                    }else{
+                                                        execute_batch_read_command(current_cmds,responses,config_.batch_command_timeout_ms);
+                                                        current_cmds.clear();
+                                                    }
+                                                }else{
+                                                    responses[id] = Response::error("invalid command",id);
+                                                }
+                                              } 
+                                              if(!current_cmds.empty()){
+                                                  if(is_read){
+                                                      execute_batch_read_command(current_cmds, responses, config_.batch_command_timeout_ms);
+                                                  }else{
+                                                      execute_batch_write_command(current_cmds, responses, config_.batch_command_timeout_ms);
+                                                  }
+                                              } });
+
+    future.wait_for(std::chrono::milliseconds(config_.batch_command_timeout_ms));
+    std::vector<std::pair<std::string, Response>> result;
+    result.reserve(commands.size());
+    for (const auto &[id, cmd] : commands)
+    {
+        auto res = responses[id];
+        res.request_id_ = id;
+        result.emplace_back(id, std::move(res));
+    }
+    return result;
+}
+void RaftNode::execute_batch_read_command(const std::vector<std::pair<std::string, std::string>> &cmds, std::unordered_map<std::string, Response> &responses, uint32_t timeout_ms)
+{
+    if (cmds.empty())
+    {
+        return;
+    }
+    // 并行执行读操作
+    std::vector<std::future<Response>> futures;
+    futures.reserve(cmds.size());
+
+    for (const auto &[key, cmd] : cmds)
+    {
+        futures.push_back(std::async(std::launch::async, [this, key, cmd]()
+                                     {
+            try
             {
-                response = Response::error("no leader elected");
+                Response res = execute_command(cmd);
+                res.request_id_ = key;
+                return res;
+            }
+            catch (const std::exception &e)
+            {
+                LOG_WARN("execute_batch_read_command: key=%s failed: %s", key.c_str(), e.what());
+                return Response::error(std::string("execute failed: ") + e.what());
+            } }));
+    }
+
+    // 收集所有读操作的结果
+    for (size_t i = 0; i < cmds.size(); ++i)
+    {
+        try
+        {
+            auto status = futures[i].wait_for(std::chrono::milliseconds(timeout_ms));
+            if (status == std::future_status::ready)
+            {
+                responses[cmds[i].first] = std::move(futures[i].get());
             }
             else
             {
-                response = Response::success(leader_address_.to_string());
+                for (size_t j = i; j < cmds.size(); j++)
+                {
+                    responses[cmds[j].first] = Response::error("timeout", cmds[j].first);
+                }
             }
         }
-        else
+        catch (const std::exception &e)
         {
-            response = Response::error(std::string("invalid command"));
+            LOG_ERROR("execute_batch_read_command: collect result failed: %s", e.what());
+            responses[cmds[i].first] = Response::error(std::string("execute failed: ") + e.what(), cmds[i].first);
         }
     }
-    else if (command_parts[0] == "set_master")
+}
+
+void RaftNode::execute_batch_write_command(const std::vector<std::pair<std::string, std::string>> &cmds, std::unordered_map<std::string, Response> &responses, uint32_t timeout_ms)
+{
+    if (cmds.empty())
     {
-        if (command_parts.size() == 3)
+        return;
+    }
+    if (role_ != RaftRole::Leader)
+    {
+        for (const auto &[key, cmd] : cmds)
         {
-            // 设置当前leader地址（仅限leader节点调用）
-            if (role_ != RaftRole::Leader)
+            responses[key] = Response::redirect(persistent_state_.cluster_metadata_.current_leader_.to_string(), key);
+        }
+        return;
+    }
+    if (!persistent_state_.cluster_metadata_.current_leader_.is_null())
+    {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        persistent_state_.cluster_metadata_.current_leader_ = Address();
+        save_persistent_state();
+    }
+    std::vector<LogEntry> entries;
+    entries.reserve(cmds.size());
+    for (const auto &[request_id, cmd] : cmds)
+    {
+        LogEntry entry;
+        entry.term = persistent_state_.current_term_.load();
+        entry.cmd = cmd;
+        entry.timestamp = get_current_timestamp();
+        entry.command_type = 0;
+        entry.request_id = request_id;
+        entries.push_back(entry);
+    }
+    log_array_->batch_append(entries);
+    if (need_majority_confirm_)
+    {
+        // 需要多数确认
+        // 注册等待通知
+        std::vector<std::shared_ptr<PendingRequest>> pending_reqs;
+        pending_reqs.reserve(entries.size());
+        {
+            std::lock_guard<std::mutex> pending_lock(pending_requests_mutex_);
+            for (const auto &entry : entries)
             {
-                response = Response::error("only leader can set master");
-                return response;
+                std::shared_ptr<PendingRequest> pending_req = std::make_shared<PendingRequest>();
+                pending_requests_[entry.index] = pending_req;
+                pending_reqs.push_back(pending_req);
             }
-            std::string host = command_parts[1];
-            int port = std::stoi(command_parts[2]);
-            // 连接到主节点
-            Address address(host, port);
-            if (!persistent_state_.cluster_metadata_.current_leader_.is_null() && address == persistent_state_.cluster_metadata_.current_leader_)
+        }
+
+        // 广播给 Followers
+        {
+            std::shared_lock<std::shared_mutex> sock_lock(follower_sockets_mutex_);
+            for (const auto &sock : follower_sockets_)
             {
-                if (follower_client_ != nullptr)
-                {
-                    response = Response::success("already connected to master");
-                }
-                else
-                {
-                    response = Response::success(become_follower(address, persistent_state_.current_term_.load(), true, persistent_state_.commit_index_.load()));
-                }
+                send_append_entries(sock);
+            }
+        }
+        // 先调用一次try_commit_entries
+        try_commit_entries();
+        // 阻塞等待结果
+        for (int i = 0; i < pending_reqs.size(); ++i)
+        {
+            auto &pending_req = pending_reqs[i];
+            if (pending_req->future.wait_for(std::chrono::milliseconds(timeout_ms)) == std::future_status::ready)
+            {
+                responses[entries[i].request_id] = std::move(pending_req->future.get());
             }
             else
             {
-                // 清空现有的数据，避免脏数据
-                static Storage *storage_ = Storage::get_instance();
-                // 设置log_array_为空
-                log_array_ = nullptr;
-                if (!storage_->clear_and_backup_data())
+                for (int j = i; j < pending_reqs.size(); ++j)
                 {
-                    log_array_ = std::make_unique<RaftLogArray>(
-                        PathUtils::combine_path(root_dir_, ".raft"),
-                        config_.log_config);
-                    response = Response::error("clear data failed");
-                    return response;
+                    responses[entries[j].request_id] = Response::error("timeout", entries[j].request_id);
+                    pending_requests_.erase(entries[j].index);
                 }
-                log_array_ = std::make_unique<RaftLogArray>(
-                    PathUtils::combine_path(root_dir_, ".raft"),
-                    config_.log_config);
-                {
-                    std::lock_guard<std::recursive_mutex> lock(mutex_);
-                    persistent_state_.last_applied_.store(0);
-                    persistent_state_.commit_index_.store(0);
-                    persistent_state_.current_term_.store(0);
-                    persistent_state_.log_snapshot_index_.store(0);
-                    save_persistent_state();
-                }
-                response = Response::success(become_follower(address));
+                break;
             }
-        }
-        else
-        {
-            response = Response::error(std::string("invalid command"));
-        }
-    }
-    else if (command_parts[0] == "remove_node")
-    {
-        if (command_parts.size() == 3)
-        {
-            if (role_ != RaftRole::Leader)
-            {
-                response = Response::error("only leader can remove node");
-                return response;
-            }
-            std::string ip = command_parts[1];
-            uint16_t port = std::stoi(command_parts[2]);
-            // 从集群移除节点
-            Address node_to_remove(ip, port);
-            if (remove_node(node_to_remove))
-            {
-                response = Response::success(std::string("node removed"));
-            }
-            else
-            {
-                response = Response::error(std::string("node not found"));
-            }
-        }
-        else
-        {
-            response = Response::error(std::string("invalid command"));
-        }
-    }
-    else if (command_parts[0] == "list_nodes")
-    {
-        if (command_parts.size() == 1)
-        {
-            auto &cluster_nodes_ = persistent_state_.cluster_metadata_.cluster_nodes_;
-            std::string nodes_str;
-            for (const auto &node : cluster_nodes_)
-            {
-                if (node.is_null())
-                {
-                    continue;
-                }
-                if (!nodes_str.empty())
-                    nodes_str += ",";
-                nodes_str += node.to_string();
-            }
-            if (!nodes_str.empty())
-                nodes_str += ",";
-            nodes_str += "current_node";
-            response = Response::success(nodes_str);
-        }
-        else
-        {
-            response = Response::error(std::string("invalid command"));
-        }
-    }
-    else if (command_parts[0] == "get_status")
-    {
-        if (command_parts.size() == 1)
-        {
-            std::string status = "role=" + std::to_string(static_cast<int>(role_.load())) +
-                                 ",term=" + std::to_string(persistent_state_.current_term_.load()) +
-                                 ",leader=" + leader_address_.to_string() +
-                                 ",nodes=" + std::to_string(persistent_state_.cluster_metadata_.cluster_nodes_.size() + 1) +
-                                 ",commit=" + std::to_string(persistent_state_.commit_index_.load()) +
-                                 ",applied=" + std::to_string(persistent_state_.last_applied_.load()) +
-                                 ",writable=" + std::to_string(writable_);
-            response = Response::success(status);
-        }
-        else
-        {
-            response = Response::error(std::string("invalid command"));
         }
     }
     else
     {
-        is_exec = false;
+        commit_entries();
+        for (const auto &[request_id, cmd] : cmds)
+        {
+            Response response;
+            if (result_cache_.get(request_id, response))
+            {
+                responses[request_id] = response;
+            }
+            else
+            {
+                responses[request_id] = Response::error("execute failed", request_id);
+            }
+        }
+    }
+}
+Response RaftNode::handle_raft_command(uint8_t type, const std::vector<std::string> &args)
+{
+    Response response;
+    auto &leader_address_ = persistent_state_.cluster_metadata_.current_leader_;
+    if (type == OperationType::kGetMaster && args.empty())
+    {
+        // 返回当前leader地址
+        if (leader_address_.is_null() || role_ == RaftRole::Leader)
+        {
+            response = Response::error("no leader elected");
+        }
+        else
+        {
+            response = Response::success(leader_address_.to_string());
+        }
+    }
+    else if (type == OperationType::kSetMaster && args.size() == 2)
+    {
+        // 设置当前leader地址（仅限leader节点调用）
+        if (role_ != RaftRole::Leader)
+        {
+            response = Response::error("only leader can set master");
+            return response;
+        }
+        std::string host = args[0];
+        int port = std::stoi(args[1]);
+        // 连接到主节点
+        Address address(host, port);
+        if (!persistent_state_.cluster_metadata_.current_leader_.is_null() && address == persistent_state_.cluster_metadata_.current_leader_)
+        {
+            if (follower_client_ != nullptr)
+            {
+                response = Response::success("already connected to master");
+            }
+            else
+            {
+                response = Response::success(become_follower(address, persistent_state_.current_term_.load(), true, persistent_state_.commit_index_.load()));
+            }
+        }
+        else
+        {
+            // 清空现有的数据，避免脏数据
+            static Storage *storage_ = Storage::get_instance();
+            // 设置log_array_为空
+            log_array_ = nullptr;
+            if (!storage_->clear_and_backup_data())
+            {
+                log_array_ = std::make_unique<RaftLogArray>(
+                    PathUtils::combine_path(root_dir_, ".raft"),
+                    config_.log_config);
+                response = Response::error("clear data failed");
+                return response;
+            }
+            log_array_ = std::make_unique<RaftLogArray>(
+                PathUtils::combine_path(root_dir_, ".raft"),
+                config_.log_config);
+            {
+                std::lock_guard<std::recursive_mutex> lock(mutex_);
+                persistent_state_.last_applied_.store(0);
+                persistent_state_.commit_index_.store(0);
+                persistent_state_.current_term_.store(0);
+                persistent_state_.log_snapshot_index_.store(0);
+                save_persistent_state();
+            }
+            response = Response::success(become_follower(address));
+        }
+    }
+    else if (type == OperationType::kRemoveNode && args.size() == 2)
+    {
+        if (role_ != RaftRole::Leader)
+        {
+            response = Response::error("only leader can remove node");
+            return response;
+        }
+        std::string ip = args[0];
+        uint16_t port = std::stoi(args[1]);
+        // 从集群移除节点
+        Address node_to_remove(ip, port);
+        if (remove_node(node_to_remove))
+        {
+            response = Response::success(std::string("node removed"));
+        }
+        else
+        {
+            response = Response::error(std::string("node not found"));
+        }
+    }
+    else if (type == OperationType::kListNodes && args.empty())
+    {
+        auto &cluster_nodes_ = persistent_state_.cluster_metadata_.cluster_nodes_;
+        std::string nodes_str;
+        for (const auto &node : cluster_nodes_)
+        {
+            if (node.is_null())
+            {
+                continue;
+            }
+            if (!nodes_str.empty())
+                nodes_str += ",";
+            nodes_str += node.to_string();
+        }
+        if (!nodes_str.empty())
+            nodes_str += ",";
+        nodes_str += "current_node";
+        response = Response::success(nodes_str);
+    }
+    else if (type == OperationType::kGetStatus && args.empty())
+    {
+        std::string status = "role=" + std::to_string(static_cast<int>(role_.load())) +
+                             ",term=" + std::to_string(persistent_state_.current_term_.load()) +
+                             ",leader=" + leader_address_.to_string() +
+                             ",nodes=" + std::to_string(persistent_state_.cluster_metadata_.cluster_nodes_.size() + 1) +
+                             ",commit=" + std::to_string(persistent_state_.commit_index_.load()) +
+                             ",applied=" + std::to_string(persistent_state_.last_applied_.load()) +
+                             ",writable=" + std::to_string(writable_);
+        response = Response::success(status);
+    }
+    else
+    {
+        response = Response::error(std::string("invalid command"));
     }
     return response;
 }
@@ -2623,4 +2912,27 @@ void RaftNode::handle_new_master(const RaftMessage &msg, const socket_t &client_
 
     // 转换为Follower并连接新Leader
     become_follower(data.leader_address, leader_term, true, persistent_state_.commit_index_.load());
+}
+
+void RaftNode::stop()
+{
+    election_thread_running_.store(false);
+    election_cv_.notify_all();
+    if (election_thread_.joinable())
+    {
+        election_thread_.join();
+    }
+    heartbeat_thread_running_.store(false);
+    heartbeat_cv_.notify_all();
+    if (heartbeat_thread_.joinable())
+    {
+        heartbeat_thread_.join();
+    }
+    follower_client_thread_running_.store(false);
+    follower_client_cv_.notify_all();
+    if (follower_client_thread_.joinable())
+    {
+        follower_client_thread_.join();
+    }
+    TCPServer::stop();
 }

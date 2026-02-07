@@ -159,28 +159,35 @@ Response receive_server_response(socket_t client_socket)
 // Helper: Send
 bool send_data(socket_t client_socket, const std::string &data)
 {
+    ProtocolHeader header(data.size());
+    std::string rdata = header.serialize() + data;
     int total_sent = 0;
-    int remaining = static_cast<int>(data.size());
+    int remaining = static_cast<int>(rdata.size());
+
     while (remaining > 0)
     {
-        int sent = send(client_socket, data.c_str() + total_sent, remaining, 0);
+        int sent = send(client_socket, rdata.c_str() + total_sent, remaining, 0);
         if (sent == 0)
         {
-            std::cerr << "server closed connection" << std::endl;
+            std::cout << "server closed connection" << std::endl;
             exit(0);
         }
         if (sent == SOCKET_ERROR_VALUE)
+        {
             return false;
+        }
         total_sent += sent;
         remaining -= sent;
     }
+
     return true;
 }
 
 // Helper: Auth
 bool authenticate(SocketGuard &socket_guard, const std::string &password, std::string &auth_key)
 {
-    std::string data = serialize_request(RequestType::AUTH, password);
+    Request request = Request::auth(generate_random_string(16), password);
+    std::string data = request.serialize();
     if (!send_data(socket_guard.get(), data))
         return false;
 
@@ -209,8 +216,8 @@ bool authenticate(SocketGuard &socket_guard, const std::string &password, std::s
 void run_op(socket_t sock, const std::string &auth_key, const std::string &desc, const std::string &cmd)
 {
     std::cout << "[TEST] " << desc << " | Command: " << cmd << std::endl;
-    std::string req = serialize_request(RequestType::COMMAND, cmd, auth_key);
-    if (!send_data(sock, req))
+    Request request = Request::createCommand(generate_random_string(16), cmd, auth_key);
+    if (!send_data(sock, request.serialize()))
     {
         std::cout << "-> SEND FAILED" << std::endl;
         return;

@@ -26,9 +26,11 @@ void EyaKVStarter::print_banner()
 
     // 启用虚拟终端序列以支持 ANSI 颜色代码
     HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
-    if (hConsole != INVALID_HANDLE_VALUE) {
+    if (hConsole != INVALID_HANDLE_VALUE)
+    {
         DWORD mode = 0;
-        if (GetConsoleMode(hConsole, &mode)) {
+        if (GetConsoleMode(hConsole, &mode))
+        {
             mode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
             SetConsoleMode(hConsole, mode);
         }
@@ -250,10 +252,18 @@ void EyaKVStarter::initialize_raft()
     {
         raft_cfg.snapshot_chunk_size_bytes = static_cast<size_t>(std::stoull(*v));
     }
+    if (auto v = config.get_config(RAFT_NEED_MAJORITY_CONFIRM_KEY))
+    {
+        raft_cfg.need_majority_confirm = std::stoi(*v);
+    }
     // 结果缓存
     if (auto v = config.get_config(RAFT_RESULT_CACHE_CAPACITY_KEY))
     {
         raft_cfg.result_cache_capacity = static_cast<size_t>(std::stoull(*v));
+    }
+    if (auto v = config.get_config(BATCH_TIMEOUT_KEY))
+    {
+        raft_cfg.batch_command_timeout_ms = std::stoul(*v);
     }
     // 线程池
     ThreadPool::Config tp_cfg = raft_cfg.thread_pool_config;

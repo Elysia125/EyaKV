@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-TinyKV 全面压力测试脚本
+EyaKV 全面压力测试脚本
 
 功能：
 1. 采集当前操作系统、CPU、内存等信息
-2. 调用 TinyKV 的 C++ 压测程序 stress_test（apps/client/stress_test.cpp 编译产物）
+2. 调用 EyaKV 的 C++ 压测程序 stress_test（apps/client/stress_test.cpp 编译产物）
 3. 解析 stress_test 输出中每一类测试结果
 4. 生成一份可读性较高的 Markdown 压测报告
 
@@ -78,6 +78,8 @@ def run_stress_test(
     password: str,
     count: int,
     batch: bool,
+    pipeline: bool = False,
+    pipeline_batch: Optional[int] = None,
     threads: Optional[int] = None,
     conn_limit: Optional[int] = None,
     skip_single: bool = False,
@@ -102,6 +104,10 @@ def run_stress_test(
         cmd.extend(["-a", password])
     if batch:
         cmd.append("--batch")
+    if pipeline:
+        cmd.append("--pipeline")
+        if pipeline_batch is not None and pipeline_batch > 0:
+            cmd.extend(["--pipeline-batch", str(pipeline_batch)])
     if conn_limit is not None and conn_limit > 0:
         cmd.extend(["--conn-limit", str(conn_limit)])
     if threads is not None and threads > 0:
@@ -131,8 +137,9 @@ def run_stress_test(
 
     # 解析单连接多数据结构吞吐结果行：
     #   Finished String SET: 12345.67 ops/sec (4.05s total)
+    #   Finished String SET (Pipeline): 12345.67 items/sec (4.05s total)
     single_pattern = re.compile(
-        r"Finished\s+(.+?):\s+([0-9.]+)\s+ops/sec\s+\(([0-9.]+)s\s+total\)",
+        r"Finished\s+(.+?):\s+([0-9.]+)\s+(?:ops|items)/sec\s+\(([0-9.]+)s\s+total\)",
         re.IGNORECASE,
     )
 
@@ -143,13 +150,15 @@ def run_stress_test(
             test_name = m.group(1).strip()
             ops_per_sec = float(m.group(2))
             duration_s = float(m.group(3))
+            is_pipeline = "(Pipeline)" in test_name
             single_results.append(
                 {
                     "test_name": test_name,
                     "total_ops": count,
                     "duration_seconds": duration_s,
                     "ops_per_sec": ops_per_sec,
-                    "batch_mode": batch,
+                    "batch_mode": batch and not is_pipeline,
+                    "pipeline_mode": is_pipeline,
                 }
             )
 
@@ -223,6 +232,8 @@ def format_markdown_report(
         f"- 认证密码: {'(已设置)' if test_config.get('password') else '(未设置)'}",
         f"- 单次测试操作数: {test_config.get('count')}",
         f"- Batch 模式: {test_config.get('batch')}",
+        f"- Pipeline 模式: {test_config.get('pipeline')}",
+        f"- Pipeline 批次大小: {test_config.get('pipeline_batch') if test_config.get('pipeline_batch') else '(默认: 50)'}",
         f"- stress_test 路径: {test_config.get('stress_bin')}",
     ]
 
@@ -252,17 +263,18 @@ def format_markdown_report(
     # 单连接多数据结构测试结果表
     parsed_results: List[Dict[str, Any]] = stress_result.get("parsed_results", [])
     if parsed_results:
-        header_single = "| 测试项 | 总操作数 | 总耗时(s) | 吞吐量(ops/s) | Batch 模式 |\n"
-        header_single += "| --- | --- | --- | --- | --- |\n"
+        header_single = "| 测试项 | 总操作数 | 总耗时(s) | 吞吐量(ops/s) | Batch 模式 | Pipeline 模式 |\n"
+        header_single += "| --- | --- | --- | --- | --- | --- |\n"
         rows_single = []
         for r in parsed_results:
             rows_single.append(
-                "| {name} | {ops} | {dur:.3f} | {qps:.2f} | {batch} |".format(
+                "| {name} | {ops} | {dur:.3f} | {qps:.2f} | {batch} | {pipeline} |".format(
                     name=r["test_name"],
                     ops=r["total_ops"],
                     dur=r["duration_seconds"],
                     qps=r["ops_per_sec"],
-                    batch="是" if r["batch_mode"] else "否",
+                    batch="是" if r.get("batch_mode", False) else "否",
+                    pipeline="是" if r.get("pipeline_mode", False) else "否",
                 )
             )
         single_table = header_single + "\n".join(rows_single)
@@ -298,7 +310,7 @@ def format_markdown_report(
     raw_stdout = stress_result.get("stdout", "")
     raw_stderr = stress_result.get("stderr", "")
 
-    md = f"""# TinyKV 压力测试报告
+    md = f"""# EyaKV 压力测试报告
 
 生成时间：{now}
 
@@ -363,15 +375,15 @@ def format_markdown_report(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="TinyKV 全面压力测试脚本（调用 C++ stress_test 并生成 Markdown 报告）"
+        description="EyaKV 全面压力测试脚本（调用 C++ stress_test 并生成 Markdown 报告）"
     )
     parser.add_argument(
         "--stress-bin",
         default="build/bin/stress_test" if os.name != "nt" else "build/bin/stress_test.exe",
         help="stress_test 可执行文件路径（默认：build/bin/stress_test[.exe]）",
     )
-    parser.add_argument("--host", default="127.0.0.1", help="TinyKV 服务器地址")
-    parser.add_argument("--port", type=int, default=5210, help="TinyKV 服务器端口")
+    parser.add_argument("--host", default="127.0.0.1", help="EyaKV 服务器地址")
+    parser.add_argument("--port", type=int, default=5210, help="EyaKV 服务器端口")
     parser.add_argument("--password", default="", help="认证密码")
     parser.add_argument(
         "--count", type=int, default=50000, help="每类数据结构的操作数量（传给 -n）"
@@ -380,6 +392,17 @@ def parse_args() -> argparse.Namespace:
         "--batch",
         action="store_true",
         help="是否启用 stress_test 的 --batch 模式（批量命令）",
+    )
+    parser.add_argument(
+        "--pipeline",
+        action="store_true",
+        help="是否启用 pipeline 模式（批量命令，使用 BATCH_COMMAND）",
+    )
+    parser.add_argument(
+        "--pipeline-batch",
+        type=int,
+        default=None,
+        help="pipeline 模式的批次大小（默认：50）",
     )
     parser.add_argument(
         "--threads",
@@ -469,6 +492,8 @@ def main() -> None:
         "password": args.password,
         "count": args.count,
         "batch": args.batch,
+        "pipeline": args.pipeline,
+        "pipeline_batch": args.pipeline_batch,
         "stress_bin": args.stress_bin,
         "threads": args.threads,
         "conn_limit": args.conn_limit,
@@ -501,6 +526,8 @@ def main() -> None:
         password=args.password,
         count=args.count,
         batch=args.batch,
+        pipeline=args.pipeline,
+        pipeline_batch=args.pipeline_batch,
         threads=args.threads,
         conn_limit=args.conn_limit,
         skip_single=skip_single,

@@ -182,6 +182,9 @@ private:
 
     std::atomic<size_t> size_{0};  /// 当前存储的元素总数（原子变量，线程安全）
 
+    /// 分片读写锁（保护SkipList的并发访问）
+    mutable std::vector<std::unique_ptr<std::shared_mutex>> shard_locks_;
+
     std::vector<std::unique_ptr<BloomFilter>> bloom_filters_; /// 分片布隆过滤器
     mutable std::vector<std::unique_ptr<std::shared_mutex>> bloom_locks_; /// 分片布隆过滤器锁
 };

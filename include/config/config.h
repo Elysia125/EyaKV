@@ -7,7 +7,7 @@
 #include <optional>
 #include <thread>
 #include "common/util/path_utils.h"
-
+#include "common/util/string_utils.h"
 #undef ERROR // 避免与 LogLevel 枚举冲突
 
 // 日志级别枚举
@@ -66,8 +66,8 @@ enum class SSTableMergeStrategy
 #define DEFAULT_RAFT_FOLLOWER_IDLE_WAIT 1000     // Follower 空闲等待(ms)
 #define DEFAULT_RAFT_JOIN_MAX_RETRIES 3          // Follower 加入集群最大重试次数
 #define DEFAULT_RAFT_REQUEST_VOTE_TIMEOUT 200    // RequestVote 响应超时(ms)
-#define DEFAULT_RAFT_SUBMIT_TIMEOUT 2000         // 提交命令等待超时(ms)
-#define DEFAULT_RAFT_APPEND_BATCH 100            // 单次 AppendEntries 最大日志条数
+#define DEFAULT_RAFT_SUBMIT_TIMEOUT 500          // 提交命令等待超时(ms) - 优化: 从2000ms降低到500ms
+#define DEFAULT_RAFT_APPEND_BATCH 1000           // 单次 AppendEntries 最大日志条数 - 优化: 从100增加到1000
 #define DEFAULT_RAFT_SNAPSHOT_CHUNK (64 * 1024)  // 快照 chunk 大小(bytes)
 #define DEFAULT_RAFT_RESULT_CACHE_CAPACITY 10000 // 结果缓存容量
 #define DEFAULT_RAFT_THREADPOOL_WORKERS 4        // Raft 内部线程池工作线程数
@@ -78,6 +78,11 @@ enum class SSTableMergeStrategy
 #define DEFAULT_RAFT_LOG_TRUNCATE_RATIO 0.25         // 截断比例
 #define DEFAULT_RAFT_WAL_FILENAME "raft_wal.log"     // WAL 文件名
 #define DEFAULT_RAFT_INDEX_FILENAME "raft_index.idx" // 索引文件名
+#define DEFAULT_RAFT_NEED_MAJORITY_CONFIRM false     // 是否需要多数确认
+
+#define DEFAULT_BATCH_SIZE 100               // 默认批量大小
+#define DEFAULT_BATCH_TIMEOUT_MS 500          // 批量超时（ms）
+#define DEFAULT_BATCH_MAX_SIZE_BYTES 1048576 // 单批次最大1MB
 
 #define PORT_KEY "port"
 #define IP_KEY "ip"
@@ -131,6 +136,11 @@ enum class SSTableMergeStrategy
 #define RAFT_LOG_TRUNCATE_RATIO_KEY "raft_log_truncate_ratio"
 #define RAFT_WAL_FILENAME_KEY "raft_wal_filename"
 #define RAFT_INDEX_FILENAME_KEY "raft_index_filename"
+#define RAFT_NEED_MAJORITY_CONFIRM_KEY "raft_need_majority_confirm"
+
+#define BATCH_SIZE_KEY "batch_size"
+#define BATCH_TIMEOUT_KEY "batch_timeout"
+#define BATCH_MAX_SIZE_KEY "batch_max_size"
 
 class EyaKVConfig
 {
@@ -269,6 +279,11 @@ private:
         config_map_[RAFT_LOG_TRUNCATE_RATIO_KEY] = std::to_string(DEFAULT_RAFT_LOG_TRUNCATE_RATIO);
         config_map_[RAFT_WAL_FILENAME_KEY] = DEFAULT_RAFT_WAL_FILENAME;
         config_map_[RAFT_INDEX_FILENAME_KEY] = DEFAULT_RAFT_INDEX_FILENAME;
+        config_map_[RAFT_NEED_MAJORITY_CONFIRM_KEY] = std::to_string(DEFAULT_RAFT_NEED_MAJORITY_CONFIRM);
+
+        config_map_[BATCH_SIZE_KEY] = std::to_string(DEFAULT_BATCH_SIZE);
+        config_map_[BATCH_TIMEOUT_KEY] = std::to_string(DEFAULT_BATCH_TIMEOUT_MS);
+        config_map_[BATCH_MAX_SIZE_KEY] = std::to_string(DEFAULT_BATCH_MAX_SIZE_BYTES);
     }
 
     void check_config()
@@ -480,20 +495,6 @@ private:
         }
     }
 
-    std::string trim(const std::string &str)
-    {
-        size_t start = 0, end = str.size() - 1;
-        while (start < str.size() && isspace(str[start]))
-        {
-            start++;
-        }
-        while (end > 0 && isspace(str[end]))
-        {
-            end--;
-        }
-        return str.substr(start, end - start + 1);
-    }
-
 public:
     static EyaKVConfig &get_instance()
     {
@@ -577,7 +578,7 @@ inline std::unordered_map<std::string, std::string> EyaKVConfig::init_env_key_ma
         {RAFT_LOG_TRUNCATE_RATIO_KEY, "EYAKV_RAFT_LOG_TRUNCATE_RATIO"},
         {RAFT_WAL_FILENAME_KEY, "EYAKV_RAFT_WAL_FILENAME"},
         {RAFT_INDEX_FILENAME_KEY, "EYAKV_RAFT_INDEX_FILENAME"},
-
+        {RAFT_NEED_MAJORITY_CONFIRM_KEY, "EYAKV_RAFT_NEED_MAJORITY_CONFIRM"},
         // Raft 快照配置
         {RAFT_SNAPSHOT_CHUNK_KEY, "EYAKV_RAFT_SNAPSHOT_CHUNK_SIZE_BYTES"},
         {RAFT_RESULT_CACHE_CAPACITY_KEY, "EYAKV_RAFT_RESULT_CACHE_CAPACITY"},
@@ -586,7 +587,10 @@ inline std::unordered_map<std::string, std::string> EyaKVConfig::init_env_key_ma
         {RAFT_THREADPOOL_WORKERS_KEY, "EYAKV_RAFT_THREADPOOL_WORKERS"},
         {RAFT_THREADPOOL_QUEUE_KEY, "EYAKV_RAFT_THREADPOOL_QUEUE_SIZE"},
         {RAFT_THREADPOOL_WAIT_KEY, "EYAKV_RAFT_THREADPOOL_WAIT_TIMEOUT_MS"},
-    };
+
+        {BATCH_SIZE_KEY, "EYAKV_BATCH_SIZE"},
+        {BATCH_TIMEOUT_KEY, "EYAKV_BATCH_TIMEOUT"},
+        {BATCH_MAX_SIZE_KEY, "EYAKV_BATCH_MAX_SIZE"}};
 }
 
 // 静态成员变量定义

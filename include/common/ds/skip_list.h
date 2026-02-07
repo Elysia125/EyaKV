@@ -4,14 +4,13 @@
 #include <iostream>
 #include <string>
 #include <vector>
-#include <shared_mutex>
 #include <random>
 #include <ctime>
+#include <chrono>
 #include <cstring>
 #include <atomic>
 #include <optional>
 #include <functional>
-#include <mutex>
 #ifdef _WIN32
 #include <winsock2.h>
 #pragma comment(lib, "ws2_32.lib")
@@ -70,10 +69,6 @@ private:
      */
     SkipListNode<K, V> *head_;
 
-    /**
-     * @brief 互斥锁，保证并发安全
-     */
-    mutable std::shared_mutex mutex_;
     /**
      * @brief 当前跳表的元素数量
      */
@@ -334,7 +329,6 @@ public:
      */
     void insert(const K &key, const V &value)
     {
-        std::unique_lock<std::shared_mutex> lock(mutex_);
         size_t new_key_size = calculate_key_size_func_(key);
         size_t new_value_size = calculate_value_size_func_(value);
 
@@ -396,7 +390,6 @@ public:
      */
     V get(const K &key) const
     {
-        std::shared_lock<std::shared_mutex> lock(mutex_);
         SkipListNode<K, V> *current = head_;
         for (int i = current_level_ - 1; i >= 0; i--)
         {
@@ -423,7 +416,6 @@ public:
      */
     V handle_value(const K &key, std::function<V &(V &)> value_handle)
     {
-        std::unique_lock<std::shared_mutex> lock(mutex_);
         SkipListNode<K, V> *current = head_;
         for (int i = current_level_ - 1; i >= 0; i--)
         {
@@ -452,7 +444,6 @@ public:
      */
     bool remove(const K &key)
     {
-        std::unique_lock<std::shared_mutex> lock(mutex_);
         SkipListNode<K, V> *current = head_;
         std::vector<SkipListNode<K, V> *> update(MAX_LEVEL, nullptr);
         for (int i = current_level_ - 1; i >= 0; i--)
@@ -514,7 +505,6 @@ public:
      */
     void clear()
     {
-        std::unique_lock<std::shared_mutex> lock(mutex_);
         SkipListNode<K, V> *current = head_;
         while (current != nullptr)
         {
@@ -537,7 +527,6 @@ public:
      */
     std::vector<std::pair<K, V>> range_by_rank(size_t start_rank, size_t end_rank) const
     {
-        std::shared_lock<std::shared_mutex> lock(mutex_);
         if (start_rank > end_rank)
         {
             return {};
@@ -566,7 +555,6 @@ public:
      */
     std::vector<std::pair<K, V>> range_by_key(const K &min_key, const K &max_key) const
     {
-        std::shared_lock<std::shared_mutex> lock(mutex_);
         if (min_key > max_key)
         {
             return {};
@@ -598,7 +586,6 @@ public:
      */
     size_t remove_range_by_key(const K &min_key, const K &max_key)
     {
-        std::unique_lock<std::shared_mutex> lock(mutex_);
         if (min_key > max_key)
         {
             return 0;
@@ -688,7 +675,6 @@ public:
      */
     std::optional<size_t> rank(const K &key) const
     {
-        std::shared_lock<std::shared_mutex> lock(mutex_);
         size_t rank = 0;
         SkipListNode<K, V> *current = head_->next[0];
         while (current != nullptr && compare_func_(current->key, key) < 0)
@@ -710,7 +696,6 @@ public:
      */
     void for_each(std::function<void(const K &key, const V &value)> callback) const
     {
-        std::shared_lock<std::shared_mutex> lock(mutex_);
         SkipListNode<K, V> *current = head_->next[0];
         while (current != nullptr)
         {
@@ -726,7 +711,6 @@ public:
      */
     std::vector<std::pair<K, V>> get_all_entries() const
     {
-        std::shared_lock<std::shared_mutex> lock(mutex_);
         std::vector<std::pair<K, V>> result;
         SkipListNode<K, V> *current = head_->next[0];
         while (current != nullptr)
@@ -746,7 +730,6 @@ public:
      */
     std::string serialize(std::string (*serialize_key_func)(const K &key), std::string (*serialize_value_func)(const V &value)) const
     {
-        std::shared_lock<std::shared_mutex> lock(mutex_);
         std::string result;
         int current_level = htonl(current_level_);
         uint32_t size = htonl(static_cast<uint32_t>(size_));
@@ -812,7 +795,6 @@ public:
      */
     void print()
     {
-        std::unique_lock<std::shared_mutex> lock(mutex_);
         std::cout << "SkipList current level: " << current_level_ << std::endl;
 
         for (int i = current_level_ - 1; i >= 0; --i)
