@@ -265,12 +265,14 @@ std::string receive_raw_body(socket_t client_socket)
 // Send data to server
 bool send_data(socket_t client_socket, const std::string &data)
 {
+    ProtocolHeader header(data.size());
+    std::string rdata = header.serialize() + data;
     int total_sent = 0;
-    int remaining = static_cast<int>(data.size());
+    int remaining = static_cast<int>(rdata.size());
 
     while (remaining > 0)
     {
-        int sent = send(client_socket, data.c_str() + total_sent, remaining, 0);
+        int sent = send(client_socket, rdata.c_str() + total_sent, remaining, 0);
         if (sent == 0)
         {
             std::cout << "server closed connection" << std::endl;
@@ -412,7 +414,7 @@ int client_main(const std::string &host, int port, const std::string &password)
                 if (!cmd_list[i].empty())
                 {
                     // 使用简单的序号作为每个子命令的 key
-                    batch_cmds.emplace_back("cmd_" + std::to_string(i), cmd_list[i]);
+                    batch_cmds.emplace_back(generate_random_string(16), cmd_list[i]);
                 }
             }
             if (batch_cmds.empty())
@@ -431,7 +433,7 @@ int client_main(const std::string &host, int port, const std::string &password)
 
             try
             {
-                // 按你的协议：先按头中 length 读取 body 字符串
+                // 先按头中 length 读取 body 字符串
                 std::string raw_body = receive_raw_body(socket_guard.get());
                 size_t offset = 0;
                 auto batch_vec = deserializeBatchResponse(raw_body.data(), offset);
@@ -445,7 +447,7 @@ int client_main(const std::string &host, int port, const std::string &password)
             continue;
         }
 
-        // ---------- 普通单条命令 ----------
+        // 普通单条命令
         Request req = Request::createCommand(generate_random_string(16), command, auth_key);
         std::string req_data = req.serialize();
         if (!send_data(socket_guard.get(), req_data))

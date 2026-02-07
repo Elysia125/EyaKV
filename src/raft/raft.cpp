@@ -2204,7 +2204,7 @@ Response RaftNode::submit_command(const std::string &request_id, const std::stri
                 // 从LRU缓存中获取结果
                 if (result_cache_.get(request_id, response))
                 {
-                    LOG_INFO("Duplicate request_id %s found, returning cached response", request_id.c_str());
+                    LOG_INFO("Request %s executed successfully", request_id.c_str());
                     return response;
                 }
                 else
@@ -2224,6 +2224,7 @@ std::vector<std::pair<std::string, Response>> RaftNode::submit_batch_command(con
     {
         return {};
     }
+    LOG_INFO("Submitting batch command with %u commands", commands.size());
     std::unordered_map<std::string, Response> responses;
     responses.reserve(commands.size());
     // 预先设置超时响应
@@ -2361,6 +2362,7 @@ void RaftNode::execute_batch_read_command(const std::vector<std::pair<std::strin
         }
     }
 }
+
 void RaftNode::execute_batch_write_command(const std::vector<std::pair<std::string, std::string>> &cmds, std::unordered_map<std::string, Response> &responses, uint32_t timeout_ms)
 {
     if (cmds.empty())

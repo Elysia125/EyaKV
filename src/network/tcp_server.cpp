@@ -438,7 +438,7 @@ void EyaServer::handle_request(ProtocolBody *body, socket_t client_sock)
             {
                 if(!RaftNode::is_init()){
                     LOG_ERROR("Raft is not initialized");
-                            delete body;
+                    delete body;
                     exit(1);
                 }
                 static RaftNode*raft_node=RaftNode::get_instance();

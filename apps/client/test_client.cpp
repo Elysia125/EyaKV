@@ -159,21 +159,27 @@ Response receive_server_response(socket_t client_socket)
 // Helper: Send
 bool send_data(socket_t client_socket, const std::string &data)
 {
+    ProtocolHeader header(data.size());
+    std::string rdata = header.serialize() + data;
     int total_sent = 0;
-    int remaining = static_cast<int>(data.size());
+    int remaining = static_cast<int>(rdata.size());
+
     while (remaining > 0)
     {
-        int sent = send(client_socket, data.c_str() + total_sent, remaining, 0);
+        int sent = send(client_socket, rdata.c_str() + total_sent, remaining, 0);
         if (sent == 0)
         {
-            std::cerr << "server closed connection" << std::endl;
+            std::cout << "server closed connection" << std::endl;
             exit(0);
         }
         if (sent == SOCKET_ERROR_VALUE)
+        {
             return false;
+        }
         total_sent += sent;
         remaining -= sent;
     }
+
     return true;
 }
 

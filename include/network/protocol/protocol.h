@@ -398,12 +398,11 @@ inline std::pair<std::string, std::vector<std::pair<std::string, Response>>> des
 inline std::string to_string(const std::pair<std::string, std::vector<std::pair<std::string, Response>>> &batch_responses)
 {
     std::stringstream ss;
-    ss << "Batch ID: " << batch_responses.first << "\nResponses: (";
+    ss << "Batch ID: " << batch_responses.first << "\nResponses: \n";
     for (const auto &resp : batch_responses.second)
     {
-        ss << resp.first << ": " << resp.second.to_string() << "\n";
+        ss << resp.second.to_string() << "\n";
     }
-    ss << ")";
     return ss.str();
 }
 #endif
