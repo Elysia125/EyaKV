@@ -356,6 +356,14 @@ public:
         const std::string &end_key) const;
 
     /**
+     * @brief 遍历所有键值对(从最新的开始)
+     */
+    void for_each_newest(std::function<bool(const std::string &key, const EValue &value)> callback) const;
+    /**
+     * @brief 遍历所有键值对(从最旧的开始)
+     */
+    void for_each_oldest(std::function<bool(const std::string &key, const EValue &value)> callback) const;
+    /**
      * @brief 是否为空
      */
     bool empty() const
