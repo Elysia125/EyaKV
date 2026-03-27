@@ -10,13 +10,9 @@
 
 namespace fs = std::filesystem;
 
-const auto remove_evalue = [](EValue &value) -> EValue &
-{
-        value.deleted = true;
-        return value; };
-
 std::unique_ptr<Storage> Storage::instance_ = nullptr;
 bool Storage::is_init_ = false;
+
 Storage::Storage(const std::string &data_dir,
                  const std::string &wal_dir,
                  const bool &read_only,
@@ -721,15 +717,7 @@ uint32_t Storage::remove(std::vector<std::string> &keys)
         }
         try
         {
-            memtable_->handle_value(key, remove_evalue);
-            ++count;
-        }
-        catch (const std::out_of_range &)
-        {
-            // 插入一个delete值
-            EValue delete_value;
-            delete_value.deleted = true;
-            memtable_->put(key, delete_value);
+            memtable_->remove(key);
             ++count;
         }
         catch (const std::exception &e)

@@ -31,8 +31,23 @@ MemTable::MemTable(const size_t &memtable_size,
 
 size_t MemTable::get_shard_index(const std::string &key) const
 {
-    // 使用位与操作替代取模，效率更高（要求 k_num_shards_ 为 2 的幂次）
-    return std::hash<std::string>{}(key) & (k_num_shards_ - 1);
+    // Range(范围) 分片策略
+    // 按照字符串第一个字节 (0x00 ~ 0xFF) 平均划分到各个分片中。
+    // 这样能保证: 分片 0 里的所有 Key 必然小于 分片 1 里的所有 Key。
+
+    if (key.empty())
+    {
+        return 0;
+    }
+
+    // 获取第一个字符对应的无符号数值 (0 - 255)
+    unsigned char first_byte = static_cast<unsigned char>(key[0]);
+
+    // 计算分配的分片: 256 / 16 = 16，每个分片负责 16 个前缀
+    size_t idx = first_byte / (256 / k_num_shards_);
+
+    // 防止边界异常，严格限制在合法分片范围内
+    return std::min(idx, k_num_shards_ - 1);
 }
 
 void MemTable::put(const std::string &key, const EValue &value)
@@ -51,7 +66,7 @@ void MemTable::put(const std::string &key, const EValue &value)
     // 获取插入前的分片大小
     size_t old_shard_size = tables_[idx]->size();
 
-    // 插入跳表（SkipList 内部无锁，由分片锁保护）
+    // 插入跳表
     tables_[idx]->insert(key, value);
 
     // 获取插入后的分片大小，判断是否为新增
@@ -70,18 +85,11 @@ std::optional<EValue> MemTable::get(const std::string &key) const
 {
     size_t idx = get_shard_index(key);
 
-    // 检查 BloomFilter
+    if (!bloom_filters_[idx]->may_contain(key))
     {
-        std::shared_lock<std::shared_mutex> lock(*bloom_locks_[idx]);
-        if (!bloom_filters_[idx]->may_contain(key))
-        {
-            LOG_DEBUG("MemTable::get key=%s BloomFilter miss", key.c_str());
-            return std::nullopt;
-        }
+        LOG_DEBUG("MemTable::get key=%s BloomFilter miss", key.c_str());
+        return std::nullopt;
     }
-
-    // 获取读锁（共享锁）
-    std::shared_lock<std::shared_mutex> shard_lock(*shard_locks_[idx]);
 
     try
     {
@@ -98,28 +106,33 @@ std::optional<EValue> MemTable::get(const std::string &key) const
 
 bool MemTable::remove(const std::string &key)
 {
-    LOG_DEBUG("MemTable::remove key=%s", key.c_str());
+    LOG_DEBUG("MemTable::remove key=%s (Logical Delete)", key.c_str());
     size_t idx = get_shard_index(key);
 
-    // 检查 BloomFilter
-    {
-        std::shared_lock<std::shared_mutex> lock(*bloom_locks_[idx]);
-        if (!bloom_filters_[idx]->may_contain(key))
-        {
-            return false;
-        }
-    }
-
-    // 获取写锁（独占锁）
     std::unique_lock<std::shared_mutex> shard_lock(*shard_locks_[idx]);
 
-    bool removed = tables_[idx]->remove(key);
-    if (removed)
+    try
     {
-        // 删除成功，更新总数
-        size_.fetch_sub(1, std::memory_order_relaxed);
+        tables_[idx]->handle_value(key, [](EValue &val) -> EValue &
+                                   {
+            val.deleted = true;
+            return val; });
+        return true;
     }
-    return removed;
+    catch (const std::out_of_range &)
+    {
+        EValue tombstone;
+        tombstone.deleted = true;
+
+        tables_[idx]->insert(key, tombstone);
+
+        size_.fetch_add(1, std::memory_order_relaxed);
+
+        std::unique_lock<std::shared_mutex> lock(*bloom_locks_[idx]);
+        bloom_filters_[idx]->add(key);
+
+        return false;
+    }
 }
 
 size_t MemTable::size() const
@@ -174,11 +187,7 @@ void MemTable::clear()
 
 std::vector<std::pair<std::string, EValue>> MemTable::get_all_entries() const
 {
-    // 获取所有分片的有序数据
-    std::vector<std::vector<std::pair<std::string, EValue>>> shard_entries(k_num_shards_);
-    size_t total_elements = 0;
-
-    // 对所有分片获取读锁
+    // 对所有分片获取读锁，保证收集数据的 Point-in-time 视图一致性
     std::vector<std::shared_lock<std::shared_mutex>> locks;
     locks.reserve(k_num_shards_);
     for (size_t i = 0; i < k_num_shards_; ++i)
@@ -186,47 +195,17 @@ std::vector<std::pair<std::string, EValue>> MemTable::get_all_entries() const
         locks.emplace_back(*shard_locks_[i]);
     }
 
-    for (size_t i = 0; i < k_num_shards_; ++i)
-    {
-        shard_entries[i] = tables_[i]->get_all_entries();
-        total_elements += shard_entries[i].size();
-    }
-
-    // 使用 K 路归并排序（因为每个分片内部已有序）
     std::vector<std::pair<std::string, EValue>> result;
-    result.reserve(total_elements);
+    // 预分配内存，避免多次扩容
+    result.reserve(size());
 
-    // 使用最小堆进行 K 路归并
-    // 堆元素: (key, shard_index, element_index)
-    using HeapEntry = std::tuple<std::string, size_t, size_t>;
-    auto cmp = [](const HeapEntry &a, const HeapEntry &b)
-    {
-        return std::get<0>(a) > std::get<0>(b); // 最小堆
-    };
-    std::priority_queue<HeapEntry, std::vector<HeapEntry>, decltype(cmp)> min_heap(cmp);
-
-    // 初始化堆：每个分片的第一个元素入堆
     for (size_t i = 0; i < k_num_shards_; ++i)
     {
-        if (!shard_entries[i].empty())
-        {
-            min_heap.emplace(shard_entries[i][0].first, i, 0);
-        }
-    }
-
-    // K 路归并
-    while (!min_heap.empty())
-    {
-        auto [key, shard_idx, elem_idx] = min_heap.top();
-        min_heap.pop();
-
-        result.push_back(std::move(shard_entries[shard_idx][elem_idx]));
-
-        // 将该分片的下一个元素入堆
-        if (elem_idx + 1 < shard_entries[shard_idx].size())
-        {
-            min_heap.emplace(shard_entries[shard_idx][elem_idx + 1].first, shard_idx, elem_idx + 1);
-        }
+        auto shard_entries = tables_[i]->get_all_entries();
+        // 如果想更高效，可以使用 std::make_move_iterator
+        result.insert(result.end(),
+                      std::make_move_iterator(shard_entries.begin()),
+                      std::make_move_iterator(shard_entries.end()));
     }
 
     return result;

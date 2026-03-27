@@ -108,6 +108,48 @@ namespace EyaKV
             }
             return result;
         }
+        static std::string serialize(double v)
+        {
+            // 直接存 8 字节二进制，最高效
+            return std::string(reinterpret_cast<const char *>(&v), sizeof(double));
+        }
+        // ZSet 专用复合类型 ---
+
+        static std::string serialize(const ZSetKey &key)
+        {
+            std::string res = serialize(key.score);
+            res.append(serialize(key.member));
+            return res;
+        }
+
+        /**
+         * @brief 序列化 SkipList<ZSetKey, std::string>
+         */
+        static std::string serialize(const SkipList<ZSetKey, std::string> &sl)
+        {
+            // 适配 SkipList 的成员函数指针要求
+            auto sk_func = [](const ZSetKey &k)
+            { return Serializer::serialize(k); };
+            auto sv_func = [](const std::string &v)
+            { return Serializer::serialize(v); };
+            return sl.serialize(sk_func, sv_func);
+        }
+
+        /**
+         * @brief 序列化 unordered_map<string, double>
+         */
+        static std::string serialize(const std::unordered_map<std::string, double> &map)
+        {
+            uint32_t size = htonl(static_cast<uint32_t>(map.size()));
+            std::string res;
+            res.append(reinterpret_cast<const char *>(&size), sizeof(size));
+            for (auto &p : map)
+            {
+                res.append(serialize(p.first));
+                res.append(serialize(p.second));
+            }
+            return res;
+        }
 
         /**
          * @brief 序列化 unordered_map<string, string> 到字节流
@@ -137,7 +179,15 @@ namespace EyaKV
          */
         static std::string serialize(const ZSet &zset)
         {
-            return zset.serialize(serialize, serialize);
+            auto sl = [](const SkipList<ZSetKey, std::string> &s)
+            {
+                return serialize(s);
+            };
+            auto sm = [](const std::unordered_map<std::string, double> &map)
+            {
+                return serialize(map);
+            };
+            return zset.serialize(sl, sm);
         }
         // 从字节流反序列化
 
@@ -254,12 +304,49 @@ namespace EyaKV
             skiplist.deserialize(data, offset, deserializeString, deserializeString);
         }
 
-        /**
-         * @brief 从字节流反序列化 ZSet
-         */
+        static double deserializeDouble(const char *data, size_t &offset)
+        {
+            double v;
+            std::memcpy(&v, data + offset, sizeof(double));
+            offset += sizeof(double);
+            return v;
+        }
+
+        static ZSetKey deserializeZSetKey(const char *data, size_t &offset)
+        {
+            double s = deserializeDouble(data, offset);
+            std::string m = deserializeString(data, offset);
+            return {s, m};
+        }
+
         static void deserializeZSet(const char *data, size_t &offset, ZSet &zset)
         {
-            zset.deserialize(data, offset, deserializeSkipList, deserializeMap);
+            auto ds_sl = [](const char *d, size_t &o, SkipList<ZSetKey, std::string> &sl)
+            {
+                // 适配 SkipList.deserialize 签名
+                // 注意：SkipList 的定义中 deserialize 需要返回 K 的函数指针
+                auto k_func = [](const char *dd, size_t &oo)
+                { return Serializer::deserializeZSetKey(dd, oo); };
+                auto v_func = [](const char *dd, size_t &oo)
+                { return Serializer::deserializeString(dd, oo); };
+                sl.deserialize(d, o, k_func, v_func);
+            };
+
+            auto ds_map = [](const char *d, size_t &o, std::unordered_map<std::string, double> &map)
+            {
+                uint32_t size;
+                std::memcpy(&size, d + o, sizeof(size));
+                o += sizeof(size);
+                size = ntohl(size);
+                for (uint32_t i = 0; i < size; ++i)
+                {
+                    std::string k = deserializeString(d, o);
+                    double v = deserializeDouble(d, o);
+                    map[k] = v;
+                }
+            };
+
+            zset.deserialize(data, offset, ds_sl, ds_map);
         }
     };
 

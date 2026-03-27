@@ -159,7 +159,7 @@ inline std::string to_string(const EyaValue &value)
         {
             std::stringstream ss;
             ss<<"zset(";
-            arg.for_each([&ss](const std::string&score,const std::string&member){
+            arg.for_each([&ss](const std::string&member,const double score){
                 ss << member << "=" << score << ", ";
             });
             std::string s = ss.str();

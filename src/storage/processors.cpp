@@ -428,7 +428,7 @@ size_t ZSetProcessor::z_add(Storage *storage, const std::string &key, const std:
                                             if(val.is_deleted()||val.is_expired()){
                                                 val.deleted = false;
                                                 val.expire_time = 0;
-                                                zset.z_clear();
+                                                zset.zclear();
                                             }
                                             for(const auto& p : score_members) {
                                                 zset.zadd(p.second, p.first);
@@ -589,7 +589,7 @@ std::string ZSetProcessor::z_incr_by(Storage *storage, const std::string &key, c
                                             else
                                             {
                                                 auto &zset = std::get<ZSet>(val.value);
-                                                new_score = zset.z_incrby(member, increment);
+                                                new_score = zset.zincrby(member, increment);
                                                 return val;
                                             } });
         return new_score == std::nullopt ? std::string("Member not be found") : new_score.value();
@@ -605,7 +605,7 @@ std::string ZSetProcessor::z_incr_by(Storage *storage, const std::string &key, c
                 throw std::runtime_error("value is not a zset");
             }
             auto &zset = std::get<ZSet>(val.value);
-            new_score = zset.z_incrby(member, increment);
+            new_score = zset.zincrby(member, increment);
             storage->write_memtable(key, val);
             return new_score == std::nullopt ? std::string("Member not be found") : new_score.value();
         }

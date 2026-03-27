@@ -22,6 +22,7 @@
 #endif
 
 #include "network/protocol/protocol.h"
+#include "common/util/string_utils.h"
 
 #define DEFAULT_PORT 5210
 #define DEFAULT_HOST "127.0.0.1"

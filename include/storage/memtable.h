@@ -13,11 +13,13 @@
 #include "storage/node.h"
 #include "common/util/string_utils.h"
 #include "common/ds/bloom_filter.h"
+
 /**
  * @brief MemTable（内存表）负责在内存中存储 Key-Value 数据。
  *
  * 它是存储引擎的第一层，所有写入操作首先写入 MemTable。
- * 为了支持并发访问，内部使用了读写锁 (std::shared_mutex)。
+ * 为了支持并发访问，内部使用了读写锁 (std::shared_mutex) 来保护写入操作。
+ * 当前采用 Range（范围）分片模式，读操作（get）已实现无锁化。
  * 使用跳表保持 Key 有序，方便后续 Flush 到 SSTable。
  *
  * 内存大小跟踪：
@@ -67,7 +69,8 @@ public:
     /**
      * @brief 获取指定 Key 对应的值。
      *
-     * 此操作会获取读锁（共享锁），允许多个读操作并发执行。
+     * 【无锁读】此操作不获取读锁，允许多个读操作与写操作并发执行。
+     * 注意：要求底层的 SkipList 和 BloomFilter 支持内存可见性与安全的并发读。
      *
      * @param key 要查询的键
      * @return std::optional<EValue> 如果 Key 存在，返回对应的 Value；否则返回 std::nullopt
@@ -90,7 +93,7 @@ public:
     /**
      * @brief 获取当前 MemTable 中存储的元素数量。
      *
-     * 此操作会获取读锁（共享锁）。
+     * 此操作无锁（原子变量加载）。
      *
      * @return size_t 当前存储的 KV 对数量
      */
@@ -134,6 +137,7 @@ public:
      * @brief 获取所有 Key-Value 对，用于 Flush 到 SSTable。
      *
      * 返回的数据按 Key 升序排列，适合直接写入 SSTable。
+     * 因为采用了 Range 分片，无需 K 路归并即可保证全局有序。
      * 此操作会获取读锁（共享锁）。
      *
      * @return std::vector<std::pair<std::string, EValue>> 包含所有 KV 对的向量，按 Key 升序排列
@@ -176,13 +180,15 @@ public:
 private:
     size_t memtable_size_; /// MemTable 大小限制（字节数）
 
-    static constexpr size_t k_num_shards_ = 16;  /// 分片数量（必须为 2 的幂次）
+    static constexpr size_t k_num_shards_ = 16;  /// 分片数量（推荐2的幂次，需<=256以适配前缀划分）
     std::vector<std::unique_ptr<SkipList<std::string, EValue>>> tables_; /// 分片存储的跳表数组
-    size_t get_shard_index(const std::string &key) const; /// 计算 Key 对应的分片索引
+    
+    /// 基于 Range 计算 Key 对应的分片索引
+    size_t get_shard_index(const std::string &key) const; 
 
     std::atomic<size_t> size_{0};  /// 当前存储的元素总数（原子变量，线程安全）
 
-    /// 分片读写锁（保护SkipList的并发访问）
+    /// 分片写锁（保护SkipList的并发写入）
     mutable std::vector<std::unique_ptr<std::shared_mutex>> shard_locks_;
 
     std::vector<std::unique_ptr<BloomFilter>> bloom_filters_; /// 分片布隆过滤器
