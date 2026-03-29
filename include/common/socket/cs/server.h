@@ -220,7 +220,7 @@ public:
             int nfds = epoll_wait(epoll_fd_, events_, max_connections_, -1);
             if (nfds == -1)
             {
-                LOG_ERROR("epoll_wait error: %s", strerror(errno));
+                LOG_ERROR("epoll_wait error: {}", strerror(errno));
                 break;
             }
 
@@ -241,7 +241,7 @@ public:
             int nev = kevent(kqueue_fd_, NULL, 0, event_list_, max_connections_, NULL);
             if (nev == -1)
             {
-                LOG_ERROR("kevent error: %s", strerror(errno));
+                LOG_ERROR("kevent error: {}", strerror(errno));
             }
             for (int i = 0; i < nev; ++i)
             {
@@ -271,12 +271,12 @@ public:
             if (activity == SOCKET_ERROR_VALUE)
             {
                 int error = GET_SOCKET_ERROR();
-                LOG_ERROR("select error: %d - %s", error, socket_error_to_string(error).c_str());
+                LOG_ERROR("select error: {} - {}", error, socket_error_to_string(error).c_str());
                 // WSAENOTSOCK (10038): descriptor set contains invalid socket
                 // 可能是 fd_set 溢出
                 if (error == 10038)
                 {
-                    LOG_ERROR("select failed: possibly too many sockets for FD_SETSIZE=%d", FD_SETSIZE);
+                    LOG_ERROR("select failed: possibly too many sockets for FD_SETSIZE={}", FD_SETSIZE);
                 }
             }
             // 遍历所有可能的socket
@@ -360,7 +360,7 @@ public:
                 {
                     break; // 所有连接已处理完毕
                 }
-                LOG_ERROR("Accept failed: %s", strerror(errno));
+                LOG_ERROR("Accept failed: {}", strerror(errno));
             }
 
             add_new_connection(client_sock, client_addr);
@@ -381,12 +381,12 @@ public:
             int error = WSAGetLastError();
             if (error != WSAEWOULDBLOCK)
             {
-                LOG_ERROR("Accept error: %d", error);
+                LOG_ERROR("Accept error: {}", error);
             }
 #else
             if (errno != EAGAIN && errno != EWOULDBLOCK)
             {
-                LOG_ERROR("Accept error: %s", strerror(errno));
+                LOG_ERROR("Accept error: {}", strerror(errno));
             }
 #endif
             return;
@@ -411,7 +411,7 @@ public:
 
             // 添加到IO复用
             add_socket_to_epoll(client_sock);
-            LOG_INFO("New connection accepted: %s:%d", clientIp, ntohs(client_addr.sin_port));
+            LOG_INFO("New connection accepted: {}:{}", clientIp, ntohs(client_addr.sin_port));
 
             current_connections_++;
             lock.unlock();
@@ -425,7 +425,7 @@ public:
             // 连接数已满，加入等待队列
             bool was_empty = wait_queue_.empty();
             set_non_blocking(client_sock);
-            LOG_INFO("Connection added to wait queue (current: %d, waiting: %zu)",
+            LOG_INFO("Connection added to wait queue (current: {}, waiting: {})",
                      current_connections_.load(), wait_queue_.size() + 1);
 
             wait_queue_.push_back({client_sock,
@@ -465,7 +465,7 @@ public:
         ev.data.fd = client_sock;
         if (epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, client_sock, &ev) == -1)
         {
-            LOG_ERROR("Epoll ctl failed for client socket: %s", strerror(errno));
+            LOG_ERROR("Epoll ctl failed for client socket: {}", strerror(errno));
             close_socket(client_sock);
         }
 #else // Windows
@@ -475,7 +475,7 @@ public:
         uint32_t total_sockets = master_set_.fd_count + 1; // +1 for listen_socket
         if (total_sockets >= FD_SETSIZE - 10)
         {
-            LOG_WARN("Approaching FD_SETSIZE limit: %u sockets (FD_SETSIZE=%d)",
+            LOG_WARN("Approaching FD_SETSIZE limit: {} sockets (FD_SETSIZE={})",
                      total_sockets, FD_SETSIZE);
             LOG_WARN("Consider increasing FD_SETSIZE in socket.h or using WSAPoll instead of select");
         }
@@ -497,7 +497,7 @@ public:
             {
                 if (recv_buffer.size() * 2 > HEADER_SIZE_LIMIT)
                 {
-                    LOG_ERROR("Recv buffer overflow on fd %d", client_sock);
+                    LOG_ERROR("Recv buffer overflow on fd {}", client_sock);
                     goto cleanup;
                 }
                 recv_buffer.resize(recv_buffer.size() * 2);
@@ -512,13 +512,13 @@ public:
                 {
                     return; // 数据已全部读取完毕
                 }
-                LOG_ERROR("Recv error on fd %d: %s", client_sock, socket_error_to_string(GET_SOCKET_ERROR()).c_str());
+                LOG_ERROR("Recv error on fd {}: {}", client_sock, socket_error_to_string(GET_SOCKET_ERROR()).c_str());
                 goto cleanup;
             }
             else if (bytes_received == 0)
             {
                 // 对方关闭连接
-                LOG_INFO("Client disconnected, fd: %d", client_sock);
+                LOG_INFO("Client disconnected, fd: {}", client_sock);
                 goto cleanup;
             }
 
@@ -535,7 +535,7 @@ public:
 
                 if (header.length > HEADER_SIZE_LIMIT)
                 {
-                    LOG_ERROR("Invalid body length on fd %d: %zu (max: %d)",
+                    LOG_ERROR("Invalid body length on fd {}: {} (max: {})",
                               client_sock, header.length, HEADER_SIZE_LIMIT);
                     goto cleanup;
                 }
@@ -559,7 +559,7 @@ public:
                 }
                 catch (const std::exception &e)
                 {
-                    LOG_ERROR("Error processing request on fd %d: %s", client_sock, e.what());
+                    LOG_ERROR("Error processing request on fd {}: {}", client_sock, e.what());
                     goto cleanup;
                 }
 
@@ -582,7 +582,7 @@ public:
     cleanup:
         if (total_received > 0)
         {
-            LOG_WARN("Unprocessed data left on fd %d: %zu bytes", client_sock, total_received);
+            LOG_WARN("Unprocessed data left on fd {}: {} bytes", client_sock, total_received);
         }
 
         close_socket(client_sock);
@@ -597,17 +597,17 @@ public:
             {
                 if (bytes_received == -1)
                 {
-                    LOG_ERROR("Recv error on fd %d: timeout", client_sock);
+                    LOG_ERROR("Recv error on fd {}: timeout", client_sock);
                     close_socket(client_sock);
                 }
                 else if (bytes_received == -2)
                 {
-                    LOG_ERROR("fd closed %d", client_sock);
+                    LOG_ERROR("fd closed {}", client_sock);
                     close_socket(client_sock);
                 }
                 else
                 {
-                    LOG_ERROR("Recv error on fd %d: %s", client_sock, socket_error_to_string(bytes_received).c_str());
+                    LOG_ERROR("Recv error on fd {}: {}", client_sock, socket_error_to_string(bytes_received).c_str());
                     close_socket(client_sock);
                 }
             }
@@ -619,7 +619,7 @@ public:
         }
         catch (const std::exception &e)
         {
-            LOG_ERROR("Error processing request on fd %d: %s", client_sock, e.what());
+            LOG_ERROR("Error processing request on fd {}: {}", client_sock, e.what());
             close_socket(client_sock);
         }
 #endif
@@ -631,12 +631,12 @@ public:
 #ifdef _WIN32
         if (ret == SOCKET_ERROR)
         {
-            LOG_ERROR("Shutdown error on fd %d: %s", sock, socket_error_to_string(GET_SOCKET_ERROR()).c_str());
+            LOG_ERROR("Shutdown error on fd {}: {}", sock, socket_error_to_string(GET_SOCKET_ERROR()).c_str());
         }
 #else
         if (ret == -1)
         {
-            LOG_ERROR("Shutdown error on fd %d: %s", sock, socket_error_to_string(GET_SOCKET_ERROR()).c_str());
+            LOG_ERROR("Shutdown error on fd {}: {}", sock, socket_error_to_string(GET_SOCKET_ERROR()).c_str());
         }
 #endif
         CLOSE_SOCKET(sock);

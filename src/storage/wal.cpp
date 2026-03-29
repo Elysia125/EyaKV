@@ -31,7 +31,7 @@ Wal::~Wal()
 {
     if (wal_file_ != nullptr)
     {
-        LOG_INFO("Wal::~Wal: Closing WAL file: %s", (PathUtils::combine_path(wal_dir_, wal_file_name_)).c_str());
+        LOG_INFO("Wal::~Wal: Closing WAL file: {}", (PathUtils::combine_path(wal_dir_, wal_file_name_)).c_str());
         sync();
         fclose(wal_file_);
         wal_file_ = nullptr;
@@ -41,7 +41,7 @@ Wal::~Wal()
 
 bool Wal::append_log(uint8_t type, const std::string &key, const std::string &payload)
 {
-    LOG_DEBUG("Wal: Appending log type=%d key=%s", type, key.c_str());
+    LOG_DEBUG("Wal: Appending log type={} key={}", type, key.c_str());
     return write_record(type, key, payload);
 }
 
@@ -81,7 +81,7 @@ bool Wal::write_record(uint8_t type, const std::string &key, const std::string &
 bool Wal::recover(std::function<void(std::string, uint8_t, std::string, std::string)> callback)
 {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
-    LOG_INFO("Starting WAL recovery from directory: %s", wal_dir_.c_str());
+    LOG_INFO("Starting WAL recovery from directory: {}", wal_dir_.c_str());
     if (wal_file_ != nullptr)
     {
         fclose(wal_file_);
@@ -97,41 +97,41 @@ bool Wal::recover(std::function<void(std::string, uint8_t, std::string, std::str
             if (entry.path().extension() == ".wal")
             {
                 wal_files.insert(entry.path().string());
-                LOG_INFO("Wal::Recover: Found WAL file: %s", entry.path().string().c_str());
+                LOG_INFO("Wal::Recover: Found WAL file: {}", entry.path().string().c_str());
             }
         }
-        LOG_INFO("Wal::Recover: Found %zu WAL files", wal_files.size());
+        LOG_INFO("Wal::Recover: Found {} WAL files", wal_files.size());
     }
     catch (const std::exception &e)
     {
-        LOG_ERROR("Wal::Recover: Exception while scanning WAL directory: %s", e.what());
+        LOG_ERROR("Wal::Recover: Exception while scanning WAL directory: {}", e.what());
         return false;
     }
     for (const auto &filepath : wal_files)
     {
-        LOG_INFO("Wal::Recover: Starting recovery from file: %s", filepath.c_str());
+        LOG_INFO("Wal::Recover: Starting recovery from file: {}", filepath.c_str());
         // 判断wal文件是否为空
         try
         {
             size_t file_size = std::filesystem::file_size(filepath);
-            LOG_INFO("Wal::Recover: WAL file size: %zu bytes", file_size);
+            LOG_INFO("Wal::Recover: WAL file size: {} bytes", file_size);
             if (file_size == 0)
             {
-                LOG_INFO("Wal::Recover: WAL file is empty, deleting it: %s", filepath.c_str());
+                LOG_INFO("Wal::Recover: WAL file is empty, deleting it: {}", filepath.c_str());
                 std::filesystem::remove(filepath);
                 continue;
             }
         }
         catch (const std::exception &e)
         {
-            LOG_ERROR("Wal::Recover: Exception while checking file size: %s", e.what());
+            LOG_ERROR("Wal::Recover: Exception while checking file size: {}", e.what());
             continue;
         }
         LOG_INFO("Wal::Recover: Opening WAL file...");
         std::ifstream reader(filepath, std::ios::binary);
         if (!reader.is_open())
         {
-            LOG_ERROR("Wal::Recover: Failed to open WAL file at %s", filepath.c_str());
+            LOG_ERROR("Wal::Recover: Failed to open WAL file at {}", filepath.c_str());
             continue;
         }
         LOG_INFO("Wal::Recover: WAL file opened successfully");
@@ -170,16 +170,16 @@ bool Wal::recover(std::function<void(std::string, uint8_t, std::string, std::str
 
             // Call generic callback
             std::string payload(val_data.begin(), val_data.end());
-            LOG_DEBUG("Wal::Recover: Processing record %d, type: %d, key: %s", record_count, type_u8, key.c_str());
+            LOG_DEBUG("Wal::Recover: Processing record {}, type: {}, key: {}", record_count, type_u8, key.c_str());
             callback(std::filesystem::path(filepath).filename().string(), type_u8, key, payload);
             record_count++;
         }
-        LOG_INFO("Wal::Recover: Read %d records from file", record_count);
+        LOG_INFO("Wal::Recover: Read {} records from file", record_count);
 
         reader.close();
         // 删除已恢复的日志文件
         // std::filesystem::remove(filepath);
-        LOG_INFO("Wal::Recover: Completed recovery from WAL file: %s", filepath.c_str());
+        LOG_INFO("Wal::Recover: Completed recovery from WAL file: {}", filepath.c_str());
     }
     // Reopen for appending
     // open_wal_file();
@@ -236,7 +236,7 @@ bool Wal::sync()
         // 步骤2：调用fsync刷内核缓冲区到磁盘（真正落盘）
         if (fdatasync(fd) == -1)
         { // fdatasync(fd) 更高效（仅刷数据）
-            LOG_ERROR("Wal: Failed to sync WAL file to disk. Error: %s", strerror(errno));
+            LOG_ERROR("Wal: Failed to sync WAL file to disk. Error: {}", strerror(errno));
             return false;
         }
         modifyed_ = false;
@@ -262,11 +262,11 @@ void Wal::open_wal_file(std::string &filename)
     wal_file_ = fopen(filepath.c_str(), "ab+");
     if (wal_file_ == nullptr)
     {
-        LOG_ERROR("Wal: Failed to open WAL file at %s, error:%s", filepath.c_str(), strerror(errno));
+        LOG_ERROR("Wal: Failed to open WAL file at {}, error:{}", filepath.c_str(), strerror(errno));
         throw std::runtime_error("cannot open or create WAL file at " + filepath);
     }
     wal_file_name_ = filename;
-    LOG_INFO("Wal: Opened WAL file at %s", filepath.c_str());
+    LOG_INFO("Wal: Opened WAL file at {}", filepath.c_str());
 }
 
 std::string Wal::open_wal_file()

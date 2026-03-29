@@ -45,10 +45,13 @@ elseif(APPLE)
 elseif(UNIX)
     set(PLATFORM_LIBS "")  # Threads::Threads 已包含 pthread，无需冗余
 endif()
-# 给 Logger 显式链接线程库（强制动态）
-target_link_libraries(eyakv_logger PRIVATE
-    ${PLATFORM_LIBS}
-    Threads::Threads
+# 给 Logger 显式链接线程库和 spdlog
+target_link_libraries(eyakv_logger 
+    PUBLIC 
+        spdlog::spdlog         # PUBLIC 使得其他依赖 eyakv_logger 的模块也能找到 spdlog 的头文件
+    PRIVATE
+        ${PLATFORM_LIBS}
+        Threads::Threads
 )
 # 仅导出 EYAKV_LOGGER_EXPORTS 标记的符号（隐藏 pthread 符号）
 set_target_properties(eyakv_logger PROPERTIES

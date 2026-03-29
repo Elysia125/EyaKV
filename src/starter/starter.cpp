@@ -169,11 +169,11 @@ void EyaKVStarter::initialize_logger()
 
     if (rotate_size.has_value())
     {
-        Logger::GetInstance().Init(log_dir, log_level, rotate_size.value());
+        Logger::Init(log_dir, log_level, rotate_size.value());
     }
     else
     {
-        Logger::GetInstance().Init(log_dir, log_level);
+        Logger::Init(log_dir, log_level);
     }
 
     std::cout << "Logger initialized. Directory: " << log_dir << ", Level: " << static_cast<int>(log_level) << std::endl;
@@ -378,7 +378,32 @@ void EyaKVStarter::shutdown()
     if (RaftNode::get_instance() != nullptr)
     {
         LOG_INFO("Stopping Raft node...");
-        RaftNode::get_instance()->stop();
+
+        // 使用线程 + 超时来避免无限等待
+        std::atomic<bool> raft_stopped{false};
+        std::thread stop_thread([&]()
+                                {
+            RaftNode::get_instance()->stop();
+            raft_stopped.store(true); });
+
+        // 等待最多 5 秒
+        auto start_time = std::chrono::steady_clock::now();
+        while (!raft_stopped.load() &&
+               std::chrono::steady_clock::now() - start_time < std::chrono::seconds(5))
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+
+        if (raft_stopped.load())
+        {
+            stop_thread.join();
+        }
+        else
+        {
+            LOG_WARN("Raft node stop timed out after 5 seconds, forcing shutdown");
+            stop_thread.detach();
+        }
+
         LOG_INFO("Raft node stopped");
     }
 
@@ -391,6 +416,7 @@ void EyaKVStarter::shutdown()
     }
 
     LOG_INFO("Graceful shutdown completed");
+    Logger::Flush(); // 确保所有日志都被写入磁盘
     exit(EXIT_SUCCESS);
 }
 
@@ -402,7 +428,7 @@ void EyaKVStarter::start()
     }
     catch (const std::exception &e)
     {
-        LOG_ERROR("Fatal error during startup: %s", e.what());
+        LOG_ERROR("Fatal error during startup: {}", e.what());
         // 捕获异常后主动关闭清理环境
         shutdown();
     }

@@ -187,7 +187,7 @@ size_t SetProcessor::s_add(Storage *storage, const std::string &key, const std::
     }
     catch (const std::exception &e)
     {
-        LOG_ERROR("s_add key: %s, error: %s", key, e.what());
+        LOG_ERROR("s_add key: {}, error: {}", key, e.what());
         throw e;
     }
 }
@@ -247,7 +247,7 @@ size_t SetProcessor::s_rem(Storage *storage, const std::string &key, const std::
     }
     catch (const std::exception &e)
     {
-        LOG_ERROR("s_rem key: %s, error: %s", key, e.what());
+        LOG_ERROR("s_rem key: {}, error: {}", key, e.what());
         throw e;
     }
 }
@@ -472,7 +472,7 @@ size_t ZSetProcessor::z_add(Storage *storage, const std::string &key, const std:
     }
     catch (const std::exception &e)
     {
-        LOG_ERROR("z_add key: %s, error: %s", key.c_str(), e.what());
+        LOG_ERROR("z_add key: {}, error: {}", key.c_str(), e.what());
         throw e;
     }
     return 0;
@@ -531,7 +531,7 @@ size_t ZSetProcessor::z_rem(Storage *storage, const std::string &key, const std:
     }
     catch (const std::exception &e)
     {
-        LOG_ERROR("z_rem key: %s, error: %s", key.c_str(), e.what());
+        LOG_ERROR("z_rem key: {}, error: {}", key.c_str(), e.what());
         throw e;
     }
     return 0;
@@ -616,7 +616,7 @@ std::string ZSetProcessor::z_incr_by(Storage *storage, const std::string &key, c
     }
     catch (const std::exception &e)
     {
-        LOG_ERROR("z_incr_by key: %s, increment: %s, member: %s, error: %s", key, increment, member, e.what());
+        LOG_ERROR("z_incr_by key: {}, increment: {}, member: {}, error: {}", key, increment, member, e.what());
         throw e;
     }
     return "";
@@ -738,7 +738,7 @@ size_t ZSetProcessor::z_rem_by_rank(Storage *storage, const std::string &key, lo
     }
     catch (const std::exception &e)
     {
-        LOG_ERROR("z_rem_by_rank key: %s, start: %lld, end: %lld, error: %s", key, start, end, e.what());
+        LOG_ERROR("z_rem_by_rank key: {}, start: {}, end: {}, error: {}", key, start, end, e.what());
         throw e;
     }
     return 0;
@@ -785,7 +785,7 @@ size_t ZSetProcessor::z_rem_by_score(Storage *storage, const std::string &key, c
     }
     catch (const std::exception &e)
     {
-        LOG_ERROR("z_rem_by_score key: %s, min: %s, max: %s, error: %s", key, min, max, e.what());
+        LOG_ERROR("z_rem_by_score key: {}, min: {}, max: {}, error: {}", key, min, max, e.what());
         throw e;
     }
     return 0;
@@ -980,7 +980,7 @@ size_t DequeProcessor::l_push(Storage *storage, const std::string &key, const st
     }
     catch (const std::exception &e)
     {
-        LOG_ERROR("l_push key: %s, error: %s", key, e.what());
+        LOG_ERROR("l_push key: {}, error: {}", key, e.what());
         throw e;
     }
 }
@@ -1048,7 +1048,7 @@ size_t DequeProcessor::r_push(Storage *storage, const std::string &key, const st
     }
     catch (const std::exception &e)
     {
-        LOG_ERROR("r_push key: %s, error: %s", key, e.what());
+        LOG_ERROR("r_push key: {}, error: {}", key, e.what());
         throw e;
     }
 }
@@ -1105,7 +1105,7 @@ std::optional<std::string> DequeProcessor::l_pop(Storage *storage, const std::st
     }
     catch (const std::exception &e)
     {
-        LOG_ERROR("l_pop key: %s, error: %s", key, e.what());
+        LOG_ERROR("l_pop key: {}, error: {}", key, e.what());
         throw e;
     }
 }
@@ -1162,7 +1162,7 @@ std::optional<std::string> DequeProcessor::r_pop(Storage *storage, const std::st
     }
     catch (const std::exception &e)
     {
-        LOG_ERROR("r_pop key: %s, error: %s", key, e.what());
+        LOG_ERROR("r_pop key: {}, error: {}", key, e.what());
         throw e;
     }
 }
@@ -1271,7 +1271,7 @@ std::vector<std::string> DequeProcessor::l_pop_n(Storage *storage, const std::st
     }
     catch (const std::exception &e)
     {
-        LOG_ERROR("l_pop_n key: %s, error: %s", key, e.what());
+        LOG_ERROR("l_pop_n key: {}, error: {}", key, e.what());
         throw e;
     }
 }
@@ -1325,7 +1325,7 @@ std::vector<std::string> DequeProcessor::r_pop_n(Storage *storage, const std::st
     }
     catch (const std::exception &e)
     {
-        LOG_ERROR("r_pop_n key: %s, error: %s", key, e.what());
+        LOG_ERROR("r_pop_n key: {}, error: {}", key, e.what());
         throw e;
     }
 }
@@ -1489,7 +1489,7 @@ size_t HashProcessor::h_set(Storage *storage, const std::string &key, const std:
     }
     catch (const std::exception &e)
     {
-        LOG_ERROR("h_set key: %s, error: %s", key.c_str(), e.what());
+        LOG_ERROR("h_set key: {}, error: {}", key.c_str(), e.what());
         throw e;
     }
 }
@@ -1565,7 +1565,7 @@ size_t HashProcessor::h_del(Storage *storage, const std::string &key, const std:
     }
     catch (const std::exception &e)
     {
-        LOG_ERROR("h_del key: %s, error: %s", key.c_str(), e.what());
+        LOG_ERROR("h_del key: {}, error: {}", key.c_str(), e.what());
         throw e;
     }
 }

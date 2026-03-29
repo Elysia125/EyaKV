@@ -67,7 +67,7 @@ RaftNode::RaftNode(const std::string root_dir,
       need_majority_confirm_(config.need_majority_confirm)
 {
     std::string node_id = ip + ":" + std::to_string(port);
-    LOG_INFO("[Node=%s] Initializing RaftNode", node_id.c_str());
+    LOG_INFO("[Node={}] Initializing RaftNode", node_id.c_str());
     log_array_ = std::make_unique<RaftLogArray>(
         PathUtils::combine_path(root_dir, ".raft"),
         config_.log_config);
@@ -78,7 +78,7 @@ RaftNode::RaftNode(const std::string root_dir,
 
     // 2. 加载持久化状态
     load_persistent_state();
-    LOG_INFO("[Node=%s] Loaded persistent state - Term=%u, CommitIndex=%u, LastApplied=%u, SnapshotIndex=%u",
+    LOG_INFO("[Node={}] Loaded persistent state - Term={}, CommitIndex={}, LastApplied={}, SnapshotIndex={}",
              node_id.c_str(),
              persistent_state_.current_term_.load(),
              persistent_state_.commit_index_.load(),
@@ -92,7 +92,7 @@ RaftNode::RaftNode(const std::string root_dir,
     if (!persistent_state_.cluster_metadata_.current_leader_.is_null())
     {
         // 场景1: 已知leader，作为follower加入
-        LOG_INFO("[Node=%s] Found leader address: %s, initializing as follower",
+        LOG_INFO("[Node={}] Found leader address: {}, initializing as follower",
                  node_id.c_str(),
                  persistent_state_.cluster_metadata_.current_leader_.to_string().c_str());
         init_as_follower();
@@ -100,14 +100,14 @@ RaftNode::RaftNode(const std::string root_dir,
     else if (persistent_state_.cluster_metadata_.cluster_nodes_.empty())
     {
         // 场景2: 首个节点，自举为leader
-        LOG_INFO("[Node=%s] No cluster nodes found, bootstrapping as leader in term %u",
+        LOG_INFO("[Node={}] No cluster nodes found, bootstrapping as leader in term {}",
                  node_id.c_str(),
                  persistent_state_.current_term_.load());
     }
     else
     {
         // 场景3: 探查集群
-        LOG_INFO("[Node=%s] Cluster nodes found (%zu nodes) but no leader, discovering cluster state",
+        LOG_INFO("[Node={}] Cluster nodes found ({} nodes) but no leader, discovering cluster state",
                  node_id.c_str(),
                  persistent_state_.cluster_metadata_.cluster_nodes_.size());
         init_with_cluster_discovery();
@@ -117,7 +117,7 @@ RaftNode::RaftNode(const std::string root_dir,
     uint32_t last_log_idx = log_array_->get_last_index();
     if (persistent_state_.commit_index_ > last_log_idx)
     {
-        LOG_WARN("[Node=%s] Sanitizing CommitIndex: %u -> %u (LastLogIndex)",
+        LOG_WARN("[Node={}] Sanitizing CommitIndex: {} -> {} (LastLogIndex)",
                  node_id.c_str(), persistent_state_.commit_index_.load(), last_log_idx);
         persistent_state_.commit_index_.store(last_log_idx);
     }
@@ -134,7 +134,7 @@ RaftNode::RaftNode(const std::string root_dir,
     ThreadPool::Config pool_config = config_.thread_pool_config;
     thread_pool_ = std::make_unique<ThreadPool>(pool_config);
     is_init_ = true;
-    LOG_INFO("[Node=%s][Role=%s][Term=%u] RaftNode initialized successfully",
+    LOG_INFO("[Node={}][Role={}][Term={}] RaftNode initialized successfully",
              node_id.c_str(),
              role_to_string(role_.load()),
              persistent_state_.current_term_.load());
@@ -143,7 +143,7 @@ RaftNode::RaftNode(const std::string root_dir,
 RaftNode::~RaftNode()
 {
     std::string node_id = get_node_id();
-    LOG_INFO("[Node=%s][Role=%s][Term=%u] Destroying RaftNode",
+    LOG_INFO("[Node={}][Role={}][Term={}] Destroying RaftNode",
              node_id.c_str(),
              role_to_string(role_.load()),
              persistent_state_.current_term_.load());
@@ -153,7 +153,7 @@ RaftNode::~RaftNode()
     heartbeat_thread_running_ = false;
     follower_client_thread_running_ = false;
 
-    LOG_INFO("[Node=%s] Stopping background threads", node_id.c_str());
+    LOG_INFO("[Node={}] Stopping background threads", node_id.c_str());
     if (election_thread_.joinable())
     {
         election_thread_.join();
@@ -175,7 +175,7 @@ RaftNode::~RaftNode()
             snapshot_state.fp = nullptr;
         }
     }
-    LOG_INFO("[Node=%s] RaftNode destroyed successfully", node_id.c_str());
+    LOG_INFO("[Node={}] RaftNode destroyed successfully", node_id.c_str());
 }
 
 // 加载持久化状态
@@ -185,7 +185,7 @@ void RaftNode::load_persistent_state()
     FILE *file = fopen(meta_path.c_str(), "rb");
     if (file == nullptr)
     {
-        LOG_INFO("No persistent state file found: %s", meta_path.c_str());
+        LOG_INFO("No persistent state file found: {}", meta_path.c_str());
         return;
     }
 
@@ -215,14 +215,14 @@ void RaftNode::save_persistent_state()
     FILE *file = fopen(meta_path.c_str(), "wb");
     if (file == nullptr)
     {
-        LOG_ERROR("Failed to open metadata file for writing: %s", meta_path.c_str());
+        LOG_ERROR("Failed to open metadata file for writing: {}", meta_path.c_str());
         return;
     }
 
     std::string serialized_data = persistent_state_.serialize();
     if (fwrite(serialized_data.data(), 1, serialized_data.size(), file) != serialized_data.size())
     {
-        LOG_ERROR("Failed to write persistent state to file: %s", meta_path.c_str());
+        LOG_ERROR("Failed to write persistent state to file: {}", meta_path.c_str());
         fclose(file);
         return;
     }
@@ -289,7 +289,7 @@ void RaftNode::handle_leader_message(const RaftMessage &msg)
         handle_install_snapshot(msg);
         break;
     default:
-        LOG_WARN("Unknown message type: %d", static_cast<int>(msg.type));
+        LOG_WARN("Unknown message type: {}", static_cast<int>(msg.type));
         break;
     }
 }
@@ -303,7 +303,7 @@ void RaftNode::handle_join_cluster_response(const RaftMessage &msg)
     }
     if (role_ != RaftRole::Follower)
     {
-        LOG_WARN("Join cluster response received in non-follower role: %d", static_cast<int>(role_));
+        LOG_WARN("Join cluster response received in non-follower role: {}", static_cast<int>(role_));
         return;
     }
     uint32_t term = msg.term;
@@ -326,7 +326,7 @@ void RaftNode::handle_join_cluster_response(const RaftMessage &msg)
     }
     else
     {
-        LOG_ERROR("Join cluster failed: %s", data.error_message.c_str());
+        LOG_ERROR("Join cluster failed: {}", data.error_message.c_str());
         // 变为leader
         become_leader();
     }
@@ -405,23 +405,23 @@ void RaftNode::handle_new_node_join(const RaftMessage &msg)
 }
 void RaftNode::init_as_follower()
 {
-    LOG_INFO("Initiating as follower to connect to leader: %s", persistent_state_.cluster_metadata_.current_leader_.to_string().c_str());
+    LOG_INFO("Initiating as follower to connect to leader: {}", persistent_state_.cluster_metadata_.current_leader_.to_string().c_str());
     become_follower(persistent_state_.cluster_metadata_.current_leader_, persistent_state_.current_term_, true, persistent_state_.commit_index_);
 }
 
 bool RaftNode::connect_to_leader(const Address &leader_addr)
 {
-    LOG_INFO("attempt to connect to leader: %s", leader_addr.to_string().c_str());
+    LOG_INFO("attempt to connect to leader: {}", leader_addr.to_string().c_str());
     follower_client_ = std::make_unique<TCPClient>(leader_addr.host, leader_addr.port);
     try
     {
         follower_client_->connect();
-        LOG_INFO("Connected to leader: %s", leader_addr.to_string().c_str());
+        LOG_INFO("Connected to leader: {}", leader_addr.to_string().c_str());
         return true;
     }
     catch (const std::exception &e)
     {
-        LOG_ERROR("Failed to connect to leader: %s,leader addr: %s", e.what(), leader_addr.to_string().c_str());
+        LOG_ERROR("Failed to connect to leader: {},leader addr: {}", e.what(), leader_addr.to_string().c_str());
         follower_client_ = nullptr;
         return false;
     }
@@ -444,7 +444,7 @@ void RaftNode::init_with_cluster_discovery()
 
     for (auto &target_node : cluster_nodes)
     {
-        LOG_INFO("Probing cluster via node: %s", target_node.to_string().c_str());
+        LOG_INFO("Probing cluster via node: {}", target_node.to_string().c_str());
 
         // 发送QueryLeader消息并等待响应
         TCPClient client(target_node.host, target_node.port);
@@ -456,7 +456,7 @@ void RaftNode::init_with_cluster_discovery()
             int ret = client.receive(*body, raft_msg_timeout_);
             if (ret < 0)
             {
-                LOG_ERROR("Failed to receive response from node: %s", target_node.to_string().c_str());
+                LOG_ERROR("Failed to receive response from node: {}", target_node.to_string().c_str());
                 delete body;
                 continue;
             }
@@ -490,7 +490,7 @@ void RaftNode::init_with_cluster_discovery()
         }
         catch (const std::exception &e)
         {
-            LOG_ERROR("Exception caught while probing cluster: %s", e.what());
+            LOG_ERROR("Exception caught while probing cluster: {}", e.what());
         }
     }
 }
@@ -522,7 +522,7 @@ bool RaftNode::become_follower(const Address &leader_addr, uint32_t term, bool i
     std::string node_id = get_node_id();
     RaftRole old_role = role_.load();
 
-    LOG_INFO("[Node=%s][Role=%s][Term=%u] STATE TRANSITION -> Follower, Leader=%s, TargetTerm=%u, IsReconnect=%s, CommitIndex=%u",
+    LOG_INFO("[Node={}][Role={}][Term={}] STATE TRANSITION -> Follower, Leader={}, TargetTerm={}, IsReconnect={}, CommitIndex={}",
              node_id.c_str(),
              role_to_string(old_role),
              persistent_state_.current_term_.load(),
@@ -546,7 +546,7 @@ bool RaftNode::become_follower(const Address &leader_addr, uint32_t term, bool i
         for (int retry = 0; retry < max_retries && !success; retry++)
         {
             int current_timeout = base_timeout * (retry + 1); // 超时时间递增：2秒, 4秒, 6秒
-            LOG_INFO("[Node=%s] Follower: Attempting to receive init message response (retry %d/%d, timeout: %dms)",
+            LOG_INFO("[Node={}] Follower: Attempting to receive init message response (retry {}/{}, timeout: {})",
                      get_node_id().c_str(), retry + 1, max_retries, current_timeout);
 
             ProtocolBody *msg = new_body();
@@ -563,7 +563,7 @@ bool RaftNode::become_follower(const Address &leader_addr, uint32_t term, bool i
                     success = true;
                     reset_election_timeout();
                     to_follower();
-                    LOG_INFO("[Node=%s][Role=%s][Term=%u] Successfully connected to leader %s, commit_index updated to %u",
+                    LOG_INFO("[Node={}][Role={}][Term={}] Successfully connected to leader {}, commit_index updated to {}",
                              node_id.c_str(),
                              role_to_string(role_.load()),
                              persistent_state_.current_term_.load(),
@@ -578,7 +578,7 @@ bool RaftNode::become_follower(const Address &leader_addr, uint32_t term, bool i
                         uint32_t old_term = persistent_state_.current_term_.load();
                         persistent_state_.current_term_ = term;
                         persistent_state_.voted_for_ = Address(); // 重置投票
-                        LOG_INFO("[Node=%s] Term updated: %u -> %u", node_id.c_str(), old_term, term);
+                        LOG_INFO("[Node={}] Term updated: {} -> {}", node_id.c_str(), old_term, term);
                     }
                     save_persistent_state();
 
@@ -607,7 +607,7 @@ bool RaftNode::become_follower(const Address &leader_addr, uint32_t term, bool i
             }
             else
             {
-                LOG_WARN("[Node=%s] Follower: Failed to receive init message response (retry %d), will retry connection",
+                LOG_WARN("[Node={}] Follower: Failed to receive init message response (retry {}), will retry connection",
                          get_node_id().c_str(), retry + 1);
             }
             delete msg;
@@ -616,19 +616,19 @@ bool RaftNode::become_follower(const Address &leader_addr, uint32_t term, bool i
         // 所有重试都失败
         if (!success)
         {
-            LOG_ERROR("[Node=%s] Follower: All %d retries failed to receive init message response from leader, closing connection",
+            LOG_ERROR("[Node={}] Follower: All {} retries failed to receive init message response from leader, closing connection",
                       get_node_id().c_str(), max_retries);
             follower_client_->close();
         }
         else
         {
-            LOG_ERROR("Failed to connect to leader %s", leader_addr.to_string().c_str());
+            LOG_ERROR("Failed to connect to leader {}", leader_addr.to_string().c_str());
         }
         return false;
     }
     else
     {
-        LOG_ERROR("Failed to connect to leader %s", leader_addr.to_string().c_str());
+        LOG_ERROR("Failed to connect to leader {}", leader_addr.to_string().c_str());
         return false;
     }
 }
@@ -663,7 +663,7 @@ void RaftNode::become_candidate()
         last_heartbeat_time_ = std::chrono::steady_clock::now();
         election_timeout_ = generate_election_timeout();
 
-        LOG_INFO("[Node=%s] STATE TRANSITION: %s -> Candidate, Term: %u -> %u, Votes: 1, ElectionTimeout: %dms",
+        LOG_INFO("[Node={}] STATE TRANSITION: {} -> Candidate, Term: {} -> {}, Votes: 1, ElectionTimeout: {}",
                  node_id.c_str(),
                  role_to_string(old_role),
                  old_term,
@@ -692,7 +692,7 @@ void RaftNode::become_leader()
         persistent_state_.cluster_metadata_.cluster_nodes_.clear();
         save_persistent_state();
 
-        LOG_INFO("[Node=%s] STATE TRANSITION: %s -> Leader, Term: %u, Cluster size: %zu",
+        LOG_INFO("[Node={}] STATE TRANSITION: {} -> Leader, Term: {}, Cluster size: {}",
                  node_id.c_str(),
                  role_to_string(old_role),
                  persistent_state_.current_term_.load(),
@@ -704,7 +704,7 @@ void RaftNode::become_leader()
 void RaftNode::election_loop()
 {
     std::string node_id = get_node_id();
-    LOG_INFO("[Node=%s][Role=%s] Election loop started, timeout range: %d-%dms",
+    LOG_INFO("[Node={}][Role={}] Election loop started, timeout range: {}-{}",
              node_id.c_str(),
              role_to_string(role_.load()),
              election_timeout_min_,
@@ -715,7 +715,7 @@ void RaftNode::election_loop()
         // 如果已经是Leader，等待直到变成Follower或Candidate
         if (role_ == RaftRole::Leader)
         {
-            LOG_DEBUG("[Node=%s] Election thread: Already Leader, waiting for role change", node_id.c_str());
+            LOG_DEBUG("[Node={}] Election thread: Already Leader, waiting for role change", node_id.c_str());
             std::unique_lock<std::mutex> lock(election_cv_mutex_);
             // 等待被唤醒（role变为非Leader或线程被停止）
             election_cv_.wait_for(lock, std::chrono::milliseconds(election_timeout_),
@@ -731,7 +731,7 @@ void RaftNode::election_loop()
 
         if (sleep_time > 0)
         {
-            LOG_DEBUG("[Node=%s] Election thread: Waiting %ums before next election check", node_id.c_str(), sleep_time);
+            LOG_DEBUG("[Node={}] Election thread: Waiting {} before next election check", node_id.c_str(), sleep_time);
             std::unique_lock<std::mutex> lock(election_cv_mutex_);
             // 等待指定时间，或被提前唤醒（role变化或线程停止）
             election_cv_.wait_for(lock, std::chrono::milliseconds(sleep_time),
@@ -744,7 +744,7 @@ void RaftNode::election_loop()
         // 检查是否超时且仍不是Leader
         if (election_thread_running_ && role_ != RaftRole::Leader && is_election_timeout())
         {
-            LOG_WARN("[Node=%s][Role=%s][Term=%u] Election timeout triggered (%dms), starting new election",
+            LOG_WARN("[Node={}][Role={}][Term={}] Election timeout triggered ({}), starting new election",
                      node_id.c_str(),
                      role_to_string(role_.load()),
                      persistent_state_.current_term_.load(),
@@ -752,21 +752,21 @@ void RaftNode::election_loop()
             become_candidate();
         }
     }
-    LOG_INFO("[Node=%s] Election loop stopped", node_id.c_str());
+    LOG_INFO("[Node={}] Election loop stopped", node_id.c_str());
 }
 
 // 心跳线程主循环
 void RaftNode::heartbeat_loop()
 {
     std::string node_id = get_node_id();
-    LOG_INFO("[Node=%s] Heartbeat loop started, interval: %dms", node_id.c_str(), heartbeat_interval_);
+    LOG_INFO("[Node={}] Heartbeat loop started, interval: {}", node_id.c_str(), heartbeat_interval_);
 
     while (heartbeat_thread_running_)
     {
         // 如果不是Leader，等待直到变成Leader
         if (role_ != RaftRole::Leader)
         {
-            LOG_DEBUG("[Node=%s] Heartbeat thread: Not Leader, waiting for role change", node_id.c_str());
+            LOG_DEBUG("[Node={}] Heartbeat thread: Not Leader, waiting for role change", node_id.c_str());
             std::unique_lock<std::mutex> lock(heartbeat_cv_mutex_);
             // 等待被唤醒（role变为Leader或线程被停止）
             heartbeat_cv_.wait_for(lock, std::chrono::milliseconds(heartbeat_interval_),
@@ -778,7 +778,7 @@ void RaftNode::heartbeat_loop()
         }
 
         // 等待心跳间隔时间
-        LOG_DEBUG("[Node=%s] Heartbeat thread: Waiting %dms before next heartbeat", node_id.c_str(), heartbeat_interval_);
+        LOG_DEBUG("[Node={}] Heartbeat thread: Waiting {} before next heartbeat", node_id.c_str(), heartbeat_interval_);
         std::unique_lock<std::mutex> lock(heartbeat_cv_mutex_);
         // 等待指定时间，或被提前唤醒（role变化或线程停止）
         heartbeat_cv_.wait_for(lock, std::chrono::milliseconds(heartbeat_interval_),
@@ -796,7 +796,7 @@ void RaftNode::heartbeat_loop()
         if (log_array_)
         {
             uint32_t log_count = log_array_->size();
-            LOG_DEBUG("[Node=%s][Role=Leader][Term=%u] Sending heartbeat to %zu followers, log_count: %u",
+            LOG_DEBUG("[Node={}][Role=Leader][Term={}] Sending heartbeat to {} followers, log_count: {}",
                       node_id.c_str(),
                       persistent_state_.current_term_.load(),
                       follower_sockets_.size(),
@@ -804,7 +804,7 @@ void RaftNode::heartbeat_loop()
             send_heartbeat_to_all();
         }
     }
-    LOG_INFO("[Node=%s] Heartbeat loop stopped", node_id.c_str());
+    LOG_INFO("[Node={}] Heartbeat loop stopped", node_id.c_str());
 }
 
 // 发送RequestVote
@@ -831,7 +831,7 @@ void RaftNode::send_request_vote()
     // 构造消息
     RaftMessage msg = RaftMessage::request_vote(current_term, last_log_index, last_log_term);
 
-    LOG_INFO("[Node=%s][Role=Candidate][Term=%u] ELECTION: Sending RequestVote to %zu nodes, LastLogIndex=%u, LastLogTerm=%u",
+    LOG_INFO("[Node={}][Role=Candidate][Term={}] ELECTION: Sending RequestVote to {} nodes, LastLogIndex={}, LastLogTerm={}",
              node_id.c_str(),
              current_term,
              nodes.size(),
@@ -854,7 +854,7 @@ void RaftNode::send_request_vote()
                 // 发送请求
                 int ret = client.send(msg);
                 if(ret <= 0){
-                    LOG_WARN("[Node=%s] Failed to send RequestVote to %s", node_id.c_str(), node.to_string().c_str());
+                    LOG_WARN("[Node={}] Failed to send RequestVote to {}", node_id.c_str(), node.to_string().c_str());
                     return;
                 }
                 // 设置超时时间，例如 200ms。如果对方挂了，这里会超时返回，不会卡死。
@@ -873,11 +873,11 @@ void RaftNode::send_request_vote()
             }
             catch (const std::exception &e)
             {
-                LOG_WARN("[Node=%s] Failed to request vote from %s: %s", node_id.c_str(), node.to_string().c_str(), e.what());
+                LOG_WARN("[Node={}] Failed to request vote from {}: {}", node_id.c_str(), node.to_string().c_str(), e.what());
             } });
         if (!is_submitted)
         {
-            LOG_WARN("[Node=%s] Failed to submit RequestVote task to thread pool for node %s", node_id.c_str(), node.to_string().c_str());
+            LOG_WARN("[Node={}] Failed to submit RequestVote task to thread pool for node {}", node_id.c_str(), node.to_string().c_str());
         }
     }
 }
@@ -889,7 +889,7 @@ void RaftNode::send_heartbeat_to_all()
     std::unordered_set<Address> &cluster_nodes_ = persistent_state_.cluster_metadata_.cluster_nodes_;
     if (cluster_nodes_.empty())
     {
-        LOG_DEBUG("[Node=%s] No followers to send heartbeat", node_id.c_str());
+        LOG_DEBUG("[Node={}] No followers to send heartbeat", node_id.c_str());
         return;
     }
 
@@ -900,7 +900,7 @@ void RaftNode::send_heartbeat_to_all()
         send_append_entries(sock);
         sent_count++;
     }
-    LOG_DEBUG("[Node=%s] Heartbeat sent to %zu followers", node_id.c_str(), sent_count);
+    LOG_DEBUG("[Node={}] Heartbeat sent to {} followers", node_id.c_str(), sent_count);
 }
 
 // 发送AppendEntries
@@ -918,7 +918,7 @@ void RaftNode::send_append_entries_nolock(const socket_t &sock)
     // 如果不是 Leader，不发送
     if (role_ != RaftRole::Leader)
     {
-        LOG_WARN("[Node=%s] Attempted to send AppendEntries but not Leader", node_id.c_str());
+        LOG_WARN("[Node={}] Attempted to send AppendEntries but not Leader", node_id.c_str());
         return;
     }
 
@@ -944,7 +944,7 @@ void RaftNode::send_append_entries_nolock(const socket_t &sock)
         std::set<LogEntry> entry_set(entries.begin(), entries.end());
         msg = RaftMessage::append_entries_with_data(term, prev_log_index, prev_log_term, entry_set, leader_commit);
 
-        LOG_DEBUG("[Node=%s][Role=Leader][Term=%u] LOG REPLICATION: Socket=%d, PrevIndex=%u, PrevTerm=%u, Entries=%zu, LeaderCommit=%u",
+        LOG_DEBUG("[Node={}][Role=Leader][Term={}] LOG REPLICATION: Socket={}, PrevIndex={}, PrevTerm={}, Entries={}, LeaderCommit={}",
                   node_id.c_str(),
                   term,
                   sock,
@@ -957,7 +957,7 @@ void RaftNode::send_append_entries_nolock(const socket_t &sock)
     {
         // 没有新日志，发送纯心跳
         msg = RaftMessage::append_entries(term, prev_log_index, prev_log_term, leader_commit);
-        LOG_DEBUG("[Node=%s][Role=Leader][Term=%u] HEARTBEAT: Socket=%d, PrevIndex=%u, PrevTerm=%u, LeaderCommit=%u",
+        LOG_DEBUG("[Node={}][Role=Leader][Term={}] HEARTBEAT: Socket={}, PrevIndex={}, PrevTerm={}, LeaderCommit={}",
                   node_id.c_str(),
                   term,
                   sock,
@@ -969,7 +969,7 @@ void RaftNode::send_append_entries_nolock(const socket_t &sock)
     int ret = send(msg, sock);
     if (ret < 0)
     {
-        LOG_ERROR("[Node=%s] Failed to send AppendEntries to socket %d: %s", node_id.c_str(), sock, strerror(errno));
+        LOG_ERROR("[Node={}] Failed to send AppendEntries to socket {}: {}", node_id.c_str(), sock, strerror(errno));
     }
 }
 bool RaftNode::handle_append_entries(const RaftMessage &msg)
@@ -980,7 +980,7 @@ bool RaftNode::handle_append_entries(const RaftMessage &msg)
     // 1. 检查term
     if (msg.term < persistent_state_.current_term_.load())
     {
-        LOG_WARN("[Node=%s][Role=%s][Term=%u] REJECTED AppendEntries from old term %u",
+        LOG_WARN("[Node={}][Role={}][Term={}] REJECTED AppendEntries from old term {}",
                  node_id.c_str(),
                  role_to_string(role_.load()),
                  persistent_state_.current_term_.load(),
@@ -1001,7 +1001,7 @@ bool RaftNode::handle_append_entries(const RaftMessage &msg)
     {
         uint32_t old_term = persistent_state_.current_term_.load();
         persistent_state_.current_term_.store(msg.term);
-        LOG_INFO("[Node=%s] TERM UPDATE: %u -> %u (discovered from leader)",
+        LOG_INFO("[Node={}] TERM UPDATE: {} -> {} (discovered from leader)",
                  node_id.c_str(),
                  old_term,
                  msg.term);
@@ -1012,7 +1012,7 @@ bool RaftNode::handle_append_entries(const RaftMessage &msg)
 
     if (!msg.append_entries_data)
     {
-        LOG_ERROR("[Node=%s] AppendEntries message missing data", node_id.c_str());
+        LOG_ERROR("[Node={}] AppendEntries message missing data", node_id.c_str());
         // 发送失败响应
         if (follower_client_)
         {
@@ -1031,7 +1031,7 @@ bool RaftNode::handle_append_entries(const RaftMessage &msg)
         LogEntry prev_entry;
         if (!log_array_->get(data.prev_log_index, prev_entry))
         {
-            LOG_WARN("[Node=%s] Prev log index %u not found, rejecting AppendEntries",
+            LOG_WARN("[Node={}] Prev log index {} not found, rejecting AppendEntries",
                      node_id.c_str(),
                      data.prev_log_index);
             // 发送失败响应
@@ -1046,7 +1046,7 @@ bool RaftNode::handle_append_entries(const RaftMessage &msg)
 
         if (prev_entry.term != data.prev_log_term)
         {
-            LOG_WARN("[Node=%s] Prev log term mismatch at index %u: expected %u, got %u",
+            LOG_WARN("[Node={}] Prev log term mismatch at index {}: expected {}, got {}",
                      node_id.c_str(),
                      data.prev_log_index,
                      prev_entry.term,
@@ -1077,7 +1077,7 @@ bool RaftNode::handle_append_entries(const RaftMessage &msg)
                 if (existing_entry.term != entry.term)
                 {
                     // term不匹配，删除冲突日志及之后的所有日志
-                    LOG_INFO("[Node=%s] LOG CONFLICT at index %u: local_term=%u, remote_term=%u, truncating",
+                    LOG_INFO("[Node={}] LOG CONFLICT at index {}: local_term={}, remote_term={}, truncating",
                              node_id.c_str(),
                              entry.index,
                              existing_entry.term,
@@ -1103,7 +1103,7 @@ bool RaftNode::handle_append_entries(const RaftMessage &msg)
         }
         if (appended > 0)
         {
-            LOG_INFO("[Node=%s][Role=%s][Term=%u] APPENDED: %zu new entries, %zu conflicts, PrevIndex=%u",
+            LOG_INFO("[Node={}][Role={}][Term={}] APPENDED: {} new entries, {} conflicts, PrevIndex={}",
                      node_id.c_str(),
                      role_to_string(role_.load()),
                      persistent_state_.current_term_.load(),
@@ -1128,14 +1128,14 @@ bool RaftNode::handle_append_entries(const RaftMessage &msg)
             // 减少日志输出，只在批量更新时打印
             if (new_commit % 100 == 0)
             {
-                LOG_DEBUG("[Node=%s] COMMIT INDEX updated: %u -> %u", node_id.c_str(), old_commit, new_commit);
+                LOG_DEBUG("[Node={}] COMMIT INDEX updated: {} -> {}", node_id.c_str(), old_commit, new_commit);
             }
             apply_committed_entries_nolock(); // Follower 也要应用日志
         }
     }
     else
     {
-        LOG_DEBUG("[Node=%s] LeaderCommit=%u <= LocalCommit=%u, no update needed",
+        LOG_DEBUG("[Node={}] LeaderCommit={} <= LocalCommit={}, no update needed",
                   node_id.c_str(),
                   data.leader_commit,
                   persistent_state_.commit_index_.load());
@@ -1160,7 +1160,7 @@ bool RaftNode::handle_request_vote(const RaftMessage &msg, const socket_t &clien
 
     if (!msg.request_vote_data)
     {
-        LOG_ERROR("[Node=%s] RequestVote message missing data", node_id.c_str());
+        LOG_ERROR("[Node={}] RequestVote message missing data", node_id.c_str());
         return false;
     }
 
@@ -1172,11 +1172,11 @@ bool RaftNode::handle_request_vote(const RaftMessage &msg, const socket_t &clien
     Address opposite_addr;
     if (!get_opposite_address(client_sock, opposite_addr))
     {
-        LOG_ERROR("[Node=%s] Failed to get candidate address", node_id.c_str());
+        LOG_ERROR("[Node={}] Failed to get candidate address", node_id.c_str());
         return false;
     }
 
-    LOG_INFO("[Node=%s][Role=%s][Term=%u] Received RequestVote from %s, CandidateTerm=%u, LastLogIndex=%u, LastLogTerm=%u",
+    LOG_INFO("[Node={}][Role={}][Term={}] Received RequestVote from {}, CandidateTerm={}, LastLogIndex={}, LastLogTerm={}",
              node_id.c_str(),
              role_to_string(role_.load()),
              my_term,
@@ -1191,7 +1191,7 @@ bool RaftNode::handle_request_vote(const RaftMessage &msg, const socket_t &clien
     // --- 规则 1: 如果对方任期比我小，拒绝 ---
     if (candidate_term < my_term)
     {
-        LOG_WARN("[Node=%s] VOTE REJECTED for %s (candidate term %u < my term %u)",
+        LOG_WARN("[Node={}] VOTE REJECTED for {} (candidate term {} < my term {})",
                  node_id.c_str(),
                  opposite_addr.to_string().c_str(),
                  candidate_term,
@@ -1205,7 +1205,7 @@ bool RaftNode::handle_request_vote(const RaftMessage &msg, const socket_t &clien
 
     if (candidate_term > my_term)
     {
-        LOG_INFO("[Node=%s] TERM UPDATE: %u -> %u (from candidate %s)",
+        LOG_INFO("[Node={}] TERM UPDATE: {} -> {} (from candidate {})",
                  node_id.c_str(),
                  my_term,
                  candidate_term,
@@ -1235,7 +1235,7 @@ bool RaftNode::handle_request_vote(const RaftMessage &msg, const socket_t &clien
         log_is_ok = true;
     }
 
-    LOG_DEBUG("[Node=%s] Log freshness check: CandidateLog=(index=%u, term=%u), MyLog=(index=%u, term=%u), Result=%s",
+    LOG_DEBUG("[Node={}] Log freshness check: CandidateLog=(index={}, term={}), MyLog=(index={}, term={}), Result={}",
               node_id.c_str(),
               data.last_log_index,
               data.last_log_term,
@@ -1249,7 +1249,7 @@ bool RaftNode::handle_request_vote(const RaftMessage &msg, const socket_t &clien
 
     if (!can_vote)
     {
-        LOG_DEBUG("[Node=%s] Already voted for %s in term %u",
+        LOG_DEBUG("[Node={}] Already voted for {} in term {}",
                   node_id.c_str(),
                   persistent_state_.voted_for_.to_string().c_str(),
                   my_term);
@@ -1263,7 +1263,7 @@ bool RaftNode::handle_request_vote(const RaftMessage &msg, const socket_t &clien
         last_heartbeat_time_ = std::chrono::steady_clock::now();
         election_timeout_ = generate_election_timeout();
         save_persistent_state();
-        LOG_INFO("[Node=%s] VOTE GRANTED for %s in term %u",
+        LOG_INFO("[Node={}] VOTE GRANTED for {} in term {}",
                  node_id.c_str(),
                  opposite_addr.to_string().c_str(),
                  my_term);
@@ -1274,7 +1274,7 @@ bool RaftNode::handle_request_vote(const RaftMessage &msg, const socket_t &clien
     else
     {
         // 拒绝投票
-        LOG_WARN("[Node=%s] VOTE REJECTED for %s in term %u - Reason: %s",
+        LOG_WARN("[Node={}] VOTE REJECTED for {} in term {} - Reason: {}",
                  node_id.c_str(),
                  opposite_addr.to_string().c_str(),
                  my_term,
@@ -1301,7 +1301,7 @@ void RaftNode::apply_committed_entries_nolock()
 
     if (last_applied >= commit_index)
     {
-        LOG_INFO("[Node=%s] No logs to apply: LastApplied=%u, CommitIndex=%u",
+        LOG_INFO("[Node={}] No logs to apply: LastApplied={}, CommitIndex={}",
                  node_id.c_str(),
                  last_applied,
                  commit_index);
@@ -1309,7 +1309,7 @@ void RaftNode::apply_committed_entries_nolock()
     }
 
     uint32_t apply_count = commit_index - last_applied;
-    LOG_INFO("[Node=%s][Role=%s] APPLYING LOGS: %u entries (Index %u -> %u)",
+    LOG_INFO("[Node={}][Role={}] APPLYING LOGS: {} entries (Index {} -> {})",
              node_id.c_str(),
              role_to_string(role_.load()),
              apply_count,
@@ -1333,7 +1333,7 @@ void RaftNode::apply_committed_entries_nolock()
             // 只记录摘要信息，避免打印完整命令（特别是批量命令会非常长）
             size_t cmd_len = entry.cmd.length();
             std::string cmd_summary = cmd_len > 100 ? entry.cmd.substr(0, 100) + "..." : entry.cmd;
-            LOG_DEBUG("[Node=%s] Applied log index %u (term %u), cmd_len=%zu, cmd: %s",
+            LOG_DEBUG("[Node={}] Applied log index {} (term {}), cmd_len={}, cmd: {}",
                       node_id.c_str(),
                       last_applied,
                       entry.term,
@@ -1342,21 +1342,21 @@ void RaftNode::apply_committed_entries_nolock()
             // 只在错误时打印详细信息
             if (result.code_ == 0)
             {
-                LOG_ERROR("[Node=%s] Failed to apply log %u: %s", node_id.c_str(), last_applied, result.error_msg_.c_str());
+                LOG_ERROR("[Node={}] Failed to apply log {}: {}", node_id.c_str(), last_applied, result.error_msg_.c_str());
             }
             // 如果是写操作且带有 request_id，将结果写入缓存
             if (!entry.request_id.empty())
             {
                 // 插入缓存
                 result_cache_.put(entry.request_id, result);
-                LOG_DEBUG("[Node=%s] Cached result for request_id: %s",
+                LOG_DEBUG("[Node={}] Cached result for request_id: {}",
                           node_id.c_str(),
                           entry.request_id.c_str());
             }
         }
         else
         {
-            LOG_ERROR("[Node=%s] Failed to read log at apply index %u", node_id.c_str(), last_applied);
+            LOG_ERROR("[Node={}] Failed to read log at apply index {}", node_id.c_str(), last_applied);
             result = Response::error("log read error");
         }
 
@@ -1369,7 +1369,7 @@ void RaftNode::apply_committed_entries_nolock()
 
     // 批量保存一次状态（优化）
     save_persistent_state();
-    LOG_INFO("[Node=%s] Log application completed: LastApplied=%u", node_id.c_str(), last_applied);
+    LOG_INFO("[Node={}] Log application completed: LastApplied={}", node_id.c_str(), last_applied);
 }
 
 // 尝试提交日志
@@ -1386,7 +1386,7 @@ void RaftNode::try_commit_entries()
     if (commit_index >= last_log_index)
         return;
 
-    LOG_DEBUG("[Node=%s][Role=Leader][Term=%u] Checking commit eligibility: CommitIndex=%u, LastLogIndex=%u",
+    LOG_DEBUG("[Node={}][Role=Leader][Term={}] Checking commit eligibility: CommitIndex={}, LastLogIndex={}",
               node_id.c_str(),
               persistent_state_.current_term_.load(),
               commit_index,
@@ -1423,7 +1423,7 @@ void RaftNode::try_commit_entries()
             // 减少日志输出，只记录关键信息
             if (commit_index % 100 == 0)
             {
-                LOG_DEBUG("[Node=%s][Role=Leader][Term=%u] COMMIT ADVANCED: %u -> %u (Majority Index), LogTerm=%u",
+                LOG_DEBUG("[Node={}][Role=Leader][Term={}] COMMIT ADVANCED: {} -> {} (Majority Index), LogTerm={}",
                           node_id.c_str(),
                           current_term,
                           commit_index,
@@ -1437,7 +1437,7 @@ void RaftNode::try_commit_entries()
         }
         else
         {
-            LOG_DEBUG("[Node=%s] Cannot commit index %u: log_term=%u != current_term=%u",
+            LOG_DEBUG("[Node={}] Cannot commit index {}: log_term={} != current_term={}",
                       node_id.c_str(),
                       majority_index,
                       log_term,
@@ -1464,7 +1464,7 @@ void RaftNode::commit_entries()
     if (commit_index >= last_log_index)
         return;
 
-    LOG_DEBUG("[Node=%s][Role=Leader][Term=%u] Checking commit eligibility: CommitIndex=%u, LastLogIndex=%u",
+    LOG_DEBUG("[Node={}][Role=Leader][Term={}] Checking commit eligibility: CommitIndex={}, LastLogIndex={}",
               node_id.c_str(),
               persistent_state_.current_term_.load(),
               commit_index,
@@ -1484,7 +1484,7 @@ void RaftNode::commit_entries()
             // 只记录摘要信息，避免打印完整命令（特别是批量命令会非常长）
             size_t cmd_len = entry.cmd.length();
             std::string cmd_summary = cmd_len > 100 ? entry.cmd.substr(0, 100) + "..." : entry.cmd;
-            LOG_DEBUG("[Node=%s] Applied log index %u (term %u), cmd_len=%zu, cmd: %s",
+            LOG_DEBUG("[Node={}] Applied log index {} (term {}), cmd_len={}, cmd: {}",
                       node_id.c_str(),
                       last_applied,
                       entry.term,
@@ -1493,27 +1493,27 @@ void RaftNode::commit_entries()
             // 只在错误时打印详细信息
             if (result.code_ == 0)
             {
-                LOG_ERROR("[Node=%s] Execute command %s error at index %u: %s", node_id.c_str(), cmd_summary.c_str(), last_applied, result.error_msg_.c_str());
+                LOG_ERROR("[Node={}] Execute command {} error at index {}: {}", node_id.c_str(), cmd_summary.c_str(), last_applied, result.error_msg_.c_str());
             }
             // 如果是写操作且带有 request_id，将结果写入缓存
             if (!entry.request_id.empty())
             {
                 // 插入缓存
                 result_cache_.put(entry.request_id, result);
-                LOG_DEBUG("[Node=%s] Cached result for request_id: %s",
+                LOG_DEBUG("[Node={}] Cached result for request_id: {}",
                           node_id.c_str(),
                           entry.request_id.c_str());
             }
         }
         else
         {
-            LOG_ERROR("[Node=%s] Failed to read log at apply index %u", node_id.c_str(), last_applied);
+            LOG_ERROR("[Node={}] Failed to read log at apply index {}", node_id.c_str(), last_applied);
             result = Response::error("log read error");
         }
     }
     persistent_state_.last_applied_.store(last_log_index);
     save_persistent_state();
-    LOG_INFO("[Node=%s] Log application completed: LastApplied=%u", node_id.c_str(), last_applied);
+    LOG_INFO("[Node={}] Log application completed: LastApplied={}", node_id.c_str(), last_applied);
 }
 void RaftNode::notify_request_applied(uint32_t index, const Response &response)
 {
@@ -1528,7 +1528,7 @@ void RaftNode::notify_request_applied(uint32_t index, const Response &response)
         }
         catch (...)
         {
-            LOG_WARN("Failed to set promise value for index %u", index);
+            LOG_WARN("Failed to set promise value for index {}", index);
         }
         pending_requests_.erase(it);
     }
@@ -1618,7 +1618,7 @@ void RaftNode::handle_join_cluster(const RaftMessage &msg, const socket_t &clien
         // 判断节点是否受信任
         if (!is_trust(new_node_addr))
         {
-            LOG_WARN("New node %s is not trusted, rejecting JoinCluster", new_node_addr.to_string().c_str());
+            LOG_WARN("New node {} is not trusted, rejecting JoinCluster", new_node_addr.to_string().c_str());
             response.error_message = "Node is not trusted";
             response_msg.join_cluster_response_data = response;
             send(response_msg, client_sock);
@@ -1667,7 +1667,7 @@ void RaftNode::handle_join_cluster(const RaftMessage &msg, const socket_t &clien
         }
         // 添加到io多路复用
         add_socket_to_epoll(client_sock);
-        LOG_INFO("New node joined: %s", new_node_addr.to_string().c_str());
+        LOG_INFO("New node joined: {}", new_node_addr.to_string().c_str());
     }
     else
     {
@@ -1745,7 +1745,7 @@ void RaftNode::send_snapshot_chunk(socket_t sock)
             // 这里为了健壮性，如果取不到，暂且取 persistent_state_.current_term_
             if (state->last_included_term == 0 && state->last_included_index > 0)
             {
-                LOG_WARN("Could not get term for snapshot index %u, using current term", state->last_included_index);
+                LOG_WARN("Could not get term for snapshot index {}, using current term", state->last_included_index);
                 state->last_included_term = persistent_state_.current_term_.load();
             }
         }
@@ -1754,7 +1754,7 @@ void RaftNode::send_snapshot_chunk(socket_t sock)
         state->offset = 0;
         state->snapshot_path = snapshot_path;
 
-        LOG_INFO("Started snapshot transfer to %d. File: %s, Index: %u, Term: %u",
+        LOG_INFO("Started snapshot transfer to {}. File: {}, Index: {}, Term: {}",
                  sock, snapshot_path.c_str(), state->last_included_index, state->last_included_term);
     }
 
@@ -1792,7 +1792,7 @@ void RaftNode::send_snapshot_chunk(socket_t sock)
     state->offset += bytes_read;
 
     send(msg, sock);
-    LOG_INFO("Sent snapshot chunk to %d: offset=%lu, size=%zu, done=%d",
+    LOG_INFO("Sent snapshot chunk to {}: offset={}, size={}, done={}",
              sock, state->offset - bytes_read, bytes_read, done);
 }
 
@@ -1807,7 +1807,7 @@ void RaftNode::handle_install_snapshot(const RaftMessage &msg)
     uint64_t file_size = get_file_size(temp_path);
     if (data.offset < file_size)
     {
-        LOG_INFO("Offset %lu is less than file size %lu, skip writing and send response directly",
+        LOG_INFO("Offset {} is less than file size {}, skip writing and send response directly",
                  data.offset, file_size);
         RaftMessage response = RaftMessage::snapshot_install_response(true, data.offset);
         send(response, follower_client_->get_socket());
@@ -1829,7 +1829,7 @@ void RaftNode::handle_install_snapshot(const RaftMessage &msg)
 
     if (!fp)
     {
-        LOG_ERROR("Failed to open snapshot temp file for writing: %s", temp_path.c_str());
+        LOG_ERROR("Failed to open snapshot temp file for writing: {}", temp_path.c_str());
         return;
     }
 
@@ -1837,7 +1837,7 @@ void RaftNode::handle_install_snapshot(const RaftMessage &msg)
     size_t written_size = fwrite(data.snapshot_data.data(), 1, data.snapshot_data.size(), fp.get());
     if (written_size != data.snapshot_data.size())
     {
-        LOG_ERROR("Failed to write all data to temp file, expected %zu, written %zu",
+        LOG_ERROR("Failed to write all data to temp file, expected {}, written {}",
                   data.snapshot_data.size(), written_size);
         return;
     }
@@ -1872,11 +1872,11 @@ void RaftNode::handle_install_snapshot(const RaftMessage &msg)
                 size_t offset = 0;
                 result_cache_.deserialize(result_cache.data(), offset);
             }
-            LOG_INFO("Restore from checkpoint success: %s", temp_path.c_str());
+            LOG_INFO("Restore from checkpoint success: {}", temp_path.c_str());
         }
         else
         {
-            LOG_ERROR("Failed to restore from checkpoint: %s", temp_path.c_str());
+            LOG_ERROR("Failed to restore from checkpoint: {}", temp_path.c_str());
         }
         // 无需手动fclose(fp)！
     }
@@ -1906,12 +1906,12 @@ void RaftNode::handle_snapshot_response(const RaftMessage &msg, socket_t sock)
             match_index_[sock] = snapshot_state.last_included_index;
             next_index_[sock] = snapshot_state.last_included_index + 1;
             snapshot_state_.erase(sock);
-            LOG_INFO("Snapshot sync completed for node %d", sock);
+            LOG_INFO("Snapshot sync completed for node {}", sock);
         }
     }
     else
     {
-        LOG_ERROR("Snapshot chunk failed or offset mismatch for node %d", sock);
+        LOG_ERROR("Snapshot chunk failed or offset mismatch for node {}", sock);
     }
 }
 
@@ -1922,7 +1922,7 @@ void RaftNode::handle_append_entries_response(const RaftMessage &msg, const sock
 
     if (!msg.append_entries_response_data)
     {
-        LOG_ERROR("[Node=%s] AppendEntriesResponse message missing data", node_id.c_str());
+        LOG_ERROR("[Node={}] AppendEntriesResponse message missing data", node_id.c_str());
         return;
     }
 
@@ -1940,7 +1940,7 @@ void RaftNode::handle_append_entries_response(const RaftMessage &msg, const sock
             next_index_[sock] = match_index_[sock] + 1;
         }
 
-        LOG_DEBUG("[Node=%s][Role=Leader][Term=%u] LOG REPLICATION SUCCESS: Socket=%d, MatchIndex: %u -> %u",
+        LOG_DEBUG("[Node={}][Role=Leader][Term={}] LOG REPLICATION SUCCESS: Socket={}, MatchIndex: {} -> {}",
                   node_id.c_str(),
                   persistent_state_.current_term_.load(),
                   sock,
@@ -1967,7 +1967,7 @@ void RaftNode::handle_append_entries_response(const RaftMessage &msg, const sock
             new_next = next_index_[sock];
         }
 
-        LOG_WARN("[Node=%s][Role=Leader] LOG REPLICATION FAILED: Socket=%d, NextIndex: %u -> %u, Retrying",
+        LOG_WARN("[Node={}][Role=Leader] LOG REPLICATION FAILED: Socket={}, NextIndex: {} -> {}, Retrying",
                  node_id.c_str(),
                  sock,
                  old_next,
@@ -1989,7 +1989,7 @@ void RaftNode::handle_request_vote_response(const RaftMessage &msg)
     // 1. 忽略旧任期的响应
     if (msg.term < my_term)
     {
-        LOG_DEBUG("[Node=%s] Ignored RequestVoteResponse from old term %u (current: %u)",
+        LOG_DEBUG("[Node={}] Ignored RequestVoteResponse from old term {} (current: {})",
                   node_id.c_str(),
                   msg.term,
                   my_term);
@@ -1999,7 +1999,7 @@ void RaftNode::handle_request_vote_response(const RaftMessage &msg)
     // 2. 如果对方任期比我大，我立刻退回 Follower
     if (msg.term > my_term)
     {
-        LOG_WARN("[Node=%s][Role=%s] RECEIVED HIGHER TERM %u in vote response, stepping down to Follower",
+        LOG_WARN("[Node={}][Role={}] RECEIVED HIGHER TERM {} in vote response, stepping down to Follower",
                  node_id.c_str(),
                  role_to_string(role_.load()),
                  msg.term);
@@ -2013,7 +2013,7 @@ void RaftNode::handle_request_vote_response(const RaftMessage &msg)
     // 3. 只有 Candidate 才会统计选票
     if (role_ != RaftRole::Candidate)
     {
-        LOG_DEBUG("[Node=%s] Not a Candidate, ignoring RequestVoteResponse", node_id.c_str());
+        LOG_DEBUG("[Node={}] Not a Candidate, ignoring RequestVoteResponse", node_id.c_str());
         return;
     }
 
@@ -2026,7 +2026,7 @@ void RaftNode::handle_request_vote_response(const RaftMessage &msg)
     if (msg.request_vote_response_data->vote_granted)
     {
         granted_votes_++;
-        LOG_INFO("[Node=%s][Role=Candidate][Term=%u] VOTE GRANTED - Votes: %u/%zu (Need %zu for majority)",
+        LOG_INFO("[Node={}][Role=Candidate][Term={}] VOTE GRANTED - Votes: {}/{} (Need {} for majority)",
                  node_id.c_str(),
                  my_term,
                  granted_votes_,
@@ -2036,7 +2036,7 @@ void RaftNode::handle_request_vote_response(const RaftMessage &msg)
         // 检查是否获得多数派
         if (granted_votes_ >= majority)
         {
-            LOG_INFO("[Node=%s][Term=%u] ELECTION WON! Received %zu votes (majority: %zu), becoming Leader",
+            LOG_INFO("[Node={}][Term={}] ELECTION WON! Received {} votes (majority: {}), becoming Leader",
                      node_id.c_str(),
                      my_term,
                      granted_votes_,
@@ -2050,7 +2050,7 @@ void RaftNode::handle_request_vote_response(const RaftMessage &msg)
             save_persistent_state();
             // 广播NEW_MASTER消息通知所有已知节点
             // 注意：在广播前检查 Term 和角色是否一致，避免竞态条件
-            LOG_INFO("[Node=%s][Term=%u] Broadcasting NEW_MASTER message to cluster",
+            LOG_INFO("[Node={}][Term={}] Broadcasting NEW_MASTER message to cluster",
                      node_id.c_str(),
                      leader_term);
             std::thread([this, leader_term]()
@@ -2060,7 +2060,7 @@ void RaftNode::handle_request_vote_response(const RaftMessage &msg)
     }
     else
     {
-        LOG_INFO("[Node=%s][Role=Candidate][Term=%u] VOTE REJECTED - Current votes: %u/%zu (Need %zu)",
+        LOG_INFO("[Node={}][Role=Candidate][Term={}] VOTE REJECTED - Current votes: {}/{} (Need {})",
                  node_id.c_str(),
                  my_term,
                  granted_votes_,
@@ -2101,7 +2101,7 @@ Response RaftNode::submit_command(const std::string &request_id, const std::stri
     // 1. 幂等性检查：如果缓存里有，直接返回
     if (result_cache_.get(request_id, response))
     {
-        LOG_INFO("Duplicate request_id %s found, returning cached response", request_id.c_str());
+        LOG_INFO("Duplicate request_id {} found, returning cached response", request_id.c_str());
         return response;
     }
     static Storage *storage_ = Storage::get_instance();
@@ -2158,7 +2158,7 @@ Response RaftNode::submit_command(const std::string &request_id, const std::stri
             // 减少日志输出频率，只在批量提交时打印
             if (log_index % 100 == 0 || log_index == log_array_->get_last_index())
             {
-                LOG_DEBUG("Leader appended log index %u, term %u, waiting for commit...", log_index, entry.term);
+                LOG_DEBUG("Leader appended log index {}, term {}, waiting for commit...", log_index, entry.term);
             }
 
             if (need_majority_confirm_)
@@ -2204,7 +2204,7 @@ Response RaftNode::submit_command(const std::string &request_id, const std::stri
                 // 从LRU缓存中获取结果
                 if (result_cache_.get(request_id, response))
                 {
-                    LOG_INFO("Request %s executed successfully", request_id.c_str());
+                    LOG_INFO("Request {} executed successfully", request_id.c_str());
                     return response;
                 }
                 else
@@ -2224,7 +2224,7 @@ std::vector<std::pair<std::string, Response>> RaftNode::submit_batch_command(con
     {
         return {};
     }
-    LOG_INFO("Submitting batch command with %u commands", commands.size());
+    LOG_INFO("Submitting batch command with {} commands", commands.size());
     std::unordered_map<std::string, Response> responses;
     responses.reserve(commands.size());
     // 预先设置超时响应
@@ -2306,7 +2306,7 @@ std::vector<std::pair<std::string, Response>> RaftNode::submit_batch_command(con
     {
         auto res = responses[id];
         res.request_id_ = id;
-        //LOG_INFO("Command %s in batch executed result: %s", cmd.c_str(), res.to_string().c_str());
+        //LOG_INFO("Command {} in batch executed result: {}", cmd.c_str(), res.to_string().c_str());
         result.emplace_back(id, std::move(res));
     }
     return result;
@@ -2333,7 +2333,7 @@ void RaftNode::execute_batch_read_command(const std::vector<std::pair<std::strin
             }
             catch (const std::exception &e)
             {
-                LOG_WARN("execute_batch_read_command: key=%s failed: %s", key.c_str(), e.what());
+                LOG_WARN("execute_batch_read_command: key={} failed: {}", key.c_str(), e.what());
                 return Response::error(std::string("execute failed: ") + e.what());
             } }));
     }
@@ -2358,7 +2358,7 @@ void RaftNode::execute_batch_read_command(const std::vector<std::pair<std::strin
         }
         catch (const std::exception &e)
         {
-            LOG_ERROR("execute_batch_read_command: collect result failed: %s", e.what());
+            LOG_ERROR("execute_batch_read_command: collect result failed: {}", e.what());
             responses[cmds[i].first] = Response::error(std::string("execute failed: ") + e.what(), cmds[i].first);
         }
     }
@@ -2595,11 +2595,11 @@ void RaftNode::add_new_connection(socket_t client_sock, const sockaddr_in &clien
         Address client_address(clientIp, ntohs(client_addr.sin_port));
         if (!is_trust(client_address))
         {
-            LOG_WARN("Connection from %s rejected: not in trust list", client_address.to_string().c_str());
+            LOG_WARN("Connection from {} rejected: not in trust list", client_address.to_string().c_str());
             CLOSE_SOCKET(client_sock);
             return;
         }
-        LOG_INFO("New connection accepted: %s:%d", clientIp, ntohs(client_addr.sin_port));
+        LOG_INFO("New connection accepted: {}:{}", clientIp, ntohs(client_addr.sin_port));
 
         current_connections_++;
         {
@@ -2670,7 +2670,7 @@ void RaftNode::broadcast_to_followers(const RaftMessage &msg)
         int ret = send(msg, sock);
         if (ret < 0)
         {
-            LOG_ERROR("Failed to send broadcast message to follower: %d", sock);
+            LOG_ERROR("Failed to send broadcast message to follower: {}", sock);
         }
     }
 }
@@ -2681,12 +2681,12 @@ void RaftNode::close_socket(socket_t sock)
 #ifdef _WIN32
     if (ret == SOCKET_ERROR)
     {
-        LOG_ERROR("Shutdown error on fd %d: %s", sock, socket_error_to_string(errno));
+        LOG_ERROR("Shutdown error on fd {}: {}", sock, socket_error_to_string(errno));
     }
 #else
     if (ret == -1)
     {
-        LOG_ERROR("Shutdown error on fd %d: %s", sock, socket_error_to_string(errno));
+        LOG_ERROR("Shutdown error on fd {}: {}", sock, socket_error_to_string(errno));
     }
 #endif
     CLOSE_SOCKET(sock);
@@ -2731,12 +2731,12 @@ bool RaftNode::remove_node(const Address &node_to_remove)
         }
         cluster_nodes_.erase(it);
         save_persistent_state();
-        LOG_INFO("Removed node from cluster: %s", node_to_remove.to_string().c_str());
+        LOG_INFO("Removed node from cluster: {}", node_to_remove.to_string().c_str());
         return true;
     }
     else
     {
-        LOG_WARN("Node not found in cluster: %s,cannot remove", node_to_remove.to_string().c_str());
+        LOG_WARN("Node not found in cluster: {},cannot remove", node_to_remove.to_string().c_str());
         return false;
     }
 }
@@ -2761,14 +2761,14 @@ void RaftNode::broadcast_new_master_with_check(uint32_t expected_term)
     // 如果 Term 或角色不匹配，说明状态已改变，放弃广播
     if (current_term != expected_term)
     {
-        LOG_WARN("[Node=%s] Term mismatch when broadcasting new master: expected %u, actual %u, skipping broadcast",
+        LOG_WARN("[Node={}] Term mismatch when broadcasting new master: expected {}, actual {}, skipping broadcast",
                  get_node_id().c_str(), expected_term, current_term);
         return;
     }
 
     if (current_role != RaftRole::Leader)
     {
-        LOG_WARN("[Node=%s] Not leader when broadcasting new master (role: %s, term: %u), skipping broadcast",
+        LOG_WARN("[Node={}] Not leader when broadcasting new master (role: {}, term: {}), skipping broadcast",
                  get_node_id().c_str(), role_to_string(current_role), current_term);
         return;
     }
@@ -2812,7 +2812,7 @@ void RaftNode::broadcast_new_master_impl()
         return;
     }
 
-    LOG_INFO("Broadcasting NEW_MASTER message to %zu nodes, term: %u", nodes.size(), current_term);
+    LOG_INFO("Broadcasting NEW_MASTER message to {} nodes, term: {}", nodes.size(), current_term);
 
     // 向所有已知节点发送NEW_MASTER消息
     for (const auto &node : nodes)
@@ -2837,20 +2837,20 @@ void RaftNode::broadcast_new_master_impl()
                 int ret = client.send(msg);
                 if (ret <= 0)
                 {
-                    LOG_WARN("Failed to send NEW_MASTER message to %s", node.to_string().c_str());
+                    LOG_WARN("Failed to send NEW_MASTER message to {}", node.to_string().c_str());
                 }
                 else
                 {
-                    LOG_INFO("Sent NEW_MASTER message to %s", node.to_string().c_str());
+                    LOG_INFO("Sent NEW_MASTER message to {}", node.to_string().c_str());
                 }
             }
             catch (const std::exception &e)
             {
-                LOG_WARN("Failed to broadcast NEW_MASTER to %s: %s", node.to_string().c_str(), e.what());
+                LOG_WARN("Failed to broadcast NEW_MASTER to {}: {}", node.to_string().c_str(), e.what());
             } });
         if (!is_submitted)
         {
-            LOG_WARN("Failed to submit NEW_MASTER broadcast task for node: %s", node.to_string().c_str());
+            LOG_WARN("Failed to submit NEW_MASTER broadcast task for node: {}", node.to_string().c_str());
         }
     }
 }
@@ -2868,19 +2868,19 @@ void RaftNode::handle_new_master(const RaftMessage &msg, const socket_t &client_
     uint32_t leader_term = msg.term;
     uint32_t my_term = persistent_state_.current_term_.load();
 
-    LOG_INFO("Received NEW_MASTER message from %s, term: %u", data.leader_address.to_string().c_str(), leader_term);
+    LOG_INFO("Received NEW_MASTER message from {}, term: {}", data.leader_address.to_string().c_str(), leader_term);
 
     // 如果消息的任期比我小，忽略
     if (leader_term < my_term)
     {
-        LOG_WARN("Ignoring NEW_MASTER from old term %u (my term: %u)", leader_term, my_term);
+        LOG_WARN("Ignoring NEW_MASTER from old term {} (my term: {})", leader_term, my_term);
         return;
     }
 
     // 如果我已经是Leader且任期相同，忽略（避免脑裂）
     if (role_ == RaftRole::Leader && leader_term == my_term)
     {
-        LOG_WARN("Ignoring NEW_MASTER, I am already leader in term %u", my_term);
+        LOG_WARN("Ignoring NEW_MASTER, I am already leader in term {}", my_term);
         return;
     }
 
@@ -2909,7 +2909,7 @@ void RaftNode::handle_new_master(const RaftMessage &msg, const socket_t &client_
         save_persistent_state();
     }
 
-    LOG_INFO("Connecting to new leader: %s", data.leader_address.to_string().c_str());
+    LOG_INFO("Connecting to new leader: {}", data.leader_address.to_string().c_str());
 
     // 转换为Follower并连接新Leader
     become_follower(data.leader_address, leader_term, true, persistent_state_.commit_index_.load());

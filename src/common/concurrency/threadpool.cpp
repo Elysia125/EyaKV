@@ -7,7 +7,7 @@ ThreadPool::ThreadPool(const Config &config)
       max_queue_size_(config.queue_size),
       wait_timeout_ms_(config.wait_timeout_ms)
 {
-    LOG_INFO("Initializing ThreadPool with %u threads, max queue size %u, timeout %u ms",
+    LOG_INFO("Initializing ThreadPool with {} threads, max queue size {}, timeout {} ms",
              max_thread_count_, max_queue_size_, wait_timeout_ms_);
 
     workers_.reserve(max_thread_count_);
@@ -17,7 +17,7 @@ ThreadPool::ThreadPool(const Config &config)
         workers_.emplace_back(&ThreadPool::worker_thread, this, i);
     }
 
-    LOG_INFO("ThreadPool initialized successfully with %zu worker threads", workers_.size());
+    LOG_INFO("ThreadPool initialized successfully with {} worker threads", workers_.size());
 }
 
 ThreadPool::~ThreadPool()
@@ -41,7 +41,7 @@ bool ThreadPool::submit(Task task)
     // 当队列达到上限时的阻塞与超时判定
     if (task_queue_.size() >= max_queue_size_)
     {
-        LOG_WARN("Task queue is full (%zu/%u), waiting for available slot...",
+        LOG_WARN("Task queue is full ({}/{}), waiting for available slot...",
                  task_queue_.size(), max_queue_size_);
 
         bool wait_result = queue_not_full_.wait_for(
@@ -60,7 +60,7 @@ bool ThreadPool::submit(Task task)
             }
             else
             {
-                LOG_WARN("Task queue wait timeout after %u ms, rejecting task", wait_timeout_ms_);
+                LOG_WARN("Task queue wait timeout after {} ms, rejecting task", wait_timeout_ms_);
             }
             return false;
         }
@@ -69,7 +69,7 @@ bool ThreadPool::submit(Task task)
     // 利用 std::move 减少 std::function 的拷贝开销
     task_queue_.emplace(std::move(task));
 
-    LOG_DEBUG("Task submitted to queue (queue size: %zu/%u)",
+    LOG_DEBUG("Task submitted to queue (queue size: {}/{})",
               task_queue_.size(), max_queue_size_);
 
     // 释放锁后再唤醒消费者，避免消费者醒来后直接阻塞在互斥锁上 (避免 "Hurry up and wait" 现象)
@@ -122,7 +122,7 @@ void ThreadPool::shutdown(bool immediate)
 
         if (discarded_tasks > 0)
         {
-            LOG_WARN("Discarded %u pending tasks during immediate shutdown", discarded_tasks);
+            LOG_WARN("Discarded {} pending tasks during immediate shutdown", discarded_tasks);
         }
     }
 
@@ -144,7 +144,7 @@ void ThreadPool::shutdown(bool immediate)
 
 void ThreadPool::worker_thread(uint32_t thread_id)
 {
-    LOG_DEBUG("Worker thread [%u] started", thread_id);
+    LOG_DEBUG("Worker thread [{}] started", thread_id);
 
     // RAII 辅助工具类：自动管理活跃线程的数量增减，做到绝对的异常安全
     struct ActiveThreadGuard
@@ -175,7 +175,7 @@ void ThreadPool::worker_thread(uint32_t thread_id)
             // 如果已收到停止信号，且队列已被处理完毕（或被立即清空），则退出工作循环
             if (stop_.load(std::memory_order_acquire) && task_queue_.empty())
             {
-                LOG_DEBUG("Worker thread [%u] exiting (stop signal received)", thread_id);
+                LOG_DEBUG("Worker thread [{}] exiting (stop signal received)", thread_id);
                 break;
             }
 
@@ -200,7 +200,7 @@ void ThreadPool::worker_thread(uint32_t thread_id)
             // 利用 RAII 守卫保证即使抛出未知异常，活跃线程数也会正确递减
             ActiveThreadGuard guard(active_threads_);
 
-            LOG_DEBUG("Executing task on worker [%u] (active threads: %u)",
+            LOG_DEBUG("Executing task on worker [{}] (active threads: {})",
                       thread_id, active_threads_.load(std::memory_order_relaxed));
 
             try
@@ -209,16 +209,16 @@ void ThreadPool::worker_thread(uint32_t thread_id)
             }
             catch (const std::exception &e)
             {
-                LOG_ERROR("Task execution exception on worker [%u]: %s", thread_id, e.what());
+                LOG_ERROR("Task execution exception on worker [{}]: {}", thread_id, e.what());
             }
             catch (...)
             {
-                LOG_ERROR("Unknown exception during task execution on worker [%u]", thread_id);
+                LOG_ERROR("Unknown exception during task execution on worker [{}]", thread_id);
             }
 
-            LOG_DEBUG("Task completed on worker [%u]", thread_id);
+            LOG_DEBUG("Task completed on worker [{}]", thread_id);
         }
     }
 
-    LOG_DEBUG("Worker thread [%u] terminated", thread_id);
+    LOG_DEBUG("Worker thread [{}] terminated", thread_id);
 }

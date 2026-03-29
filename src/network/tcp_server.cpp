@@ -71,11 +71,11 @@ void EyaServer::start()
     try
     {
         thread_pool_ = std::make_unique<ThreadPool>(pool_config);
-        LOG_INFO("ThreadPool initialized with %d threads", worker_thread_count_);
+        LOG_INFO("ThreadPool initialized with {} threads", worker_thread_count_);
     }
     catch (const std::exception &e)
     {
-        LOG_ERROR("Failed to initialize ThreadPool: %s", e.what());
+        LOG_ERROR("Failed to initialize ThreadPool: {}", e.what());
         throw std::runtime_error("Failed to initialize ThreadPool:" + std::string(e.what()));
     }
     // 启动认证线程
@@ -137,7 +137,7 @@ void EyaServer::handle_accept()
             {
                 break; // 所有连接已处理完毕
             }
-            LOG_ERROR("Accept error: %s", strerror(errno));
+            LOG_ERROR("Accept error: {}", strerror(errno));
             return;
         }
 
@@ -151,14 +151,14 @@ void EyaServer::handle_accept()
 
             char clientIp[INET_ADDRSTRLEN];
             inet_ntop(AF_INET, &client_addr.sin_addr, clientIp, INET_ADDRSTRLEN);
-            LOG_INFO("New connection accepted: %s:%d", clientIp, ntohs(client_addr.sin_port));
+            LOG_INFO("New connection accepted: {}:{}", clientIp, ntohs(client_addr.sin_port));
 
             struct epoll_event ev;
             ev.events = EPOLLIN | EPOLLET; // 边缘触发模式
             ev.data.fd = client_sock;
             if (epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, client_sock, &ev) == -1)
             {
-                LOG_ERROR("Epoll ctl failed for client socket: %s", strerror(errno));
+                LOG_ERROR("Epoll ctl failed for client socket: {}", strerror(errno));
                 CLOSE_SOCKET(client_sock);
                 continue;
             }
@@ -184,7 +184,7 @@ void EyaServer::handle_accept()
             set_non_blocking(client_sock);
             char clientIp[INET_ADDRSTRLEN];
             inet_ntop(AF_INET, &client_addr.sin_addr, clientIp, INET_ADDRSTRLEN);
-            LOG_INFO("Connection added to wait queue (current: %d, waiting: %zu)",
+            LOG_INFO("Connection added to wait queue (current: {}, waiting: {})",
                      current_connections_.load(), wait_queue_.size() + 1);
 
             wait_queue_.push_back({client_sock,
@@ -224,12 +224,12 @@ void EyaServer::handle_accept()
         int error = WSAGetLastError();
         if (error != WSAEWOULDBLOCK)
         {
-            LOG_ERROR("Accept error: %d", error);
+            LOG_ERROR("Accept error: {}", error);
         }
 #else
         if (errno != EAGAIN && errno != EWOULDBLOCK)
         {
-            LOG_ERROR("Accept error: %s", strerror(errno));
+            LOG_ERROR("Accept error: {}", strerror(errno));
         }
 #endif
         return;
@@ -244,7 +244,7 @@ void EyaServer::handle_accept()
         set_non_blocking(client_sock);
         char clientIp[INET_ADDRSTRLEN];
         inet_ntop(AF_INET, &client_addr.sin_addr, clientIp, INET_ADDRSTRLEN);
-        LOG_INFO("New connection accepted: %s:%d", clientIp, ntohs(client_addr.sin_port));
+        LOG_INFO("New connection accepted: {}:{}", clientIp, ntohs(client_addr.sin_port));
 
         // 添加到IO复用
 #ifdef __APPLE__
@@ -275,7 +275,7 @@ void EyaServer::handle_accept()
         // 连接数已满，加入等待队列
         bool was_empty = wait_queue_.empty();
         set_non_blocking(client_sock);
-        LOG_INFO("Connection added to wait queue (current: %d, waiting: %zu)",
+        LOG_INFO("Connection added to wait queue (current: {}, waiting: {})",
                  current_connections_.load(), wait_queue_.size() + 1);
 
         wait_queue_.push_back({client_sock,
@@ -312,12 +312,12 @@ void EyaServer::close_socket(socket_t sock)
 #ifdef _WIN32
     if (ret == SOCKET_ERROR)
     {
-        LOG_ERROR("Shutdown error on fd %d: %s", sock, socket_error_to_string(errno));
+        LOG_ERROR("Shutdown error on fd {}: {}", sock, socket_error_to_string(errno));
     }
 #else
     if (ret == -1)
     {
-        LOG_ERROR("Shutdown error on fd %d: %s", sock, socket_error_to_string(errno));
+        LOG_ERROR("Shutdown error on fd {}: {}", sock, socket_error_to_string(errno));
     }
 #endif
     CLOSE_SOCKET(sock);
@@ -361,7 +361,7 @@ void EyaServer::close_socket(socket_t sock)
         set_non_blocking(to_activate->socket);
         char clientIp[INET_ADDRSTRLEN];
         inet_ntop(AF_INET, &to_activate->client_addr.sin_addr, clientIp, INET_ADDRSTRLEN);
-        LOG_INFO("Waiting connection activated: %s:%d", clientIp, ntohs(to_activate->client_addr.sin_port));
+        LOG_INFO("Waiting connection activated: {}:{}", clientIp, ntohs(to_activate->client_addr.sin_port));
 
         // 添加到IO复用
 #ifdef __linux__
@@ -400,7 +400,7 @@ void EyaServer::handle_request(ProtocolBody *body, socket_t client_sock)
         delete body;
         return;
     }
-    LOG_DEBUG("Processing request from fd %d: %s",
+    LOG_DEBUG("Processing request from fd {}: {}",
               client_sock, request->to_string().c_str());
     Response response{0, std::monostate{}, "",""};
     try
@@ -408,7 +408,7 @@ void EyaServer::handle_request(ProtocolBody *body, socket_t client_sock)
         if (request->type == RequestType::AUTH)
         {
             // 处理认证请求
-            LOG_DEBUG("Processing AUTH request on fd %d", client_sock);
+            LOG_DEBUG("Processing AUTH request on fd {}", client_sock);
             if (request->password == password_)
             {
                 response = Response::success(auth_key_);
@@ -424,7 +424,7 @@ void EyaServer::handle_request(ProtocolBody *body, socket_t client_sock)
         else if (request->type == RequestType::COMMAND||request->type==RequestType::BATCH_COMMAND)
         {
             // 处理命令请求
-            LOG_DEBUG("Processing COMMAND request on fd %d: %s",
+            LOG_DEBUG("Processing COMMAND request on fd {}: {}",
                       client_sock, request->command.c_str());
             if (!password_.empty() && request->auth_key != auth_key_)
             {
@@ -459,13 +459,13 @@ void EyaServer::handle_request(ProtocolBody *body, socket_t client_sock)
     }
     catch (const std::exception &e)
     {
-        LOG_ERROR("Exception while processing request on fd %d: %s",
+        LOG_ERROR("Exception while processing request on fd {}: {}",
                   client_sock, e.what());
         response = Response::error(e.what());
     }
     catch (...)
     {
-        LOG_ERROR("Unknown exception while processing request on fd %d", client_sock);
+        LOG_ERROR("Unknown exception while processing request on fd {}", client_sock);
         response = Response::error("Unknown server error");
     }
     // 发送响应

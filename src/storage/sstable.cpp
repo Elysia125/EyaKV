@@ -111,7 +111,7 @@ SSTable::SSTable(const std::string &filepath) : filepath_(filepath)
 {
     if (!load())
     {
-        LOG_ERROR("Failed to load SSTable: %s", filepath.c_str());
+        LOG_ERROR("Failed to load SSTable: {}", filepath.c_str());
     }
 }
 
@@ -119,10 +119,10 @@ SSTable::~SSTable()
 {
     if (file_ != nullptr)
     {
-        LOG_INFO("SSTable::~SSTable: Closing file %s", filepath_.c_str());
+        LOG_INFO("SSTable::~SSTable: Closing file {}", filepath_.c_str());
         fclose(file_);
         file_ = nullptr;
-        LOG_INFO("SSTable::~SSTable: File %s closed", filepath_.c_str());
+        LOG_INFO("SSTable::~SSTable: File {} closed", filepath_.c_str());
     }
 }
 
@@ -131,7 +131,7 @@ bool SSTable::load()
     file_ = fopen(filepath_.c_str(), "rb");
     if (file_ == nullptr)
     {
-        LOG_ERROR("Cannot open SSTable file: %s", filepath_.c_str());
+        LOG_ERROR("Cannot open SSTable file: {}", filepath_.c_str());
         return false;
     }
 
@@ -141,7 +141,7 @@ bool SSTable::load()
 
     if (file_size < SSTableFooter::SIZE)
     {
-        LOG_ERROR("SSTable file too small: %s", filepath_.c_str());
+        LOG_ERROR("SSTable file too small: {}", filepath_.c_str());
         fclose(file_);
         file_ = nullptr;
         return false;
@@ -151,7 +151,7 @@ bool SSTable::load()
     fseek(file_, file_size - sizeof(level), SEEK_SET);
     if (fread(&level, 1, sizeof(level), file_) != sizeof(level))
     {
-        LOG_ERROR("Failed to read level from SSTable: %s", filepath_.c_str());
+        LOG_ERROR("Failed to read level from SSTable: {}", filepath_.c_str());
         fclose(file_);
         file_ = nullptr;
         return false;
@@ -161,7 +161,7 @@ bool SSTable::load()
     std::vector<char> footer_data(SSTableFooter::SIZE);
     if (fread(footer_data.data(), 1, SSTableFooter::SIZE, file_) != SSTableFooter::SIZE)
     {
-        LOG_ERROR("Failed to read footer from SSTable: %s", filepath_.c_str());
+        LOG_ERROR("Failed to read footer from SSTable: {}", filepath_.c_str());
         fclose(file_);
         file_ = nullptr;
         return false;
@@ -171,7 +171,7 @@ bool SSTable::load()
     // 验证魔数
     if (footer_.magic != SSTABLE_MAGIC_NUMBER)
     {
-        LOG_ERROR("Invalid SSTable magic number: %s", filepath_.c_str());
+        LOG_ERROR("Invalid SSTable magic number: {}", filepath_.c_str());
         fclose(file_);
         file_ = nullptr;
         return false;
@@ -185,7 +185,7 @@ bool SSTable::load()
         min_key.resize(footer_.min_key_size);
         if (fread(&min_key[0], 1, footer_.min_key_size, file_) != footer_.min_key_size)
         {
-            LOG_ERROR("Failed to read min_key from SSTable: %s", filepath_.c_str());
+            LOG_ERROR("Failed to read min_key from SSTable: {}", filepath_.c_str());
             fclose(file_);
             file_ = nullptr;
             return false;
@@ -197,7 +197,7 @@ bool SSTable::load()
         max_key.resize(footer_.max_key_size);
         if (fread(&max_key[0], 1, footer_.max_key_size, file_) != footer_.max_key_size)
         {
-            LOG_ERROR("Failed to read max_key from SSTable: %s", filepath_.c_str());
+            LOG_ERROR("Failed to read max_key from SSTable: {}", filepath_.c_str());
             fclose(file_);
             file_ = nullptr;
             return false;
@@ -209,7 +209,7 @@ bool SSTable::load()
     std::vector<char> index_data(footer_.index_block_size);
     if (fread(index_data.data(), 1, footer_.index_block_size, file_) != footer_.index_block_size)
     {
-        LOG_ERROR("Failed to read index block from SSTable: %s", filepath_.c_str());
+        LOG_ERROR("Failed to read index block from SSTable: {}", filepath_.c_str());
         fclose(file_);
         file_ = nullptr;
         return false;
@@ -226,7 +226,7 @@ bool SSTable::load()
     std::vector<char> bloom_data(footer_.bloom_filter_size);
     if (fread(bloom_data.data(), 1, footer_.bloom_filter_size, file_) != footer_.bloom_filter_size)
     {
-        LOG_ERROR("Failed to read bloom filter from SSTable: %s", filepath_.c_str());
+        LOG_ERROR("Failed to read bloom filter from SSTable: {}", filepath_.c_str());
         fclose(file_);
         file_ = nullptr;
         return false;
@@ -254,7 +254,7 @@ bool SSTable::load()
         meta_.sequence_number = 0;
     }
 
-    LOG_INFO("Loaded SSTable: %s with %zu entries", filepath_.c_str(), footer_.entry_count);
+    LOG_INFO("Loaded SSTable: {} with {} entries", filepath_.c_str(), footer_.entry_count);
 
     return true;
 }
@@ -311,7 +311,7 @@ std::vector<std::pair<std::string, EValue>> SSTable::read_data_block(size_t bloc
     std::vector<char> block_data(idx.block_size);
     if (fread(block_data.data(), 1, idx.block_size, file_) != idx.block_size)
     {
-        LOG_ERROR("Failed to read data block from SSTable: %s", filepath_.c_str());
+        LOG_ERROR("Failed to read data block from SSTable: {}", filepath_.c_str());
         return entries;
     }
 
@@ -495,7 +495,7 @@ SSTableBuilder::SSTableBuilder(const std::string &filepath, const uint32_t level
     file_ = fopen(filepath_.c_str(), "wb");
     if (file_ == nullptr)
     {
-        LOG_ERROR("Cannot create SSTable file: %s", filepath_.c_str());
+        LOG_ERROR("Cannot create SSTable file: {}", filepath_.c_str());
         aborted_ = true;
     }
 }
@@ -694,7 +694,7 @@ bool SSTableBuilder::finish()
     // 步骤2：调用fsync刷内核缓冲区到磁盘（真正落盘）
     if (fdatasync(fd) == -1)
     { // fdatasync(fd) 更高效（仅刷数据）
-        LOG_ERROR("SSTableBuilder: Failed to sync SSTable file to disk. Error: %s", strerror(errno));
+        LOG_ERROR("SSTableBuilder: Failed to sync SSTable file to disk. Error: {}", strerror(errno));
         return false;
     }
 #endif
@@ -702,7 +702,7 @@ bool SSTableBuilder::finish()
     file_ = nullptr;
     finished_ = true;
 
-    LOG_INFO("SSTable created: %s with %zu entries", filepath_.c_str(), entry_count_);
+    LOG_INFO("SSTable created: {} with {} entries", filepath_.c_str(), entry_count_);
 
     return true;
 }
@@ -728,7 +728,7 @@ void SSTableBuilder::abort()
     }
     catch (...)
     {
-        LOG_WARN("Failed to remove aborted SSTable file: %s", filepath_.c_str());
+        LOG_WARN("Failed to remove aborted SSTable file: {}", filepath_.c_str());
     }
 }
 
@@ -783,13 +783,13 @@ bool SSTableManager::load_all()
     {
         auto filepath = entry.path().string();
         auto ext = entry.path().extension().string();
-        LOG_INFO("SSTableManager::load_all: Found file: %s, extension: '%s'", filepath.c_str(), ext.c_str());
+        LOG_INFO("SSTableManager::load_all: Found file: {}, extension: '{}'", filepath.c_str(), ext.c_str());
 
         if (entry.path().extension() == ".sst")
         {
             try
             {
-                LOG_INFO("SSTableManager::load_all: Loading SSTable: %s", filepath.c_str());
+                LOG_INFO("SSTableManager::load_all: Loading SSTable: {}", filepath.c_str());
                 auto sstable = std::make_unique<SSTable>(entry.path().string());
 
                 // 更新下一个序列号
@@ -819,7 +819,7 @@ bool SSTableManager::load_all()
             }
             catch (const std::exception &e)
             {
-                LOG_ERROR("Failed to load SSTable: %s, error: %s",
+                LOG_ERROR("Failed to load SSTable: {}, error: {}",
                           entry.path().string().c_str(), e.what());
             }
         }
@@ -829,7 +829,7 @@ bool SSTableManager::load_all()
     sort_sstables_by_sequence();
 
     normalize_sstables();
-    LOG_INFO("Loaded %zu SSTable files from %s, max level: %d, level_sstables_.size(): %zu", sstable_count_, data_dir_.c_str(), max_level_, level_sstables_.size());
+    LOG_INFO("Loaded {} SSTable files from {}, max level: {}, level_sstables_.size(): {}", sstable_count_, data_dir_.c_str(), max_level_, level_sstables_.size());
     return true;
 }
 
@@ -847,7 +847,7 @@ void SSTableManager::normalize_sstables()
         FILE *file = fopen(smeta_file.c_str(), "wb");
         if (file == nullptr)
         {
-            LOG_ERROR("Failed to open .smeta file: %s to write merge strategy", smeta_file.c_str());
+            LOG_ERROR("Failed to open .smeta file: {} to write merge strategy", smeta_file.c_str());
             return;
         }
         std::string strategy_str = std::to_string(static_cast<int>(merge_strategy_));
@@ -859,7 +859,7 @@ void SSTableManager::normalize_sstables()
         FILE *file = fopen(smeta_file.c_str(), "rb");
         if (file == nullptr)
         {
-            LOG_ERROR("Failed to open .smeta file: %s, merge all sstables to max level", smeta_file.c_str());
+            LOG_ERROR("Failed to open .smeta file: {}, merge all sstables to max level", smeta_file.c_str());
             for (int i = 0; i < max_level_; i++)
             {
                 merge_sstables_by_strategy_0(i);
@@ -873,7 +873,7 @@ void SSTableManager::normalize_sstables()
         rewind(file);
         if (fread(content.data(), 1, content.size(), file) != content.size())
         {
-            LOG_ERROR("Failed to read .smeta file: %s", smeta_file.c_str());
+            LOG_ERROR("Failed to read .smeta file: {}", smeta_file.c_str());
             fclose(file);
             for (int i = 0; i < max_level_; i++)
             {
@@ -889,7 +889,7 @@ void SSTableManager::normalize_sstables()
         }
         catch (const std::exception &e)
         {
-            LOG_ERROR("Failed to parse .smeta file: %s, merge all sstables to max level", smeta_file.c_str());
+            LOG_ERROR("Failed to parse .smeta file: {}, merge all sstables to max level", smeta_file.c_str());
             for (int i = 0; i < max_level_; i++)
             {
                 merge_sstables_by_strategy_0(i);
@@ -905,7 +905,7 @@ void SSTableManager::normalize_sstables()
             file = fopen(smeta_file.c_str(), "wb");
             if (file == nullptr)
             {
-                LOG_ERROR("Failed to open .smeta file: %s to write merge strategy", smeta_file.c_str());
+                LOG_ERROR("Failed to open .smeta file: {} to write merge strategy", smeta_file.c_str());
                 return;
             }
             std::string strategy_str = std::to_string(static_cast<int>(merge_strategy_));
@@ -985,7 +985,7 @@ bool SSTableManager::merge_sstables_by_strategy_0(const uint32_t level)
         auto meta = create_from_entries(entries, level + 1);
         if (meta == std::nullopt)
         {
-            LOG_ERROR("Failed to merge SSTable files of level %d", level);
+            LOG_ERROR("Failed to merge SSTable files of level {}", level);
             return false;
         }
         // 删除旧的sstable文件
@@ -1095,7 +1095,7 @@ bool SSTableManager::merge_sstables_by_strategy_1(const uint32_t level)
                 auto meta = create_from_entries(entries, level + 1);
                 if (meta == std::nullopt)
                 {
-                    LOG_ERROR("Failed to merge SSTable files of level %d", level);
+                    LOG_ERROR("Failed to merge SSTable files of level {}", level);
                     return false;
                 }
                 // 删除旧的sstable文件
@@ -1161,7 +1161,7 @@ std::optional<SSTableMeta> SSTableManager::create_from_entries(
 
     if (!builder.finish())
     {
-        LOG_ERROR("Failed to create SSTable: %s", filepath.c_str());
+        LOG_ERROR("Failed to create SSTable: {}", filepath.c_str());
         return std::nullopt;
     }
 
@@ -1193,11 +1193,11 @@ std::optional<SSTableMeta> SSTableManager::create_from_entries(
 bool SSTableManager::get(const std::string &key, EValue *value) const
 {
     // 按顺序查询（最新的在前）
-    LOG_INFO("SSTableManager::get key=%s,level_sstables_.size()=%d", key.c_str(), level_sstables_.size());
+    LOG_INFO("SSTableManager::get key={},level_sstables_.size()={}", key.c_str(), level_sstables_.size());
     int current_level = 0;
     for (const auto &sstables : level_sstables_)
     {
-        LOG_INFO("SSTableManager::get level=%d, sstables.size()=%d", current_level, sstables.size());
+        LOG_INFO("SSTableManager::get level={}, sstables.size()={}", current_level, sstables.size());
         for (const auto &sstable : sstables)
         {
             auto result = sstable->get(key);
@@ -1206,7 +1206,7 @@ bool SSTableManager::get(const std::string &key, EValue *value) const
                 if (value)
                 {
                     *value = result.value();
-                    LOG_INFO("SSTableManager::get found key=%s, value=%s", key.c_str(), to_string(value->value).c_str());
+                    LOG_INFO("SSTableManager::get found key={}, value={}", key.c_str(), to_string(value->value).c_str());
                 }
                 return true;
             }

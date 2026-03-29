@@ -110,6 +110,19 @@ if (NOT glog_FOUND)
     FetchContent_MakeAvailable(glog)
 endif()
 
+# Spdlog 日志库
+message(STATUS "Fetching spdlog...")
+FetchContent_Declare(
+    spdlog
+    URL https://github.com/gabime/spdlog/archive/refs/tags/v1.12.0.zip
+)
+# 强制 spdlog 编译为静态库（嵌入eyakv_logger 动态库中），不用处理额外的 DLL
+set(SPDLOG_BUILD_SHARED OFF CACHE BOOL "Build spdlog as static" FORCE)
+# 使用 spdlog 自带的内建 fmt 库，避免额外引入依赖
+set(SPDLOG_FMT_EXTERNAL OFF CACHE BOOL "Use built-in fmt" FORCE)
+
+FetchContent_MakeAvailable(spdlog)
+
 # 自动查找并链接 gperftools 库
 if(EYAKV_ENABLE_PROFILER)
     find_package(Threads REQUIRED)

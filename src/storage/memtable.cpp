@@ -52,7 +52,7 @@ size_t MemTable::get_shard_index(const std::string &key) const
 
 void MemTable::put(const std::string &key, const EValue &value)
 {
-    LOG_DEBUG("MemTable::put key=%s", key.c_str());
+    LOG_DEBUG("MemTable::put key={}", key.c_str());
     if (should_flush())
     {
         throw std::overflow_error("MemTable size exceeds limit");
@@ -87,26 +87,26 @@ std::optional<EValue> MemTable::get(const std::string &key) const
 
     if (!bloom_filters_[idx]->may_contain(key))
     {
-        LOG_DEBUG("MemTable::get key=%s BloomFilter miss", key.c_str());
+        LOG_DEBUG("MemTable::get key={} BloomFilter miss", key.c_str());
         return std::nullopt;
     }
 
     try
     {
         auto result = tables_[idx]->get(key);
-        LOG_DEBUG("MemTable::get key=%s found", key.c_str());
+        LOG_DEBUG("MemTable::get key={} found", key.c_str());
         return result;
     }
     catch (const std::exception &e)
     {
-        LOG_WARN("MemTable::get key=%s exception: %s", key.c_str(), e.what());
+        LOG_WARN("MemTable::get key={} exception: {}", key.c_str(), e.what());
         return std::nullopt;
     }
 }
 
 bool MemTable::remove(const std::string &key)
 {
-    LOG_DEBUG("MemTable::remove key=%s (Logical Delete)", key.c_str());
+    LOG_DEBUG("MemTable::remove key={} (Logical Delete)", key.c_str());
     size_t idx = get_shard_index(key);
 
     std::unique_lock<std::shared_mutex> shard_lock(*shard_locks_[idx]);

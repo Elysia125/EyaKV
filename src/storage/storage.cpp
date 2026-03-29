@@ -90,7 +90,7 @@ Storage::Storage(const std::string &data_dir,
     }
     start_background_flush_thread();
     is_init_ = true;
-    LOG_INFO("Storage engine initialized. Data dir:%s ", data_dir_.c_str());
+    LOG_INFO("Storage engine initialized. Data dir:{} ", data_dir_.c_str());
 }
 
 Storage::~Storage()
@@ -144,11 +144,11 @@ void Storage::recover()
         LOG_INFO("Storage::Recover: Calling wal_->recover()...");
         bool success = wal_->recover([this](std::string filename, uint8_t type, std::string key, std::string payload)
                                      {
-            LOG_DEBUG("Storage::Recover callback: Processing record - filename: %s, type: %d, key: %s",
+            LOG_DEBUG("Storage::Recover callback: Processing record - filename: {}, type: {}, key: {}",
                       filename.c_str(), type, key.c_str());
             if(filename != current_wal_filename_){
                 if(current_wal_filename_!=""){
-                    LOG_DEBUG("Storage::Recover callback: Moving memtable to immutable, current: %s, new: %s",
+                    LOG_DEBUG("Storage::Recover callback: Moving memtable to immutable, current: {}, new: {}",
                               current_wal_filename_.c_str(), filename.c_str());
                     immutable_memtables_[current_wal_filename_] = std::move(memtable_);
                     memtable_ = create_new_memtable();
@@ -159,30 +159,30 @@ void Storage::recover()
             try{
                 if(type == OperationType::kRemove){
                     std::vector<std::string> keys{key};
-                    LOG_DEBUG("Storage::Recover callback: Processing REMOVE for key: %s", key.c_str());
+                    LOG_DEBUG("Storage::Recover callback: Processing REMOVE for key: {}", key.c_str());
                     remove(keys);
                 }else if(type == OperationType::kExpire){
                     uint64_t expire_time = std::stoull(payload);
-                    LOG_DEBUG("Storage::Recover callback: Processing EXPIRE for key: %s, expire_time: %llu",
+                    LOG_DEBUG("Storage::Recover callback: Processing EXPIRE for key: {}, expire_time: {}",
                               key.c_str(), expire_time);
                     set_key_expire(key, expire_time);
                 }
                 else if (processors_.find(type) != processors_.end())
                 {
-                    LOG_DEBUG("Storage::Recover callback: Processing custom type: %d for key: %s", type, key.c_str());
+                    LOG_DEBUG("Storage::Recover callback: Processing custom type: {} for key: {}", type, key.c_str());
                     if(!processors_[type]->recover(this, type, key, payload)){
-                        LOG_ERROR("Storage: WAL recovery failed for type: %d, key: %s, payload: %s", type, key.c_str(), payload.c_str());
+                        LOG_ERROR("Storage: WAL recovery failed for type: {}, key: {}, payload: {}", type, key.c_str(), payload.c_str());
                     }
                 }
                 else
                 {
-                    LOG_ERROR("Storage::Recover callback: Unknown log type: %d", type);
+                    LOG_ERROR("Storage::Recover callback: Unknown log type: {}", type);
                 }
             }catch(std::exception& e){
-                LOG_WARN("Storage::Recover callback: Exception occurred for type %d key %s payload %s, exception: %s",
+                LOG_WARN("Storage::Recover callback: Exception occurred for type {} key {} payload {}, exception: {}",
                          type, key.c_str(), payload.c_str(), e.what());
             } });
-        LOG_INFO("Storage::Recover: WAL recover() returned, success: %d", success);
+        LOG_INFO("Storage::Recover: WAL recover() returned, success: {}", success);
         if (!success)
         {
             LOG_ERROR("Storage: WAL recovery failed.");
@@ -207,7 +207,7 @@ void Storage::recover()
             }
             else
             {
-                LOG_INFO("Storage::Recover: Opening WAL file: %s", current_wal_filename_.c_str());
+                LOG_INFO("Storage::Recover: Opening WAL file: {}", current_wal_filename_.c_str());
                 wal_->open_wal_file(current_wal_filename_);
             }
             if (immutable_memtables_.empty())
@@ -241,13 +241,13 @@ bool Storage::write_memtable(const std::string &key, EValue &value)
     }
     catch (const std::overflow_error &e)
     {
-        LOG_INFO("Start memtable rotating,because of:%s", e.what());
+        LOG_INFO("Start memtable rotating,because of:{}", e.what());
         rotate_memtable();
         memtable_->put(key, value);
     }
     catch (const std::exception &e)
     {
-        LOG_ERROR("Exception caught while putting key: %s, error: %s", key, e.what());
+        LOG_ERROR("Exception caught while putting key: {}, error: {}", key, e.what());
         return false;
     }
 
@@ -290,7 +290,7 @@ bool Storage::get_from_latest(const std::string &key, std::optional<EValue> &val
     }
     catch (const std::exception &e)
     {
-        LOG_ERROR("Exception caught while getting key: %s, error: %s", key, e.what());
+        LOG_ERROR("Exception caught while getting key: {}, error: {}", key, e.what());
         return false;
     }
     return false;
@@ -506,7 +506,7 @@ void Storage::flush_memtable_to_sstable()
             auto meta = sstable_manager_->create_new_sstable(entries);
             if (meta.has_value())
             {
-                LOG_INFO("Flushed MemTable to SSTable: %s with %zu entries", meta->filepath.c_str(), meta->entry_count);
+                LOG_INFO("Flushed MemTable to SSTable: {} with {} entries", meta->filepath.c_str(), meta->entry_count);
                 if (enable_wal_ && wal_)
                 {
                     wal_->clear(filename);
@@ -711,7 +711,7 @@ uint32_t Storage::remove(std::vector<std::string> &keys)
     {
         if (enable_wal_ && wal_ && !wal_->append_log(OperationType::kRemove, std::forward<decltype(key)>(key), ""))
         {
-            LOG_ERROR("Storage: remove key %s failed, append log failed",
+            LOG_ERROR("Storage: remove key {} failed, append log failed",
                       key.c_str());
             continue;
         }
@@ -722,7 +722,7 @@ uint32_t Storage::remove(std::vector<std::string> &keys)
         }
         catch (const std::exception &e)
         {
-            LOG_ERROR("Storage: remove key %s failed, %s", key.c_str(), e.what());
+            LOG_ERROR("Storage: remove key {} failed, {}", key.c_str(), e.what());
         }
     }
 
@@ -735,7 +735,7 @@ Response Storage::execute(uint8_t type, std::vector<std::string> &args)
     {
         args_str += arg + " ";
     }
-    LOG_DEBUG("Storage::execute: type=%d, args=[%s]", type, args_str.c_str());
+    LOG_DEBUG("Storage::execute: type={}, args=[{}]", type, args_str.c_str());
     if (isWriteOperation(type) && read_only_)
     {
         return Response::error("read only");
@@ -874,7 +874,7 @@ bool Storage::create_checkpoint(std::string &output_tar_path, const std::string 
         if (!extra_meta_data.empty() && snapshot_cache_valid_.load() && !snapshot_cache_path_.empty())
         {
             output_tar_path = snapshot_cache_path_;
-            LOG_INFO("Using cached checkpoint at: %s", output_tar_path.c_str());
+            LOG_INFO("Using cached checkpoint at: {}", output_tar_path.c_str());
             return true;
         }
         // 1. 准备快照目录
@@ -942,7 +942,7 @@ bool Storage::create_checkpoint(std::string &output_tar_path, const std::string 
         archiver.compressDir(dest_dir.string(), output_tar_path);
         // 5. 删除临时目录
         fs::remove_all(dest_dir);
-        LOG_INFO("Checkpoint created successfully at: %s", output_tar_path.c_str());
+        LOG_INFO("Checkpoint created successfully at: {}", output_tar_path.c_str());
         // 6. 恢复后台线程
         if (was_running)
         {
@@ -957,7 +957,7 @@ bool Storage::create_checkpoint(std::string &output_tar_path, const std::string 
     }
     catch (const std::exception &e)
     {
-        LOG_ERROR("Failed to create checkpoint: %s", e.what());
+        LOG_ERROR("Failed to create checkpoint: {}", e.what());
         // 尝试恢复后台线程
         if (was_running)
         {
@@ -969,11 +969,11 @@ bool Storage::create_checkpoint(std::string &output_tar_path, const std::string 
 
 bool Storage::restore_from_checkpoint(const std::string &snapshot_tar_path, std::string &out_extra_meta_data)
 {
-    LOG_INFO("Starting restore from checkpoint: %s", snapshot_tar_path.c_str());
+    LOG_INFO("Starting restore from checkpoint: {}", snapshot_tar_path.c_str());
 
     if (!fs::exists(snapshot_tar_path))
     {
-        LOG_ERROR("Snapshot file does not exist: %s", snapshot_tar_path.c_str());
+        LOG_ERROR("Snapshot file does not exist: {}", snapshot_tar_path.c_str());
         return false;
     }
     bool was_running = background_flush_thread_running_;
@@ -994,19 +994,19 @@ bool Storage::restore_from_checkpoint(const std::string &snapshot_tar_path, std:
         // 3. 将sstable_manager置为空（关闭文件句柄）
         LOG_INFO("Closing SSTableManager...");
         sstable_manager_ = nullptr;
-        LOG_INFO("SSTableManager closed, sstable_manager_ is null: %s", sstable_manager_ == nullptr ? "true" : "false");
+        LOG_INFO("SSTableManager closed, sstable_manager_ is null: {}", sstable_manager_ == nullptr ? "true" : "false");
         // 4. 清理当前数据目录
-        LOG_INFO("Cleaning current data directory: %s", sstable_dir_.c_str());
+        LOG_INFO("Cleaning current data directory: {}", sstable_dir_.c_str());
         LOG_INFO("All file handles should be closed now. Attempting to rename directory...");
         // 列出目录中的所有文件，用于诊断
         if (fs::exists(sstable_dir_))
         {
-            LOG_INFO("Listing files in %s before rename:", sstable_dir_.c_str());
+            LOG_INFO("Listing files in {} before rename:", sstable_dir_.c_str());
             try
             {
                 for (const auto &entry : fs::directory_iterator(sstable_dir_))
                 {
-                    LOG_INFO("  - %s (is_regular_file: %s, is_directory: %s)",
+                    LOG_INFO("  - {} (is_regular_file: {}, is_directory: {})",
                              entry.path().string().c_str(),
                              entry.is_regular_file() ? "true" : "false",
                              entry.is_directory() ? "true" : "false");
@@ -1014,12 +1014,12 @@ bool Storage::restore_from_checkpoint(const std::string &snapshot_tar_path, std:
             }
             catch (const std::exception &e)
             {
-                LOG_WARN("Failed to list directory contents: %s", e.what());
+                LOG_WARN("Failed to list directory contents: {}", e.what());
             }
 
             // 因为是从快照中全量恢复数据，所以直接删除源目录
             uint64_t count = fs::remove_all(sstable_dir_);
-            LOG_INFO("Removed %u files and directories from: %s", count, sstable_dir_.c_str());
+            LOG_INFO("Removed {} files and directories from: {}", count, sstable_dir_.c_str());
         }
         fs::create_directories(sstable_dir_);
 
@@ -1054,7 +1054,7 @@ bool Storage::restore_from_checkpoint(const std::string &snapshot_tar_path, std:
     }
     catch (const std::exception &e)
     {
-        LOG_ERROR("Failed to restore from checkpoint: %s", e.what());
+        LOG_ERROR("Failed to restore from checkpoint: {}", e.what());
         if (!sstable_manager_)
         {
             sstable_manager_ = std::make_unique<SSTableManager>(sstable_dir_,
@@ -1086,21 +1086,21 @@ bool Storage::remove_snapshot(const std::string &snapshot_path)
         {
             if (snapshot_path == snapshot_cache_path_ && snapshot_cache_valid_.load())
             {
-                LOG_ERROR("Snapshot file is in use: %s", snapshot_path.c_str());
+                LOG_ERROR("Snapshot file is in use: {}", snapshot_path.c_str());
                 return false;
             }
             fs::remove(ssp);
-            LOG_INFO("Snapshot file removed: %s", snapshot_path.c_str());
+            LOG_INFO("Snapshot file removed: {}", snapshot_path.c_str());
         }
         else
         {
-            LOG_WARN("Snapshot file does not exist or not in snapshot directory: %s", snapshot_path.c_str());
+            LOG_WARN("Snapshot file does not exist or not in snapshot directory: {}", snapshot_path.c_str());
         }
         return true;
     }
     catch (const std::exception &e)
     {
-        LOG_ERROR("Failed to remove snapshot file: %s, error: %s", snapshot_path.c_str(), e.what());
+        LOG_ERROR("Failed to remove snapshot file: {}, error: {}", snapshot_path.c_str(), e.what());
         return false;
     }
 }
@@ -1133,33 +1133,33 @@ bool Storage::clear_and_backup_data()
         // 3. 将sstable_manager置为空（关闭文件句柄）
         LOG_INFO("Closing SSTableManager...");
         sstable_manager_ = nullptr;
-        LOG_INFO("SSTableManager closed, sstable_manager_ is null: %s", sstable_manager_ == nullptr ? "true" : "false");
+        LOG_INFO("SSTableManager closed, sstable_manager_ is null: {}", sstable_manager_ == nullptr ? "true" : "false");
         // 4. 关闭WAL（关闭文件句柄）
         if (wal_)
         {
-            LOG_INFO("Closing WAL, current WAL file: %s", current_wal_filename_.c_str());
+            LOG_INFO("Closing WAL, current WAL file: {}", current_wal_filename_.c_str());
             // 因为数据已经全部刷盘，所以可以安全地清空WAL
             if (!current_wal_filename_.empty())
             {
                 wal_->clear(current_wal_filename_);
-                LOG_INFO("WAL file cleared: %s", current_wal_filename_.c_str());
+                LOG_INFO("WAL file cleared: {}", current_wal_filename_.c_str());
             }
             wal_ = nullptr;
-            LOG_INFO("WAL closed, wal_ is null: %s", wal_ == nullptr ? "true" : "false");
+            LOG_INFO("WAL closed, wal_ is null: {}", wal_ == nullptr ? "true" : "false");
         }
         // 5. 清理当前数据目录
-        LOG_INFO("Cleaning current data directory: %s", data_dir_.c_str());
+        LOG_INFO("Cleaning current data directory: {}", data_dir_.c_str());
         LOG_INFO("All file handles should be closed now. Attempting to rename directory...");
 
         // 列出目录中的所有文件，用于诊断
         if (fs::exists(data_dir_))
         {
-            LOG_INFO("Listing files in %s before rename:", data_dir_.c_str());
+            LOG_INFO("Listing files in {} before rename:", data_dir_.c_str());
             try
             {
                 for (const auto &entry : fs::directory_iterator(data_dir_))
                 {
-                    LOG_INFO("  - %s (is_regular_file: %s, is_directory: %s)",
+                    LOG_INFO("  - {} (is_regular_file: {}, is_directory: {})",
                              entry.path().string().c_str(),
                              entry.is_regular_file() ? "true" : "false",
                              entry.is_directory() ? "true" : "false");
@@ -1167,12 +1167,12 @@ bool Storage::clear_and_backup_data()
             }
             catch (const std::exception &e)
             {
-                LOG_WARN("Failed to list directory contents: %s", e.what());
+                LOG_WARN("Failed to list directory contents: {}", e.what());
             }
 
             auto timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
             std::string new_name = data_dir_ + "_bak_" + std::to_string(timestamp);
-            LOG_INFO("Attempting rename: %s -> %s", data_dir_.c_str(), new_name.c_str());
+            LOG_INFO("Attempting rename: {} -> {}", data_dir_.c_str(), new_name.c_str());
 
             try
             {
@@ -1182,11 +1182,11 @@ bool Storage::clear_and_backup_data()
             }
             catch (const fs::filesystem_error &e)
             {
-                LOG_ERROR("Rename failed with filesystem_error: %s", e.what());
-                LOG_ERROR("  path1: %s", e.path1().string().c_str());
+                LOG_ERROR("Rename failed with filesystem_error: {}", e.what());
+                LOG_ERROR("  path1: {}", e.path1().string().c_str());
                 if (!e.path2().empty())
                 {
-                    LOG_ERROR("  path2: %s", e.path2().string().c_str());
+                    LOG_ERROR("  path2: {}", e.path2().string().c_str());
                 }
                 throw;
             }
@@ -1213,7 +1213,7 @@ bool Storage::clear_and_backup_data()
     }
     catch (const std::exception &e)
     {
-        LOG_ERROR("Failed to clear and backup data: %s", e.what());
+        LOG_ERROR("Failed to clear and backup data: {}", e.what());
         if (!sstable_manager_)
         {
             sstable_manager_ = std::make_unique<SSTableManager>(sstable_dir_,
