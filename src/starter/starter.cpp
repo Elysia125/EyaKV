@@ -379,7 +379,7 @@ void EyaKVStarter::shutdown()
     {
         LOG_INFO("Stopping server...");
         server_->stop();
-        server_.reset(); // 安全析构
+        //server_.reset(); // 安全析构
         LOG_INFO("Server stopped");
     }
 
@@ -391,7 +391,7 @@ void EyaKVStarter::shutdown()
     }
 
     LOG_INFO("Graceful shutdown completed");
-    exit(EXIT_SUCCESS);
+    //exit(EXIT_SUCCESS);
 }
 
 void EyaKVStarter::start()
