@@ -114,27 +114,45 @@ bool RaftLogArray::write_entry_to_wal(const LogEntry &entry, uint64_t &offset)
     return true;
 }
 
-bool RaftLogArray::write_batch_to_wal(const std::vector<LogEntry> &entries)
+bool RaftLogArray::write_batch_to_wal(const std::vector<LogEntry> &entries, std::vector<uint64_t> &offsets)
 {
     if (wal_file_ == nullptr || entries.empty())
-    {
         return false;
-    }
 
-    // 写入每个条目
+    uint64_t current_offset = ftell(wal_file_);
+    offsets.clear();
+    offsets.reserve(entries.size());
+
+    // 使用 thread_local buffer 避免反复内存分配
+    thread_local std::string buffer;
+    buffer.clear();
+    // 简单预估内存避免高频扩容
+    size_t est_size = entries.size() * 128;
+    if (buffer.capacity() < est_size)
+        buffer.reserve(est_size);
+
     for (const auto &entry : entries)
     {
+        offsets.push_back(current_offset);
+
         std::string data = entry.serialize();
         uint32_t length = static_cast<uint32_t>(data.size());
         uint32_t checksum = compute_checksum(data);
 
-        if (fwrite(&checksum, sizeof(uint32_t), 1, wal_file_) != 1 ||
-            fwrite(&length, sizeof(uint32_t), 1, wal_file_) != 1 ||
-            fwrite(data.data(), 1, length, wal_file_) != length)
-        {
-            LOG_ERROR("Failed to write batch entry to WAL");
-            return false;
-        }
+        // 统一拼接到内存缓冲
+        buffer.append(reinterpret_cast<const char *>(&checksum), sizeof(checksum));
+        buffer.append(reinterpret_cast<const char *>(&length), sizeof(length));
+        buffer.append(data);
+
+        // 精确计算下一次偏移量
+        current_offset += sizeof(uint32_t) * 2 + length;
+    }
+
+    // 仅执行一次跨越 C 库的系统级 fwrite
+    if (fwrite(buffer.data(), 1, buffer.size(), wal_file_) != buffer.size())
+    {
+        LOG_ERROR("Failed to write batch entry to WAL");
+        return false;
     }
 
     fflush(wal_file_);
@@ -257,7 +275,7 @@ bool RaftLogArray::append(LogEntry &entry)
         if (truncate_count > 0)
         {
             uint32_t truncate_index = base_index_ + static_cast<uint32_t>(truncate_count);
-            truncate_from(truncate_index);
+            truncate_before(truncate_index);
         }
     }
     return true;
@@ -301,7 +319,7 @@ bool RaftLogArray::append(const LogEntry &entry)
         if (truncate_count > 0)
         {
             uint32_t truncate_index = base_index_ + static_cast<uint32_t>(truncate_count);
-            truncate_from(truncate_index);
+            truncate_before(truncate_index);
         }
     }
     return true;
@@ -310,49 +328,42 @@ bool RaftLogArray::append(const LogEntry &entry)
 bool RaftLogArray::batch_append(std::vector<LogEntry> &entries)
 {
     if (entries.empty())
-    {
         return true;
-    }
 
     std::unique_lock<std::shared_mutex> lock(mutex_);
     uint32_t start_index = base_index_ + entries_.size();
+
+    // 提前分配好 index
     for (auto &entry : entries)
     {
         entry.index = start_index++;
     }
-    // 1. 写入 WAL (批量)
-    uint64_t offset = ftell(wal_file_);
-    if (!write_batch_to_wal(entries))
+
+    std::vector<uint64_t> offsets;
+    if (!write_batch_to_wal(entries, offsets))
     {
         LOG_ERROR("[RaftLogArray] Failed to write batch of {} entries to WAL", entries.size());
         return false;
     }
 
-    // 2. 追加到内存
-    uint32_t batch_start_index = start_index - entries.size();
-    for (const auto &entry : entries)
+    // [修改点] 内存数据同步：直接使用 offsets[i] 进行精准定位，不再做低效的 string 预估
+    for (size_t i = 0; i < entries.size(); ++i)
     {
-        entries_.push_back(entry);
-        index_offsets_.push_back(offset);
-        offset += sizeof(uint32_t) * 2 + entry.serialize().size(); // 估算下一个偏移
+        entries_.push_back(entries[i]);
+        index_offsets_.push_back(offsets[i]);
     }
 
-    LOG_DEBUG("[RaftLogArray] BATCH APPEND: {} entries, Index {}-{}, WALOffset={}",
-              entries.size(),
-              batch_start_index,
-              start_index - 1,
-              offset);
+    LOG_DEBUG("[RaftLogArray] BATCH APPEND: {} entries, Index {}-{}",
+              entries.size(), entries.front().index, entries.back().index);
 
+    // 截断越界日志（修正为使用 truncate_before 清理旧日志）
     if (entries_.size() > log_config_.log_size_threshold)
     {
-        LOG_WARN("[RaftLogArray] Log size {} exceeds threshold {}, truncating",
-                 entries_.size(),
-                 log_config_.log_size_threshold);
         size_t truncate_count = static_cast<size_t>(entries_.size() * log_config_.truncate_ratio);
         if (truncate_count > 0)
         {
             uint32_t truncate_index = base_index_ + static_cast<uint32_t>(truncate_count);
-            truncate_from(truncate_index);
+            truncate_before(truncate_index);
         }
     }
     return true;
@@ -361,43 +372,37 @@ bool RaftLogArray::batch_append(std::vector<LogEntry> &entries)
 bool RaftLogArray::batch_append(const std::vector<LogEntry> &entries)
 {
     if (entries.empty())
-    {
         return true;
-    }
+
     std::unique_lock<std::shared_mutex> lock(mutex_);
-    // 1. 写入 WAL (批量)
-    uint64_t offset = ftell(wal_file_);
-    if (!write_batch_to_wal(entries))
+
+    std::vector<uint64_t> offsets;
+    if (!write_batch_to_wal(entries, offsets))
     {
         LOG_ERROR("[RaftLogArray] Failed to write batch of {} entries to WAL", entries.size());
         return false;
     }
 
-    // 2. 追加到内存
     uint32_t start_index = base_index_ + entries_.size();
-    for (const auto &entry : entries)
+
+    // 内存数据同步
+    for (size_t i = 0; i < entries.size(); ++i)
     {
-        entries_.push_back(entry);
-        index_offsets_.push_back(offset);
-        offset += sizeof(uint32_t) * 2 + entry.serialize().size(); // 估算下一个偏移
+        entries_.push_back(entries[i]);
+        index_offsets_.push_back(offsets[i]);
     }
 
-    LOG_DEBUG("[RaftLogArray] BATCH APPEND: {} entries, Index {}-{}, WALOffset={}",
-              entries.size(),
-              start_index,
-              start_index + entries.size() - 1,
-              offset);
+    LOG_DEBUG("[RaftLogArray] BATCH APPEND: {} entries, Index {}-{}",
+              entries.size(), start_index, start_index + entries.size() - 1);
 
+    // 截断越界日志
     if (entries_.size() > log_config_.log_size_threshold)
     {
-        LOG_WARN("[RaftLogArray] Log size {} exceeds threshold {}, truncating",
-                 entries_.size(),
-                 log_config_.log_size_threshold);
         size_t truncate_count = static_cast<size_t>(entries_.size() * log_config_.truncate_ratio);
         if (truncate_count > 0)
         {
             uint32_t truncate_index = base_index_ + static_cast<uint32_t>(truncate_count);
-            truncate_from(truncate_index);
+            truncate_before(truncate_index);
         }
     }
     return true;

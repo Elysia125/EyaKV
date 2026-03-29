@@ -318,7 +318,7 @@ private:
     /// @brief 内部辅助方法：批量写入日志条目到WAL
     /// @param entries 日志条目数组
     /// @return 成功返回true，失败返回false
-    bool write_batch_to_wal(const std::vector<LogEntry> &entries);
+    bool write_batch_to_wal(const std::vector<LogEntry> &entries, std::vector<uint64_t> &offsets);
 
     /// @brief 内部辅助方法：写入索引项到索引文件
     /// @param offset 日志条目在WAL中的偏移量

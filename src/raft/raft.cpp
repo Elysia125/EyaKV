@@ -1499,12 +1499,12 @@ void RaftNode::commit_entries()
             // 只记录摘要信息，避免打印完整命令（特别是批量命令会非常长）
             size_t cmd_len = entry.cmd.length();
             std::string cmd_summary = cmd_len > 100 ? entry.cmd.substr(0, 100) + "..." : entry.cmd;
-            LOG_DEBUG("[Node={}] Applied log index {} (term {}), cmd_len={}, cmd: {}",
-                      node_id.c_str(),
-                      last_applied,
-                      entry.term,
-                      cmd_len,
-                      cmd_summary.c_str());
+            LOG_INFO("[Node={}] Applied log index {} (term {}), cmd_len={}, cmd: {}",
+                     node_id.c_str(),
+                     last_applied,
+                     entry.term,
+                     cmd_len,
+                     cmd_summary.c_str());
             // 只在错误时打印详细信息
             if (result.code_ == 0)
             {
@@ -1528,7 +1528,7 @@ void RaftNode::commit_entries()
     }
     persistent_state_.last_applied_.store(last_log_index);
     save_persistent_state();
-    LOG_DEBUG("[Node={}] Log application completed: LastApplied={}", node_id.c_str(), last_applied);
+    LOG_INFO("[Node={}] Log application completed: LastApplied={}", node_id.c_str(), last_applied);
 }
 void RaftNode::notify_request_applied(uint32_t index, const Response &response)
 {
@@ -1945,6 +1945,7 @@ void RaftNode::handle_append_entries_response(const RaftMessage &msg, const sock
 
     if (response.success)
     {
+        bool has_more = false;
         // 复制成功，更新match_index和next_index
         uint32_t old_match, new_match;
         {
@@ -1953,6 +1954,11 @@ void RaftNode::handle_append_entries_response(const RaftMessage &msg, const sock
             match_index_[sock] = std::max(match_index_[sock], response.log_index);
             new_match = match_index_[sock];
             next_index_[sock] = match_index_[sock] + 1;
+            // 记录是否还有未发送完全的日志（应对客户端大批量 Pipeline 积压）
+            if (next_index_[sock] <= log_array_->get_last_index())
+            {
+                has_more = true;
+            }
         }
 
         LOG_DEBUG("[Node={}][Role=Leader][Term={}] LOG REPLICATION SUCCESS: Socket={}, MatchIndex: {} -> {}",
@@ -1966,6 +1972,10 @@ void RaftNode::handle_append_entries_response(const RaftMessage &msg, const sock
         {
             // 检查是否可以提交
             try_commit_entries();
+        }
+        if (has_more)
+        {
+            send_append_entries(sock);
         }
     }
     else
@@ -2173,7 +2183,7 @@ Response RaftNode::submit_command(const std::string &request_id, const std::stri
             // 减少日志输出频率，只在批量提交时打印
             if (log_index % 100 == 0 || log_index == log_array_->get_last_index())
             {
-                LOG_DEBUG("Leader appended log index {}, term {}, waiting for commit...", log_index, entry.term);
+                LOG_INFO("Leader appended log index {}, term {}, waiting for commit...", log_index, entry.term);
             }
 
             if (need_majority_confirm_)
@@ -2450,18 +2460,13 @@ void RaftNode::execute_batch_write_command(const std::vector<std::pair<std::stri
     }
     if (need_majority_confirm_)
     {
-        // 需要多数确认
-        // 注册等待通知
-        std::vector<std::shared_ptr<PendingRequest>> pending_reqs;
-        pending_reqs.reserve(entries.size());
+        // O(1) Future Resolution：只为最后一条日志创建 promise/future 等待
+        std::shared_ptr<PendingRequest> last_pending_req = std::make_shared<PendingRequest>();
+        uint32_t last_index = entries.back().index;
+
         {
             std::lock_guard<std::mutex> pending_lock(pending_requests_mutex_);
-            for (const auto &entry : entries)
-            {
-                std::shared_ptr<PendingRequest> pending_req = std::make_shared<PendingRequest>();
-                pending_requests_[entry.index] = pending_req;
-                pending_reqs.push_back(pending_req);
-            }
+            pending_requests_[last_index] = last_pending_req;
         }
 
         // 广播给 Followers
@@ -2474,25 +2479,47 @@ void RaftNode::execute_batch_write_command(const std::vector<std::pair<std::stri
         }
         // 先调用一次try_commit_entries
         try_commit_entries();
-        // 阻塞等待结果
-        for (size_t i = 0; i < pending_reqs.size(); ++i)
+
+        const uint32_t remaining_timeout_ms = get_remaining_timeout_ms(deadline);
+        // 阻塞等待这批最后一条日志的结果
+        if (remaining_timeout_ms > 0 &&
+            last_pending_req->future.wait_for(std::chrono::milliseconds(remaining_timeout_ms)) == std::future_status::ready)
         {
-            auto &pending_req = pending_reqs[i];
-            const uint32_t remaining_timeout_ms = get_remaining_timeout_ms(deadline);
-            if (remaining_timeout_ms > 0 &&
-                pending_req->future.wait_for(std::chrono::milliseconds(remaining_timeout_ms)) == std::future_status::ready)
+            // 如果最后一条应用成功，说明前面所有命令必然已应用，直接从 LRU 缓存一次性收割结果
+            for (const auto &entry : entries)
             {
-                responses[entries[i].request_id] = std::move(pending_req->future.get());
+                Response res;
+                if (result_cache_.get(entry.request_id, res))
+                {
+                    responses[entry.request_id] = std::move(res);
+                }
+                else
+                {
+                    responses[entry.request_id] = Response::error("execute failed", entry.request_id);
+                }
             }
-            else
+        }
+        else
+        {
+            // 超时处理
             {
                 std::lock_guard<std::mutex> pending_lock(pending_requests_mutex_);
-                for (size_t j = i; j < pending_reqs.size(); ++j)
+                pending_requests_.erase(last_index);
+            }
+            // 遍历所有命令，如果它其实已经执行完了（能从缓存拿到），就正常返回它的结果
+            for (const auto &entry : entries)
+            {
+                Response res;
+                if (result_cache_.get(entry.request_id, res))
                 {
-                    responses[entries[j].request_id] = Response::error("timeout", entries[j].request_id);
-                    pending_requests_.erase(entries[j].index);
+                    // 捞到了！说明它在超时前已经成功应用
+                    responses[entry.request_id] = std::move(res);
                 }
-                break;
+                else
+                {
+                    // 没捞到，说明进度确实还没推到它这里，返回超时
+                    responses[entry.request_id] = Response::error("timeout", entry.request_id);
+                }
             }
         }
     }
