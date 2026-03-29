@@ -420,15 +420,16 @@ void run_multi_thread_throughput(const std::string &host, int port, const std::s
             int index = 0;
             while (index < count_per_thread)
             {
+                const std::string batch_id = "mt_batch_" + std::to_string(tid) + "_" + generate_random_string(16);
                 std::vector<std::pair<std::string, std::string>> cmds;
                 cmds.reserve(pipeline_batch_size);
                 for (int j = 0; j < pipeline_batch_size && index < count_per_thread; ++j, ++index)
                 {
                     std::string cmd = "set mt_key_" + std::to_string(tid) + "_" + std::to_string(index) +
                                       " mt_value_" + std::to_string(index);
-                    cmds.emplace_back("cmd_" + std::to_string(index), cmd);
+                    cmds.emplace_back(batch_id + "_cmd_" + std::to_string(index), cmd);
                 }
-                Request req = Request::createBatchCommand(generate_random_string(16), cmds, auth_key);
+                Request req = Request::createBatchCommand(batch_id, cmds, auth_key);
                 if (!send_data(socket_guard.get(), req.serialize()))
                 {
                     std::cerr << "Thread " << tid << ": pipeline send failed at index " << index << std::endl;
@@ -542,15 +543,16 @@ void run_pipeline_benchmark(socket_t sock, const std::string &auth_key,
     int index = 0;
     while (index < count)
     {
+        const std::string batch_id = "pipeline_batch_" + generate_random_string(16);
         std::vector<std::pair<std::string, std::string>> cmds;
         cmds.reserve(batch_size);
         for (int j = 0; j < batch_size && index < count; ++j, ++index)
         {
             std::string cmd = cmd_gen(index);
-            cmds.emplace_back("cmd_" + std::to_string(index), cmd);
+            cmds.emplace_back(batch_id + "_cmd_" + std::to_string(index), cmd);
         }
 
-        Request req = Request::createBatchCommand(generate_random_string(16), cmds, auth_key);
+        Request req = Request::createBatchCommand(batch_id, cmds, auth_key);
         if (!send_data(sock, req.serialize()))
         {
             std::cerr << "Pipeline send failed." << std::endl;
