@@ -118,6 +118,7 @@ FetchContent_Declare(
 )
 # 强制 spdlog 编译为静态库（嵌入eyakv_logger 动态库中），不用处理额外的 DLL
 set(SPDLOG_BUILD_SHARED OFF CACHE BOOL "Build spdlog as static" FORCE)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON CACHE BOOL "Build with -fPIC" FORCE)
 # 使用 spdlog 自带的内建 fmt 库，避免额外引入依赖
 set(SPDLOG_FMT_EXTERNAL OFF CACHE BOOL "Use built-in fmt" FORCE)
 

@@ -374,14 +374,7 @@ void EyaKVStarter::shutdown()
     }
 
     LOG_INFO("Initiating graceful shutdown...");
-
-    if (RaftNode::get_instance() != nullptr)
-    {
-        LOG_INFO("Stopping Raft node...");
-        RaftNode::get_instance()->stop();
-        LOG_INFO("Raft node stopped");
-    }
-
+    Logger::Flush(); // 确保所有日志都被写入磁盘
     if (server_)
     {
         LOG_INFO("Stopping server...");
@@ -390,8 +383,14 @@ void EyaKVStarter::shutdown()
         LOG_INFO("Server stopped");
     }
 
+    if (RaftNode::get_instance() != nullptr)
+    {
+        LOG_INFO("Stopping Raft node...");
+        RaftNode::get_instance()->stop();
+        LOG_INFO("Raft node stopped");
+    }
+
     LOG_INFO("Graceful shutdown completed");
-    Logger::Flush(); // 确保所有日志都被写入磁盘
     exit(EXIT_SUCCESS);
 }
 
