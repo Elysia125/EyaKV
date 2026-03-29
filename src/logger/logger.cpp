@@ -1,127 +1,127 @@
 #include "logger/logger.h"
+#include <chrono>
 
-// 获取单例实例（线程安全的懒汉式）
 Logger &Logger::GetInstance()
 {
     static Logger instance;
     return instance;
 }
 
-// 初始化日志
-void Logger::Init(const std::string &log_dir, LogLevel level, uint64_t rotate_size)
+Logger::Logger() 
+    : log_level_(LogLevel::INFO), 
+      is_init_(false),
+      log_rotate_size_(5 * 1024 * 1024) // 默认 5MB
 {
-    std::lock_guard<std::mutex> lock(mtx_);
-    log_level_ = level;
-    log_dir_ = log_dir;
-    log_rotate_size_ = rotate_size * 1024; // 转换为字节
-    // 1. 创建日志目录（不存在则创建）
-    CreateDir(log_dir_);
-
-    // 2. 关闭原有文件句柄（防止重复初始化）
-    CloseAllLogFiles();
-
-    // 3. 为每个级别打开对应的日志文件（内核缓冲区模式）
-    debug_fp_ = OpenLogFile("debug.log");
-    info_fp_ = OpenLogFile("info.log");
-    warn_fp_ = OpenLogFile("warn.log");
-    error_fp_ = OpenLogFile("error.log");
-    fatal_fp_ = OpenLogFile("fatal.log");
-
-    is_init_ = true;
-    std::cout << "Logger initialized in directory: " << log_dir_ << std::endl;
+    file_ptrs_.fill(nullptr);
+    file_sizes_.fill(0);
 }
 
-// 析构函数
 Logger::~Logger()
 {
     std::lock_guard<std::mutex> lock(mtx_);
     CloseAllLogFiles();
 }
 
-// 私有构造函数
-Logger::Logger() : log_level_(LogLevel::INFO), is_init_(false),
-                   debug_fp_(nullptr), info_fp_(nullptr), warn_fp_(nullptr),
-                   error_fp_(nullptr), fatal_fp_(nullptr) {}
+void Logger::Init(const std::string &log_dir, LogLevel level, uint64_t rotate_size_mb)
+{
+    std::lock_guard<std::mutex> lock(mtx_);
+    log_level_ = level;
+    log_dir_ = log_dir;
+    log_rotate_size_ = rotate_size_mb * 1024 * 1024; // 转换为字节
 
-// 辅助：创建目录
+    // 1. 创建日志目录
+    CreateDir(log_dir_);
+
+    // 2. 关闭可能存在的旧文件句柄
+    CloseAllLogFiles();
+
+    // 3. 为每个级别打开对应的日志文件，并初始化文件大小
+    for (size_t i = 0; i < LEVEL_COUNT; ++i)
+    {
+        LogLevel curr_level = static_cast<LogLevel>(i);
+        const char *filename = GetLevelFilename(curr_level);
+        file_ptrs_[i] = OpenLogFile(filename);
+
+        // 初始化文件大小跟踪（如果是追加打开，需要知道已有大小）
+        if (file_ptrs_[i] != nullptr)
+        {
+            fseek(file_ptrs_[i], 0, SEEK_END);
+            file_sizes_[i] = ftell(file_ptrs_[i]);
+        }
+    }
+
+    is_init_ = true;
+    std::cout << "Logger initialized in directory: " << log_dir_ << std::endl;
+}
+
 void Logger::CreateDir(const std::string &dir)
 {
-    if (!std::filesystem::exists(dir))
+    std::error_code ec;
+    if (!std::filesystem::exists(dir, ec))
     {
-        std::filesystem::create_directories(dir);
+        std::filesystem::create_directories(dir, ec);
     }
 }
 
-// 辅助：打开指定的日志文件
 FILE *Logger::OpenLogFile(const std::string &filename)
 {
-    std::string full_path = PathUtils::combine_path(log_dir_, filename);
-    FILE *fp = fopen(full_path.c_str(), "a");
+    std::filesystem::path full_path = std::filesystem::path(log_dir_) / filename;
+    FILE *fp = fopen(full_path.string().c_str(), "a");
     if (fp == nullptr)
     {
-        std::cerr << "open log file failed:" << full_path << ",to stderr" << std::endl;
-        return stderr;
+        std::cerr << "Open log file failed: " << full_path.string() << ", falling back to stderr" << std::endl;
+        return nullptr;
     }
     return fp;
 }
 
-// 辅助：根据级别获取对应的文件句柄
-FILE *Logger::GetFileHandleByLevel(LogLevel level)
+void Logger::CheckAndRotate(LogLevel level)
 {
-    FILE **file = nullptr;
-    std::string old_filename;
-    switch (level)
+    size_t idx = static_cast<size_t>(level);
+    if (file_ptrs_[idx] != nullptr && file_sizes_[idx] >= log_rotate_size_)
     {
-    case LogLevel::DEBUG:
-        file = &debug_fp_;
-        old_filename = "debug.log";
-        break;
-    case LogLevel::INFO:
-        file = &info_fp_;
-        old_filename = "info.log";
-        break;
-    case LogLevel::WARN:
-        file = &warn_fp_;
-        old_filename = "warn.log";
-        break;
-    case LogLevel::ERROR:
-        file = &error_fp_;
-        old_filename = "error.log";
-        break;
-    case LogLevel::FATAL:
-        file = &fatal_fp_;
-        old_filename = "fatal.log";
-        break;
-    default:
-        return stderr;
+        RotateLogFile(level, GetLevelFilename(level));
     }
-    // 检查文件大小，是否需要轮转
-    fseek(*file, 0, SEEK_END);
-    long file_size = ftell(*file);
-    if (file_size >= log_rotate_size_)
-    {
-        RotateLogFile(file, old_filename);
-    }
-    return *file;
 }
 
-// 辅助：轮转日志文件
-void Logger::RotateLogFile(FILE **old_file, const std::string &old_filename)
+void Logger::RotateLogFile(LogLevel level, const std::string &filename)
 {
-    fflush(*old_file);
-    fclose(*old_file);
+    size_t idx = static_cast<size_t>(level);
+    FILE *&old_file = file_ptrs_[idx];
 
-    std::string full_path = PathUtils::combine_path(log_dir_, old_filename);
-    std::string new_filename = old_filename + "." + std::to_string(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
-    std::string full_new_path = PathUtils::combine_path(log_dir_, new_filename);
-    std::filesystem::rename(full_path, full_new_path);
-    *old_file = OpenLogFile(old_filename);
+    // 1. 刷盘并关闭旧文件
+    if (old_file != nullptr)
+    {
+        fflush(old_file);
+        fclose(old_file);
+        old_file = nullptr;
+    }
+
+    // 2. 重命名旧文件（增加时间戳后缀）
+    auto now_sec = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    
+    std::filesystem::path old_path = std::filesystem::path(log_dir_) / filename;
+    std::string new_filename = filename + "." + std::to_string(now_sec);
+    std::filesystem::path new_path = std::filesystem::path(log_dir_) / new_filename;
+
+    std::error_code ec;
+    if (std::filesystem::exists(old_path, ec))
+    {
+        std::filesystem::rename(old_path, new_path, ec);
+        if (ec) {
+            std::cerr << "Failed to rotate log file: " << ec.message() << std::endl;
+        }
+    }
+
+    // 3. 重新打开新文件并重置大小追踪
+    old_file = OpenLogFile(filename);
+    file_sizes_[idx] = 0;
 }
 
-// 辅助：生成日志头部
 std::string Logger::GetLogHeader(LogLevel level) const
 {
-    // 时间戳（精确到秒）
+    // 1. 格式化时间戳（精确到秒）
     time_t now = time(nullptr);
     tm local_tm;
 #ifdef _WIN32
@@ -134,52 +134,59 @@ std::string Logger::GetLogHeader(LogLevel level) const
              local_tm.tm_year + 1900, local_tm.tm_mon + 1, local_tm.tm_mday,
              local_tm.tm_hour, local_tm.tm_min, local_tm.tm_sec);
 
-    // 线程ID
-    std::ostringstream tid_ss;
-    tid_ss << std::this_thread::get_id();
+    // 2. 获取线程ID（使用 thread_local 缓存，避免每次格式化消耗性能）
+    thread_local std::string tid_str = []() {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%zu", std::hash<std::thread::id>{}(std::this_thread::get_id()));
+        return std::string(buf);
+    }();
 
-    // 级别字符串
-    const char *level_str = nullptr;
-    switch (level)
-    {
-    case LogLevel::DEBUG:
-        level_str = "DEBUG";
-        break;
-    case LogLevel::INFO:
-        level_str = "INFO";
-        break;
-    case LogLevel::WARN:
-        level_str = "WARN";
-        break;
-    case LogLevel::ERROR:
-        level_str = "ERROR";
-        break;
-    case LogLevel::FATAL:
-        level_str = "FATAL";
-        break;
-    default:
-        level_str = "UNKNOWN";
-    }
+    // 3. 获取级别字符串
+    const char *level_str = GetLevelString(level);
 
-    // 拼接头部
-    std::ostringstream header_ss;
-    header_ss << "[" << time_buf << "] [" << tid_ss.str() << "] [" << level_str << "]";
-    return header_ss.str();
+    // 4. 拼接并返回（固定缓冲区拼接比 stringstream 更快）
+    char header_buf[128];
+    snprintf(header_buf, sizeof(header_buf), "[%s] [%s] [%s]", time_buf, tid_str.c_str(), level_str);
+    
+    return std::string(header_buf);
 }
 
-// 辅助：关闭所有日志文件句柄并刷盘
+const char *Logger::GetLevelString(LogLevel level) const
+{
+    switch (level)
+    {
+    case LogLevel::DEBUG: return "DEBUG";
+    case LogLevel::INFO:  return "INFO";
+    case LogLevel::WARN:  return "WARN";
+    case LogLevel::ERROR: return "ERROR";
+    case LogLevel::FATAL: return "FATAL";
+    default:              return "UNKNOWN";
+    }
+}
+
+const char *Logger::GetLevelFilename(LogLevel level) const
+{
+    switch (level)
+    {
+    case LogLevel::DEBUG: return "debug.log";
+    case LogLevel::INFO:  return "info.log";
+    case LogLevel::WARN:  return "warn.log";
+    case LogLevel::ERROR: return "error.log";
+    case LogLevel::FATAL: return "fatal.log";
+    default:              return "unknown.log";
+    }
+}
+
 void Logger::CloseAllLogFiles()
 {
-    // 定义要关闭的文件句柄列表
-    FILE *fps[] = {debug_fp_, info_fp_, warn_fp_, error_fp_, fatal_fp_};
-    for (FILE *fp : fps)
+    for (size_t i = 0; i < LEVEL_COUNT; ++i)
     {
-        if (fp != nullptr && fp != stderr && fp != stdout)
+        if (file_ptrs_[i] != nullptr && file_ptrs_[i] != stderr && file_ptrs_[i] != stdout)
         {
-            fflush(fp); // 刷盘
-            fclose(fp);
+            fflush(file_ptrs_[i]);
+            fclose(file_ptrs_[i]);
+            file_ptrs_[i] = nullptr;
         }
+        file_sizes_[i] = 0;
     }
-    // 重置句柄
-    debug_fp_ = info_fp_ = warn_fp_ = error_fp_ = fatal_fp_ = nullptr;
 }
