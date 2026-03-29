@@ -9,9 +9,25 @@
 #include <cstdio>
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
+#include <windows.h>
 #include <io.h>
+// Windows 下模拟 pread，实现线程安全的原子读取，解除并发时的 fseek 游标竞争
+inline bool pread_exact(FILE *file, void *buffer, size_t size, uint64_t offset)
+{
+    HANDLE hFile = (HANDLE)_get_osfhandle(_fileno(file));
+    OVERLAPPED overlapped = {0};
+    overlapped.Offset = static_cast<DWORD>(offset & 0xFFFFFFFF);
+    overlapped.OffsetHigh = static_cast<DWORD>((offset >> 32) & 0xFFFFFFFF);
+    DWORD bytesRead = 0;
+    return ReadFile(hFile, buffer, static_cast<DWORD>(size), &bytesRead, &overlapped) && bytesRead == size;
+}
 #else
-#include <unistd.h> // 包含fsync/fdatasync（Linux/macOS）
+#include <unistd.h>
+// Linux/macOS 的原生原子读取，天生无锁
+inline bool pread_exact(FILE *file, void *buffer, size_t size, uint64_t offset)
+{
+    return pread(fileno(file), buffer, size, offset) == (ssize_t)size;
+}
 #endif
 // SSTableFooter 实现
 
@@ -73,7 +89,8 @@ SSTableFooter SSTableFooter::deserialize(const char *data)
 std::string IndexEntry::serialize() const
 {
     std::string result;
-
+    // 预分配规避内存碎片
+    result.reserve(sizeof(uint32_t) + first_key.size() + sizeof(block_offset) + sizeof(block_size));
     // 写入 first_key 长度和内容
     uint32_t key_len = static_cast<uint32_t>(first_key.size());
     result.append(reinterpret_cast<const char *>(&key_len), sizeof(key_len));
@@ -307,9 +324,9 @@ std::vector<std::pair<std::string, EValue>> SSTable::read_data_block(size_t bloc
     const auto &idx = index_[block_index];
 
     // 读取数据块
-    fseek(file_, idx.block_offset, SEEK_SET);
     std::vector<char> block_data(idx.block_size);
-    if (fread(block_data.data(), 1, idx.block_size, file_) != idx.block_size)
+    // 采用 OS 层面的原子读取(pread)，避免 fseek+fread 的并发争抢与加锁开销！
+    if (!pread_exact(file_, block_data.data(), idx.block_size, idx.block_offset))
     {
         LOG_ERROR("Failed to read data block from SSTable: {}", filepath_.c_str());
         return entries;
@@ -516,18 +533,17 @@ SSTableBuilder::~SSTableBuilder()
 std::string SSTableBuilder::serialize_entry(const std::string &key, const EValue &value)
 {
     std::string result;
-
+    // 序列化 value
+    std::string value_data = serialize(value);
+    uint32_t value_len = static_cast<uint32_t>(value_data.size());
+    // 空间预分配
+    result.reserve(sizeof(uint32_t) * 2 + key.size() + value_data.size());
     // 写入 key 长度和内容
     uint32_t key_len = static_cast<uint32_t>(key.size());
     result.append(reinterpret_cast<const char *>(&key_len), sizeof(key_len));
     result.append(key);
-
-    // 序列化 value
-    std::string value_data = serialize(value);
-    uint32_t value_len = static_cast<uint32_t>(value_data.size());
     result.append(reinterpret_cast<const char *>(&value_len), sizeof(value_len));
     result.append(value_data);
-
     return result;
 }
 
@@ -770,7 +786,7 @@ bool SSTableManager::load_all()
     level_mutex_.resize(max_level_ + 1);
     for (size_t i = 0; i <= max_level_; ++i)
     {
-        level_mutex_[i] = std::make_unique<std::recursive_mutex>();
+        level_mutex_[i] = std::make_unique<std::shared_mutex>();
     }
     next_sequence_number_ = 1;
 
@@ -808,7 +824,7 @@ bool SSTableManager::load_all()
                     level_mutex_.resize(max_level_ + 1);
                     for (size_t i = old_max + 1; i <= max_level_; ++i)
                     {
-                        level_mutex_[i] = std::make_unique<std::recursive_mutex>();
+                        level_mutex_[i] = std::make_unique<std::shared_mutex>();
                     }
                 }
                 // 在 std::move 之前保存 file_size，避免使用已移动对象
@@ -917,25 +933,31 @@ void SSTableManager::normalize_sstables()
 
 bool SSTableManager::merge_sstables(const uint32_t level)
 {
-    if (level > max_level_)
+    // 获取全局状态时轻量锁
+    uint32_t curr_max_level;
     {
-        return false;
+        std::shared_lock<std::shared_mutex> lock(manager_mutex_);
+        curr_max_level = max_level_;
     }
+    if (level > curr_max_level)
+        return false;
     if (merge_strategy_ == SSTableMergeStrategy::SIZE_TIERED_COMPACTION)
     {
-        if (level_sstables_[level].size() < sstable_merge_threshold_)
+        bool should_merge = false;
         {
-            return true;
+            std::shared_lock<std::shared_mutex> lock(*level_mutex_[level]);
+            should_merge = level_sstables_[level].size() >= sstable_merge_threshold_;
         }
-        return merge_sstables_by_strategy_0(level);
+        return should_merge ? merge_sstables_by_strategy_0(level) : true;
     }
     else if (merge_strategy_ == SSTableMergeStrategy::LEVEL_COMPACTION)
     {
-        if (level_sstable_size_[level] < sstable_zero_level_size_ * pow(sstable_level_size_ratio_, level))
+        bool should_merge = false;
         {
-            return true;
+            std::shared_lock<std::shared_mutex> lock(*level_mutex_[level]);
+            should_merge = level_sstable_size_[level] >= sstable_zero_level_size_ * pow(sstable_level_size_ratio_, level);
         }
-        return merge_sstables_by_strategy_1(level);
+        return should_merge ? merge_sstables_by_strategy_1(level) : true;
     }
     else
     {
@@ -945,200 +967,167 @@ bool SSTableManager::merge_sstables(const uint32_t level)
 
 bool SSTableManager::merge_sstables_by_strategy_0(const uint32_t level)
 {
+    // [性能优化] 无锁合并核心：先抓取文件指针的 shared_ptr 副本，立即释放该层的锁
+    std::vector<std::shared_ptr<SSTable>> sstables_to_merge;
     {
-        std::lock_guard<std::recursive_mutex> lock(*level_mutex_[level]);
-        std::vector<std::unique_ptr<SSTable>> &sstables = level_sstables_[level];
-        if (sstables.size() < 1)
-        {
+        std::shared_lock<std::shared_mutex> lock(*level_mutex_[level]);
+        if (level_sstables_[level].empty())
             return true;
-        }
-        std::map<std::string, EValue> map;
-        std::vector<std::string> file_paths;
-        for (auto it = sstables.rbegin(); it != sstables.rend(); it++)
-        {
-            (*it)->for_each([&map](const std::string &key, const EValue &value)
-                            {
+        sstables_to_merge = level_sstables_[level]; // 安全拷贝
+    }
+
+    std::map<std::string, EValue> map;
+    for (auto it = sstables_to_merge.rbegin(); it != sstables_to_merge.rend(); ++it)
+    {
+        (*it)->for_each([&map](const std::string &key, const EValue &value)
+                        {
             map[key] = value;
             return true; });
-            file_paths.push_back((*it)->get_meta().filepath);
-        }
-        std::vector<std::pair<std::string, EValue>> entries;
-        for (const auto &[key, value] : map)
-        {
-            if (value.is_deleted() || value.is_expired())
-            {
-                continue;
-            }
+    }
+
+    std::vector<std::pair<std::string, EValue>> entries;
+    for (const auto &[key, value] : map)
+    {
+        if (!value.is_deleted() && !value.is_expired())
             entries.emplace_back(key, value);
-        }
-        if (entries.empty())
-        {
-            // 如果没有有效的数据，则删除所有sstable文件
-            for (const auto &file_path : file_paths)
-            {
-                std::filesystem::remove(file_path);
-            }
-            level_sstables_[level].clear();
-            level_sstable_size_[level] = 0;
-            return true;
-        }
+    }
+
+    if (!entries.empty())
+    {
         auto meta = create_from_entries(entries, level + 1);
         if (meta == std::nullopt)
-        {
-            LOG_ERROR("Failed to merge SSTable files of level {}", level);
             return false;
-        }
-        // 删除旧的sstable文件
-        for (const auto &file_path : file_paths)
-        {
-            std::filesystem::remove(file_path);
-        }
-        level_sstables_[level].clear();
-        level_sstable_size_[level] = 0;
     }
+
+    // 文件新下沉合并完毕，快速上写锁移除废弃索引
+    {
+        std::unique_lock<std::shared_mutex> lock(*level_mutex_[level]);
+        auto &sstables = level_sstables_[level];
+        // 移除刚才我们提取的那些老文件
+        for (const auto &merged_sst : sstables_to_merge)
+        {
+            auto it = std::find(sstables.begin(), sstables.end(), merged_sst);
+            if (it != sstables.end())
+            {
+                level_sstable_size_[level] -= (*it)->get_meta().file_size;
+                sstables.erase(it);
+            }
+        }
+    }
+
+    // 从磁盘物理干掉旧文件
+    for (const auto &sst : sstables_to_merge)
+    {
+        std::filesystem::remove(sst->get_meta().filepath);
+    }
+
     merge_sstables(level + 1);
     return true;
 }
 
 bool SSTableManager::merge_sstables_by_strategy_1(const uint32_t level)
 {
-    if (level == max_level_ || level_sstables_[level + 1].empty())
+    uint32_t curr_max_level;
     {
-        // 最后一层，直接合并
-        if (level_sstables_[level].size() > 1)
-        {
-            return merge_sstables_by_strategy_0(level);
-        }
-        else
-        {
-            // 如果只有一个sstable文件，则不合并
-            return true;
-        }
+        std::shared_lock<std::shared_mutex> lock(manager_mutex_);
+        curr_max_level = max_level_;
     }
-    else
+
+    if (level == curr_max_level)
+        return merge_sstables_by_strategy_0(level);
+
+    std::shared_ptr<SSTable> sst_to_merge;
+    std::vector<std::shared_ptr<SSTable>> next_sstables_to_merge;
+
     {
-        bool merged = false;
+        std::shared_lock<std::shared_mutex> lock(*level_mutex_[level]);
+        std::shared_lock<std::shared_mutex> lock2(*level_mutex_[level + 1]);
+        if (level_sstables_[level].empty())
+            return true;
+
+        // 抓取该层最旧的一个进行下沉
+        sst_to_merge = level_sstables_[level].back();
+
+        // 提取下层存在范围重叠的目标文件
+        for (const auto &next_sst : level_sstables_[level + 1])
         {
-            std::lock_guard<std::recursive_mutex> lock(*level_mutex_[level]);
-            std::lock_guard<std::recursive_mutex> lock2(*level_mutex_[level + 1]);
-            // 选择level层的sstable文件中最旧的一个文件
-            auto &sstables = level_sstables_[level];
-            if (sstables.empty())
+            if (!(sst_to_merge->get_meta().max_key < next_sst->get_meta().min_key ||
+                  sst_to_merge->get_meta().min_key > next_sst->get_meta().max_key))
             {
-                return true;
-            }
-            // 获取level+1层的所有sstables
-            auto &next_sstables = level_sstables_[level + 1];
-            int rindex = 0;
-            for (auto it = sstables.rbegin(); it != sstables.rend(); it++)
-            {
-                rindex++;
-                auto &sstable = *it;
-                std::vector<uint32_t> merged_sstables_index;
-                std::vector<std::string> file_paths;
-                file_paths.push_back(sstable->get_filepath());
-                for (int i = 0; i < next_sstables.size(); i++)
-                {
-                    auto &next_sstable = next_sstables[i];
-                    // 如果有重叠则加入合并
-                    if (!(sstable->get_meta().max_key < next_sstable->get_meta().min_key ||
-                          sstable->get_meta().min_key > next_sstable->get_meta().max_key))
-                    {
-                        merged_sstables_index.push_back(i);
-                        file_paths.push_back(next_sstable->get_filepath());
-                    }
-                }
-                if (merged_sstables_index.empty())
-                {
-                    continue;
-                }
-                std::map<std::string, EValue> map;
-                for (auto mit = merged_sstables_index.rbegin(); mit != merged_sstables_index.rend(); mit++)
-                {
-                    auto &sst = next_sstables[*mit];
-                    sst->for_each([&map](const std::string &key, const EValue &value)
-                                  {
-            map[key] = value;
-            return true; });
-                }
-                sstable->for_each([&map](const std::string &key, const EValue &value)
-                                  {
-            map[key] = value;
-            return true; });
-                std::vector<std::pair<std::string, EValue>> entries;
-                for (const auto &[key, value] : map)
-                {
-                    if (value.is_deleted() || value.is_expired())
-                    {
-                        continue;
-                    }
-                    entries.emplace_back(key, value);
-                }
-                if (entries.empty())
-                {
-                    // 如果合并的sstable文件中没有有效的数据
-                    // 删除旧的sstable文件
-                    for (const auto &file_path : file_paths)
-                    {
-                        std::filesystem::remove(file_path);
-                    }
-                    for (auto mit = merged_sstables_index.rbegin(); mit != merged_sstables_index.rend(); mit++)
-                    {
-                        level_sstable_size_[level + 1] -= next_sstables[*mit]->get_meta().file_size;
-                        next_sstables.erase(next_sstables.begin() + *mit);
-                    }
-                    sstables.erase(sstables.end() - rindex);
-                    level_sstable_size_[level] -= sstable->get_meta().file_size;
-                    merged = true;
-                    break;
-                }
-                auto meta = create_from_entries(entries, level + 1);
-                if (meta == std::nullopt)
-                {
-                    LOG_ERROR("Failed to merge SSTable files of level {}", level);
-                    return false;
-                }
-                // 删除旧的sstable文件
-                for (const auto &file_path : file_paths)
-                {
-                    std::filesystem::remove(file_path);
-                }
-                for (auto mit = merged_sstables_index.rbegin(); mit != merged_sstables_index.rend(); mit++)
-                {
-                    level_sstable_size_[level + 1] -= next_sstables[*mit]->get_meta().file_size;
-                    next_sstables.erase(next_sstables.begin() + *mit);
-                }
-                sstables.erase(sstables.end() - rindex);
-                level_sstable_size_[level] -= sstable->get_meta().file_size;
-                merged = true;
-                break;
+                next_sstables_to_merge.push_back(next_sst);
             }
         }
-        if (merged)
+    }
+
+    // 无锁进行内存归并和物理写入
+    std::map<std::string, EValue> map;
+    for (auto it = next_sstables_to_merge.rbegin(); it != next_sstables_to_merge.rend(); ++it)
+    {
+        (*it)->for_each([&map](const std::string &key, const EValue &value)
+                        {
+            map[key] = value; return true; });
+    }
+    sst_to_merge->for_each([&map](const std::string &key, const EValue &value)
+                           {
+        map[key] = value; return true; });
+
+    std::vector<std::pair<std::string, EValue>> entries;
+    for (const auto &[key, value] : map)
+    {
+        if (!value.is_deleted() && !value.is_expired())
+            entries.emplace_back(key, value);
+    }
+
+    if (!entries.empty())
+    {
+        auto meta = create_from_entries(entries, level + 1);
+        if (meta == std::nullopt)
+            return false;
+    }
+
+    // 合并落盘完毕，极速短锁剔除老节点
+    {
+        std::unique_lock<std::shared_mutex> lock2(*level_mutex_[level + 1]);
+        for (const auto &old_sst : next_sstables_to_merge)
         {
-            // 合并完成后，继续合并下一层的sstable文件
-            merge_sstables(level); // 确保该层大小符合要求
-            merge_sstables(level + 1);
-            return true;
-        }
-        else
-        {
-            // 没有合并，说明level层的sstable文件全部文件都与level+1层的sstable文件不重叠
-            // 直接合并该层的所有sstable文件
-            return merge_sstables_by_strategy_0(level);
+            auto it = std::find(level_sstables_[level + 1].begin(), level_sstables_[level + 1].end(), old_sst);
+            if (it != level_sstables_[level + 1].end())
+            {
+                level_sstable_size_[level + 1] -= (*it)->get_meta().file_size;
+                level_sstables_[level + 1].erase(it);
+            }
         }
     }
+    {
+        std::unique_lock<std::shared_mutex> lock(*level_mutex_[level]);
+        auto it = std::find(level_sstables_[level].begin(), level_sstables_[level].end(), sst_to_merge);
+        if (it != level_sstables_[level].end())
+        {
+            level_sstable_size_[level] -= (*it)->get_meta().file_size;
+            level_sstables_[level].erase(it);
+        }
+    }
+
+    std::filesystem::remove(sst_to_merge->get_meta().filepath);
+    for (const auto &sst : next_sstables_to_merge)
+    {
+        std::filesystem::remove(sst->get_meta().filepath);
+    }
+
+    merge_sstables(level);
+    merge_sstables(level + 1);
+    return true;
 }
 
 void SSTableManager::sort_sstables_by_sequence()
 {
-    for (auto &sstables : level_sstables_)
+    std::unique_lock<std::shared_mutex> global_lock(manager_mutex_);
+    for (uint32_t i = 0; i <= max_level_; ++i)
     {
-        std::sort(sstables.begin(), sstables.end(),
-                  [](const auto &a, const auto &b)
-                  {
-                      return a->get_meta().sequence_number > b->get_meta().sequence_number;
-                  });
+        std::unique_lock<std::shared_mutex> lock(*level_mutex_[i]);
+        auto &sstables = level_sstables_[i];
+        std::sort(sstables.begin(), sstables.end(), [](const auto &a, const auto &b)
+                  { return a->get_meta().sequence_number > b->get_meta().sequence_number; });
     }
 }
 
@@ -1166,25 +1155,28 @@ std::optional<SSTableMeta> SSTableManager::create_from_entries(
     }
 
     // 加载新创建的 SSTable
-    auto sstable = std::make_unique<SSTable>(filepath);
+    auto sstable = std::make_shared<SSTable>(filepath);
     SSTableMeta meta = sstable->get_meta();
 
-    // 添加到管理列表
-    if (level > max_level_)
+    // 动态扩容层级
     {
-        size_t old_max = max_level_;
-        max_level_ = level;
-        level_sstables_.resize(max_level_ + 1);
-        level_sstable_size_.resize(max_level_ + 1, 0);
-        level_mutex_.resize(max_level_ + 1);
-        for (size_t i = old_max + 1; i <= max_level_; ++i)
+        std::unique_lock<std::shared_mutex> global_lock(manager_mutex_);
+        if (level > max_level_)
         {
-            level_mutex_[i] = std::make_unique<std::recursive_mutex>();
+            size_t old_max = max_level_;
+            max_level_ = level;
+            level_sstables_.resize(max_level_ + 1);
+            level_sstable_size_.resize(max_level_ + 1, 0);
+            for (size_t i = old_max + 1; i <= max_level_; ++i)
+            {
+                level_mutex_.push_back(std::make_unique<std::shared_mutex>());
+            }
         }
     }
+
     {
-        std::lock_guard<std::recursive_mutex> lock(*level_mutex_[level]);
-        level_sstables_[level].insert(level_sstables_[level].begin(), std::move(sstable));
+        std::unique_lock<std::shared_mutex> lock(*level_mutex_[level]);
+        level_sstables_[level].insert(level_sstables_[level].begin(), sstable);
         level_sstable_size_[level] += meta.file_size;
     }
     return meta;
@@ -1192,13 +1184,18 @@ std::optional<SSTableMeta> SSTableManager::create_from_entries(
 
 bool SSTableManager::get(const std::string &key, EValue *value) const
 {
+    uint32_t curr_max;
+    {
+        std::shared_lock<std::shared_mutex> global_lock(manager_mutex_);
+        curr_max = max_level_;
+    }
     // 按顺序查询（最新的在前）
     LOG_INFO("SSTableManager::get key={},level_sstables_.size()={}", key.c_str(), level_sstables_.size());
-    int current_level = 0;
-    for (const auto &sstables : level_sstables_)
+    for (uint32_t i = 0; i <= curr_max; ++i)
     {
-        LOG_INFO("SSTableManager::get level={}, sstables.size()={}", current_level, sstables.size());
-        for (const auto &sstable : sstables)
+        std::shared_lock<std::shared_mutex> lock(*level_mutex_[i]);
+        LOG_INFO("SSTableManager::get level={}, sstables.size()={}", i, level_sstables_[i].size());
+        for (const auto &sstable : level_sstables_[i])
         {
             auto result = sstable->get(key);
             if (result.has_value())
@@ -1211,7 +1208,6 @@ bool SSTableManager::get(const std::string &key, EValue *value) const
                 return true;
             }
         }
-        current_level++;
     }
     return false;
 }
@@ -1219,9 +1215,11 @@ bool SSTableManager::get(const std::string &key, EValue *value) const
 size_t SSTableManager::get_total_size() const
 {
     size_t total = 0;
-    for (const auto level_size : level_sstable_size_)
+    std::shared_lock<std::shared_mutex> global_lock(manager_mutex_);
+    for (uint32_t i = 0; i <= max_level_; ++i)
     {
-        total += level_size;
+        std::shared_lock<std::shared_mutex> lock(*level_mutex_[i]);
+        total += level_sstable_size_[i];
     }
     return total;
 }
@@ -1241,35 +1239,51 @@ std::map<std::string, EValue> SSTableManager::range_query(
     const std::string &end_key) const
 {
     std::map<std::string, EValue> map;
-    for (auto it = level_sstables_.rbegin(); it != level_sstables_.rend(); it++)
-    {
-        for (auto sit = it->rbegin(); sit != it->rend(); sit++)
-        {
-            std::map<std::string, EValue> entries = (*sit)->range_map(start_key, end_key);
-            map.insert(entries.begin(), entries.end());
-        }
-    }
+    for_each_oldest([&](const std::string &key, const EValue &value)
+                    {
+        if (key >= start_key && key <= end_key) map[key] = value;
+        return true; });
     return map;
 }
 
 void SSTableManager::for_each_newest(std::function<bool(const std::string &key, const EValue &value)> callback) const
 {
-    for (auto it = level_sstables_.begin(); it != level_sstables_.end(); it++)
+    uint32_t curr_max;
     {
-        for (auto sit = it->begin(); sit != it->end(); sit++)
-        {
-            (*sit)->for_each(callback);
-        }
+        std::shared_lock<std::shared_mutex> global_lock(manager_mutex_);
+        curr_max = max_level_;
     }
+
+    // 提前拿到 shared_ptr 副本释放全局大锁
+    std::vector<std::shared_ptr<SSTable>> sst_copy;
+    for (uint32_t i = 0; i <= curr_max; ++i)
+    {
+        std::shared_lock<std::shared_mutex> lock(*level_mutex_[i]);
+        for (const auto &sst : level_sstables_[i])
+            sst_copy.push_back(sst);
+    }
+    for (const auto &sst : sst_copy)
+        sst->for_each(callback);
 }
 
 void SSTableManager::for_each_oldest(std::function<bool(const std::string &key, const EValue &value)> callback) const
 {
-    for (auto it = level_sstables_.rbegin(); it != level_sstables_.rend(); it++)
+    uint32_t curr_max;
     {
-        for (auto sit = it->rbegin(); sit != it->rend(); sit++)
+        std::shared_lock<std::shared_mutex> global_lock(manager_mutex_);
+        curr_max = max_level_;
+    }
+
+    // 提前一次性把所有的指针抓出来，使得长耗时的大批量迭代期间无任何锁竞争
+    std::vector<std::shared_ptr<SSTable>> sst_copy;
+    for (int i = curr_max; i >= 0; --i)
+    {
+        std::shared_lock<std::shared_mutex> lock(*level_mutex_[i]);
+        for (auto sit = level_sstables_[i].rbegin(); sit != level_sstables_[i].rend(); ++sit)
         {
-            (*sit)->for_each(callback);
+            sst_copy.push_back(*sit);
         }
     }
+    for (const auto &sst : sst_copy)
+        sst->for_each(callback);
 }

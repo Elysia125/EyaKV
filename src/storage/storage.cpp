@@ -333,7 +333,7 @@ std::optional<EValue> Storage::get_from_immutable_memtables(const std::string &k
     std::shared_lock<std::shared_mutex> lock(immutable_mutex_);
 
     // 从最新到最旧查询 Immutable MemTables
-    for (auto it = immutable_memtables_.begin(); it != immutable_memtables_.end(); ++it)
+    for (auto it = immutable_memtables_.rbegin(); it != immutable_memtables_.rend(); ++it)
     {
         auto result = it->second->get(key);
         if (result.has_value())
@@ -366,26 +366,20 @@ std::vector<std::pair<std::string, EyaValue>> Storage::range(
         std::shared_lock<std::shared_mutex> lock(immutable_mutex_);
         for (auto it = immutable_memtables_.rbegin(); it != immutable_memtables_.rend(); ++it)
         {
-            auto entries = it->second->get_all_entries();
-            for (const auto &[k, v] : entries)
-            {
-                if (k >= start_key && k <= end_key)
-                {
+            it->second->for_each([&](const std::string &k, const EValue &v)
+                                 {
+                if (k >= start_key && k <= end_key) {
                     merged_results[k] = v;
-                }
-            }
+                } });
         }
     }
 
     // 3. 从 MemTable 获取并覆盖（最新的数据）
-    auto entries = memtable_->get_all_entries();
-    for (const auto &[k, v] : entries)
-    {
-        if (k >= start_key && k <= end_key)
-        {
+    memtable_->for_each([&](const std::string &k, const EValue &v)
+                        {
+        if (k >= start_key && k <= end_key) {
             merged_results[k] = v;
-        }
-    }
+        } });
 
     // 转换为 vector
     std::vector<std::pair<std::string, EyaValue>> result;
@@ -487,20 +481,33 @@ void Storage::force_flush()
 
 void Storage::flush_memtable_to_sstable()
 {
-    // Flush 每个 MemTable 到 SSTable
-    std::unique_lock<std::shared_mutex> lock(immutable_mutex_);
-    for (auto it = immutable_memtables_.begin(); it != immutable_memtables_.end();)
+    // 无锁下沉落盘 (Lock-Free Disk Flush)
+    // 使得磁盘写入不会阻塞整个引擎的数据读取以及 Immutable 转正
+    while (true)
     {
-        std::string filename = it->first;
-        auto &imm = it->second;
+        std::string filename;
+        std::shared_ptr<MemTable> imm;
+
+        {
+            // 仅仅在这里加短读锁，抓取最老的一个 MemTable
+            std::shared_lock<std::shared_mutex> lock(immutable_mutex_);
+            if (immutable_memtables_.empty())
+                break;
+            auto it = immutable_memtables_.begin();
+            filename = it->first;
+            imm = it->second;
+        }
+
         if (imm->size() == 0)
         {
-            ++it; // 空 MemTable，跳过并继续下一个
+            std::unique_lock<std::shared_mutex> lock(immutable_mutex_);
+            immutable_memtables_.erase(filename);
             continue;
         }
 
+        // 在无锁状态下执行超高耗时的落盘计算与磁盘 I/O
+        // 此时 immutable_mutex_ 已释放，前台业务毫无阻塞！
         auto entries = imm->get_all_entries();
-
         if (sstable_manager_)
         {
             auto meta = sstable_manager_->create_new_sstable(entries);
@@ -511,17 +518,21 @@ void Storage::flush_memtable_to_sstable()
                 {
                     wal_->clear(filename);
                 }
-                it = immutable_memtables_.erase(it); // erase 返回下一个有效迭代器
+
+                // 落盘成功，重新加写锁将其彻底从缓存淘汰
+                std::unique_lock<std::shared_mutex> lock(immutable_mutex_);
+                immutable_memtables_.erase(filename);
             }
             else
             {
                 LOG_ERROR("Failed to flush MemTable to SSTable");
-                ++it; // flush 失败，跳过继续下一个
+                break; // 磁盘异常，退出以避免死循环耗尽CPU
             }
         }
         else
         {
-            ++it; // 没有 sstable_manager_，跳过继续下一个
+            std::unique_lock<std::shared_mutex> lock(immutable_mutex_);
+            immutable_memtables_.erase(filename);
         }
     }
 }
@@ -730,10 +741,17 @@ uint32_t Storage::remove(std::vector<std::string> &keys)
 }
 Response Storage::execute(uint8_t type, std::vector<std::string> &args)
 {
-    std::string args_str;
+    size_t total_len = 0;
     for (const auto &arg : args)
     {
-        args_str += arg + " ";
+        total_len += arg.size() + 1;
+    }
+    std::string args_str;
+    args_str.reserve(total_len);
+    for (const auto &arg : args)
+    {
+        args_str += arg;
+        args_str += ' ';
     }
     LOG_DEBUG("Storage::execute: type={}, args=[{}]", type, args_str.c_str());
     if (isWriteOperation(type) && read_only_)

@@ -201,7 +201,7 @@ private:
     std::unique_ptr<MemTable> memtable_;
 
     // Immutable MemTables（等待 Flush 到 SSTable）
-    std::map<std::string, std::unique_ptr<MemTable>> immutable_memtables_;
+    std::map<std::string, std::shared_ptr<MemTable>> immutable_memtables_;
     mutable std::shared_mutex immutable_mutex_; // 保护 immutable_memtables_
     mutable std::shared_mutex write_mutex_;
     // SSTable 管理器

@@ -9,6 +9,7 @@
 #include <optional>
 #include <cstdint>
 #include <functional>
+#include <shared_mutex>
 #include "common/types/value.h"
 #include "config/config.h"
 #include "storage/node.h"
@@ -374,9 +375,10 @@ public:
 private:
     std::string data_dir_;
     uint32_t sstable_count_;
-    std::vector<std::vector<std::unique_ptr<SSTable>>> level_sstables_;
+    std::vector<std::vector<std::shared_ptr<SSTable>>> level_sstables_;
     std::vector<uint64_t> level_sstable_size_;
-    std::vector<std::unique_ptr<std::recursive_mutex>> level_mutex_;
+    std::vector<std::unique_ptr<std::shared_mutex>> level_mutex_;
+    mutable std::shared_mutex manager_mutex_; // 全局结构锁(保护 max_level_ 的动态扩容)
     uint32_t max_level_;
     SSTableMergeStrategy merge_strategy_;
     uint64_t sstable_zero_level_size_; // bit
