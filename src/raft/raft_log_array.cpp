@@ -337,11 +337,11 @@ bool RaftLogArray::batch_append(std::vector<LogEntry> &entries)
         offset += sizeof(uint32_t) * 2 + entry.serialize().size(); // 估算下一个偏移
     }
 
-    LOG_INFO("[RaftLogArray] BATCH APPEND: {} entries, Index {}-{}, WALOffset={}",
-             entries.size(),
-             batch_start_index,
-             start_index - 1,
-             offset);
+    LOG_DEBUG("[RaftLogArray] BATCH APPEND: {} entries, Index {}-{}, WALOffset={}",
+              entries.size(),
+              batch_start_index,
+              start_index - 1,
+              offset);
 
     if (entries_.size() > log_config_.log_size_threshold)
     {
@@ -382,11 +382,11 @@ bool RaftLogArray::batch_append(const std::vector<LogEntry> &entries)
         offset += sizeof(uint32_t) * 2 + entry.serialize().size(); // 估算下一个偏移
     }
 
-    LOG_INFO("[RaftLogArray] BATCH APPEND: {} entries, Index {}-{}, WALOffset={}",
-             entries.size(),
-             start_index,
-             start_index + entries.size() - 1,
-             offset);
+    LOG_DEBUG("[RaftLogArray] BATCH APPEND: {} entries, Index {}-{}, WALOffset={}",
+              entries.size(),
+              start_index,
+              start_index + entries.size() - 1,
+              offset);
 
     if (entries_.size() > log_config_.log_size_threshold)
     {

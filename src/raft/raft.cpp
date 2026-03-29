@@ -18,6 +18,21 @@
 std::unique_ptr<RaftNode> RaftNode::instance_ = nullptr;
 bool RaftNode::is_init_ = false;
 
+namespace
+{
+    uint32_t get_remaining_timeout_ms(const std::chrono::steady_clock::time_point &deadline)
+    {
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= deadline)
+        {
+            return 0;
+        }
+
+        return static_cast<uint32_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count());
+    }
+} // namespace
+
 class StringSerializeCommand : public SerializeCommand<std::string>
 {
 public:
@@ -1301,20 +1316,20 @@ void RaftNode::apply_committed_entries_nolock()
 
     if (last_applied >= commit_index)
     {
-        LOG_INFO("[Node={}] No logs to apply: LastApplied={}, CommitIndex={}",
-                 node_id.c_str(),
-                 last_applied,
-                 commit_index);
+        LOG_DEBUG("[Node={}] No logs to apply: LastApplied={}, CommitIndex={}",
+                  node_id.c_str(),
+                  last_applied,
+                  commit_index);
         return;
     }
 
     uint32_t apply_count = commit_index - last_applied;
-    LOG_INFO("[Node={}][Role={}] APPLYING LOGS: {} entries (Index {} -> {})",
-             node_id.c_str(),
-             role_to_string(role_.load()),
-             apply_count,
-             last_applied + 1,
-             commit_index);
+    LOG_DEBUG("[Node={}][Role={}] APPLYING LOGS: {} entries (Index {} -> {})",
+              node_id.c_str(),
+              role_to_string(role_.load()),
+              apply_count,
+              last_applied + 1,
+              commit_index);
 
     while (last_applied < commit_index)
     {
@@ -1369,7 +1384,7 @@ void RaftNode::apply_committed_entries_nolock()
 
     // 批量保存一次状态（优化）
     save_persistent_state();
-    LOG_INFO("[Node={}] Log application completed: LastApplied={}", node_id.c_str(), last_applied);
+    LOG_DEBUG("[Node={}] Log application completed: LastApplied={}", node_id.c_str(), last_applied);
 }
 
 // 尝试提交日志
@@ -1513,7 +1528,7 @@ void RaftNode::commit_entries()
     }
     persistent_state_.last_applied_.store(last_log_index);
     save_persistent_state();
-    LOG_INFO("[Node={}] Log application completed: LastApplied={}", node_id.c_str(), last_applied);
+    LOG_DEBUG("[Node={}] Log application completed: LastApplied={}", node_id.c_str(), last_applied);
 }
 void RaftNode::notify_request_applied(uint32_t index, const Response &response)
 {
@@ -2224,7 +2239,7 @@ std::vector<std::pair<std::string, Response>> RaftNode::submit_batch_command(con
     {
         return {};
     }
-    LOG_INFO("Submitting batch command with {} commands", commands.size());
+    LOG_DEBUG("Submitting batch command with {} commands", commands.size());
     std::unordered_map<std::string, Response> responses;
     responses.reserve(commands.size());
     // 预先设置超时响应
@@ -2232,74 +2247,117 @@ std::vector<std::pair<std::string, Response>> RaftNode::submit_batch_command(con
     {
         responses.emplace(id, Response::error("timeout", id));
     }
-    std::future<void> future = std::async(std::launch::async, [this, &commands, &responses]()
-                                          {
-                                              std::vector<std::pair<std::string, std::string>> current_cmds;
-                                              current_cmds.reserve(commands.size());
-                                              bool is_read=false;
-                                              for (int i=0;i<commands.size();i++)
-                                              {
-                                                const auto&[id,cmd]=commands[i];
-                                                if(cmd.empty()){
-                                                    responses[id] = Response::error("command cannot be empty",id);
-                                                    continue;
-                                                }
-                                                if(id.empty()){
-                                                    responses[id] = Response::error("request_id cannot be empty",id);
-                                                    continue;
-                                                }
-                                                Response cached_resp;
-                                                if (result_cache_.get(id, cached_resp))
-                                                {
-                                                    responses[id] = cached_resp;
-                                                    continue;
-                                                }
-                                                auto parts = split_by_spacer(cmd);
-                                                uint8_t type=stringToOperationType(parts[0]);
-                                                if(isReadOperation(type)){
-                                                    if(is_read){
-                                                        current_cmds.emplace_back(id,cmd);
-                                                    }else if(current_cmds.empty()){
-                                                        current_cmds.emplace_back(id,cmd);
-                                                        is_read = true;
-                                                    }else{
-                                                        execute_batch_write_command(current_cmds,responses,config_.batch_command_timeout_ms);
-                                                        current_cmds.clear();
-                                                    }
-                                                }else if(isRaftOperation(type)){
-                                                    if(!current_cmds.empty()){
-                                                        if(is_read){
-                                                            execute_batch_read_command(current_cmds, responses, config_.batch_command_timeout_ms);
-                                                        }else{
-                                                            execute_batch_write_command(current_cmds, responses, config_.batch_command_timeout_ms);
-                                                        }
-                                                        current_cmds.clear();
-                                                    }
-                                                    parts.erase(parts.begin());
-                                                    responses[id] = handle_raft_command(type, parts);
-                                                }else if(isWriteOperation(type)){
-                                                    if(!is_read){
-                                                        current_cmds.emplace_back(id,cmd);
-                                                    }else if(current_cmds.empty()){
-                                                        current_cmds.emplace_back(id,cmd);
-                                                        is_read = false;
-                                                    }else{
-                                                        execute_batch_read_command(current_cmds,responses,config_.batch_command_timeout_ms);
-                                                        current_cmds.clear();
-                                                    }
-                                                }else{
-                                                    responses[id] = Response::error("invalid command",id);
-                                                }
-                                              } 
-                                              if(!current_cmds.empty()){
-                                                  if(is_read){
-                                                      execute_batch_read_command(current_cmds, responses, config_.batch_command_timeout_ms);
-                                                  }else{
-                                                      execute_batch_write_command(current_cmds, responses, config_.batch_command_timeout_ms);
-                                                  }
-                                              } });
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(config_.batch_command_timeout_ms);
+    auto remaining_timeout_ms = [&deadline]()
+    {
+        return get_remaining_timeout_ms(deadline);
+    };
+    auto run_batch = [this, &commands, &responses, &remaining_timeout_ms]()
+    {
+        std::vector<std::pair<std::string, std::string>> current_cmds;
+        current_cmds.reserve(commands.size());
+        bool is_read = false;
+        for (int i = 0; i < commands.size(); i++)
+        {
+            const auto &[id, cmd] = commands[i];
+            if (cmd.empty())
+            {
+                responses[id] = Response::error("command cannot be empty", id);
+                continue;
+            }
+            if (id.empty())
+            {
+                responses[id] = Response::error("request_id cannot be empty", id);
+                continue;
+            }
+            Response cached_resp;
+            if (result_cache_.get(id, cached_resp))
+            {
+                responses[id] = cached_resp;
+                continue;
+            }
+            auto parts = split_by_spacer(cmd);
+            if (parts.empty())
+            {
+                responses[id] = Response::error("invalid command", id);
+                continue;
+            }
+            uint8_t type = stringToOperationType(parts[0]);
+            if (isReadOperation(type))
+            {
+                if (is_read)
+                {
+                    current_cmds.emplace_back(id, cmd);
+                }
+                else if (current_cmds.empty())
+                {
+                    current_cmds.emplace_back(id, cmd);
+                    is_read = true;
+                }
+                else
+                {
+                    execute_batch_write_command(current_cmds, responses, remaining_timeout_ms());
+                    current_cmds.clear();
+                    current_cmds.emplace_back(id, cmd);
+                    is_read = true;
+                }
+            }
+            else if (isRaftOperation(type))
+            {
+                if (!current_cmds.empty())
+                {
+                    if (is_read)
+                    {
+                        execute_batch_read_command(current_cmds, responses, remaining_timeout_ms());
+                    }
+                    else
+                    {
+                        execute_batch_write_command(current_cmds, responses, remaining_timeout_ms());
+                    }
+                    current_cmds.clear();
+                }
+                parts.erase(parts.begin());
+                responses[id] = handle_raft_command(type, parts);
+            }
+            else if (isWriteOperation(type))
+            {
+                if (!is_read)
+                {
+                    current_cmds.emplace_back(id, cmd);
+                }
+                else if (current_cmds.empty())
+                {
+                    current_cmds.emplace_back(id, cmd);
+                    is_read = false;
+                }
+                else
+                {
+                    execute_batch_read_command(current_cmds, responses, remaining_timeout_ms());
+                    current_cmds.clear();
+                    current_cmds.emplace_back(id, cmd);
+                    is_read = false;
+                }
+            }
+            else
+            {
+                responses[id] = Response::error("invalid command", id);
+            }
+        }
+        if (!current_cmds.empty())
+        {
+            if (is_read)
+            {
+                execute_batch_read_command(current_cmds, responses, remaining_timeout_ms());
+            }
+            else
+            {
+                execute_batch_write_command(current_cmds, responses, remaining_timeout_ms());
+            }
+        }
+    };
 
-    future.wait_for(std::chrono::milliseconds(config_.batch_command_timeout_ms));
+    run_batch();
     std::vector<std::pair<std::string, Response>> result;
     result.reserve(commands.size());
     for (const auto &[id, cmd] : commands)
@@ -2319,42 +2377,26 @@ void RaftNode::execute_batch_read_command(const std::vector<std::pair<std::strin
     }
     // 并行执行读操作
     std::vector<std::future<Response>> futures;
-    futures.reserve(cmds.size());
-
-    for (const auto &[key, cmd] : cmds)
-    {
-        futures.push_back(std::async(std::launch::async, [this, key, cmd]()
-                                     {
-            try
-            {
-                Response res = execute_command(cmd);
-                res.request_id_ = key;
-                return res;
-            }
-            catch (const std::exception &e)
-            {
-                LOG_WARN("execute_batch_read_command: key={} failed: {}", key.c_str(), e.what());
-                return Response::error(std::string("execute failed: ") + e.what());
-            } }));
-    }
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(timeout_ms);
 
     // 收集所有读操作的结果
     for (size_t i = 0; i < cmds.size(); ++i)
     {
+        if (get_remaining_timeout_ms(deadline) == 0)
+        {
+            for (size_t j = i; j < cmds.size(); ++j)
+            {
+                responses[cmds[j].first] = Response::error("timeout", cmds[j].first);
+            }
+            break;
+        }
+
         try
         {
-            auto status = futures[i].wait_for(std::chrono::milliseconds(timeout_ms));
-            if (status == std::future_status::ready)
-            {
-                responses[cmds[i].first] = std::move(futures[i].get());
-            }
-            else
-            {
-                for (size_t j = i; j < cmds.size(); j++)
-                {
-                    responses[cmds[j].first] = Response::error("timeout", cmds[j].first);
-                }
-            }
+            Response res = execute_command(cmds[i].second);
+            res.request_id_ = cmds[i].first;
+            responses[cmds[i].first] = std::move(res);
         }
         catch (const std::exception &e)
         {
@@ -2370,6 +2412,8 @@ void RaftNode::execute_batch_write_command(const std::vector<std::pair<std::stri
     {
         return;
     }
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(timeout_ms);
     if (role_ != RaftRole::Leader)
     {
         for (const auto &[key, cmd] : cmds)
@@ -2396,7 +2440,14 @@ void RaftNode::execute_batch_write_command(const std::vector<std::pair<std::stri
         entry.request_id = request_id;
         entries.push_back(entry);
     }
-    log_array_->batch_append(entries);
+    if (!log_array_->batch_append(entries))
+    {
+        for (const auto &[request_id, cmd] : cmds)
+        {
+            responses[request_id] = Response::error("execute failed", request_id);
+        }
+        return;
+    }
     if (need_majority_confirm_)
     {
         // 需要多数确认
@@ -2424,16 +2475,19 @@ void RaftNode::execute_batch_write_command(const std::vector<std::pair<std::stri
         // 先调用一次try_commit_entries
         try_commit_entries();
         // 阻塞等待结果
-        for (int i = 0; i < pending_reqs.size(); ++i)
+        for (size_t i = 0; i < pending_reqs.size(); ++i)
         {
             auto &pending_req = pending_reqs[i];
-            if (pending_req->future.wait_for(std::chrono::milliseconds(timeout_ms)) == std::future_status::ready)
+            const uint32_t remaining_timeout_ms = get_remaining_timeout_ms(deadline);
+            if (remaining_timeout_ms > 0 &&
+                pending_req->future.wait_for(std::chrono::milliseconds(remaining_timeout_ms)) == std::future_status::ready)
             {
                 responses[entries[i].request_id] = std::move(pending_req->future.get());
             }
             else
             {
-                for (int j = i; j < pending_reqs.size(); ++j)
+                std::lock_guard<std::mutex> pending_lock(pending_requests_mutex_);
+                for (size_t j = i; j < pending_reqs.size(); ++j)
                 {
                     responses[entries[j].request_id] = Response::error("timeout", entries[j].request_id);
                     pending_requests_.erase(entries[j].index);
