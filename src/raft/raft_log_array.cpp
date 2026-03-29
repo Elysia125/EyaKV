@@ -346,7 +346,18 @@ bool RaftLogArray::batch_append(std::vector<LogEntry> &entries)
         return false;
     }
 
-    // [修改点] 内存数据同步：直接使用 offsets[i] 进行精准定位，不再做低效的 string 预估
+    // 批量将索引真正刷入磁盘
+    if (index_file_ != nullptr && !offsets.empty())
+    {
+        if (fwrite(offsets.data(), sizeof(uint64_t), offsets.size(), index_file_) != offsets.size())
+        {
+            LOG_ERROR("Failed to write batch index entries to file");
+            return false;
+        }
+        fflush(index_file_);
+    }
+
+    // 内存数据同步：直接使用 offsets[i] 进行精准定位
     for (size_t i = 0; i < entries.size(); ++i)
     {
         entries_.push_back(entries[i]);
@@ -356,7 +367,7 @@ bool RaftLogArray::batch_append(std::vector<LogEntry> &entries)
     LOG_DEBUG("[RaftLogArray] BATCH APPEND: {} entries, Index {}-{}",
               entries.size(), entries.front().index, entries.back().index);
 
-    // 截断越界日志（修正为使用 truncate_before 清理旧日志）
+    // 截断越界日志（清理旧日志）
     if (entries_.size() > log_config_.log_size_threshold)
     {
         size_t truncate_count = static_cast<size_t>(entries_.size() * log_config_.truncate_ratio);
@@ -381,6 +392,17 @@ bool RaftLogArray::batch_append(const std::vector<LogEntry> &entries)
     {
         LOG_ERROR("[RaftLogArray] Failed to write batch of {} entries to WAL", entries.size());
         return false;
+    }
+
+    //[修复点：批量将索引真正刷入磁盘]
+    if (index_file_ != nullptr && !offsets.empty())
+    {
+        if (fwrite(offsets.data(), sizeof(uint64_t), offsets.size(), index_file_) != offsets.size())
+        {
+            LOG_ERROR("Failed to write batch index entries to file");
+            return false;
+        }
+        fflush(index_file_);
     }
 
     uint32_t start_index = base_index_ + entries_.size();

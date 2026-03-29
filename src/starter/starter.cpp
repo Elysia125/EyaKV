@@ -255,7 +255,7 @@ void EyaKVStarter::initialize_raft()
                                   { raft_cfg.append_entries_max_batch = v; });
     ApplyConfigIfExists<uint64_t>(RAFT_SNAPSHOT_CHUNK_KEY, [&](uint64_t v)
                                   { raft_cfg.snapshot_chunk_size_bytes = v; });
-    ApplyConfigIfExists<int>(RAFT_NEED_MAJORITY_CONFIRM_KEY, [&](int v)
+    ApplyConfigIfExists<bool>(RAFT_NEED_MAJORITY_CONFIRM_KEY, [&](bool v)
                              { raft_cfg.need_majority_confirm = v; });
     ApplyConfigIfExists<uint64_t>(RAFT_RESULT_CACHE_CAPACITY_KEY, [&](uint64_t v)
                                   { raft_cfg.result_cache_capacity = v; });
