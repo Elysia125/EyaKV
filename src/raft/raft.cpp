@@ -2306,7 +2306,7 @@ std::vector<std::pair<std::string, Response>> RaftNode::submit_batch_command(con
     {
         auto res = responses[id];
         res.request_id_ = id;
-        //LOG_INFO("Command {} in batch executed result: {}", cmd.c_str(), res.to_string().c_str());
+        // LOG_INFO("Command {} in batch executed result: {}", cmd.c_str(), res.to_string().c_str());
         result.emplace_back(id, std::move(res));
     }
     return result;
@@ -2917,23 +2917,29 @@ void RaftNode::handle_new_master(const RaftMessage &msg, const socket_t &client_
 
 void RaftNode::stop()
 {
+    LOG_INFO("Stopping RaftNode...");
+    LOG_INFO("Stoping election thread...");
     election_thread_running_.store(false);
     election_cv_.notify_all();
     if (election_thread_.joinable())
     {
         election_thread_.join();
     }
+    LOG_INFO("Stopping heartbeat thread...");
     heartbeat_thread_running_.store(false);
     heartbeat_cv_.notify_all();
     if (heartbeat_thread_.joinable())
     {
         heartbeat_thread_.join();
     }
+    LOG_INFO("Stopping follower client thread...");
     follower_client_thread_running_.store(false);
     follower_client_cv_.notify_all();
     if (follower_client_thread_.joinable())
     {
         follower_client_thread_.join();
     }
+    LOG_INFO("Stopping TCP server...");
     TCPServer::stop();
+    LOG_INFO("RaftNode stopped");
 }

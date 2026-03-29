@@ -26,15 +26,15 @@ EyaServer::EyaServer(const std::string &ip,
       worker_wait_timeout_(worker_wait_timeout),
       stop_auth_monitor_(false)
 {
-#ifdef _WIN32
-    WSADATA wsaData;
-    WSAStartup(MAKEWORD(2, 2), &wsaData);
-    FD_ZERO(&master_set_);
-#elif defined(__linux__)
-    events_ = new epoll_event[max_connections_];
-#elif defined(__APPLE__)
-    event_list_ = new kevent[max_connections_];
-#endif
+    /*#ifdef _WIN32
+        WSADATA wsaData;
+        WSAStartup(MAKEWORD(2, 2), &wsaData);
+        FD_ZERO(&master_set_);
+    #elif defined(__linux__)
+        events_ = new epoll_event[max_connections_];
+    #elif defined(__APPLE__)
+        event_list_ = new kevent[max_connections_];
+    #endif*/
     if (!password_.empty())
     {
         auth_key_ = generate_random_string(32);

@@ -1,262 +1,387 @@
+/**
+ * @file config.h
+ * @brief EyaKV 全局配置管理模块
+ * @details 负责从配置文件、环境变量及默认值中加载和管理系统运行所需的所有配置。
+ *          配置加载优先级：环境变量 > 配置文件 > 默认配置。
+ */
+
 #ifndef CONFIG_H
 #define CONFIG_H
+
 #include <string>
 #include <unordered_map>
 #include <fstream>
 #include <algorithm>
 #include <optional>
 #include <thread>
+#include <filesystem>
+#include <stdexcept>
 #include "common/util/path_utils.h"
 #include "common/util/string_utils.h"
-#undef ERROR // 避免与 LogLevel 枚举冲突
 
-// 日志级别枚举
+// 避免与 Windows API 的 ERROR 宏冲突
+#undef ERROR
+
+/**
+ * @brief 日志输出级别
+ */
 enum class LogLevel
 {
-    DEBUG = 0, // 调试信息
-    INFO,      // 普通信息
-    WARN,      // 警告
-    ERROR,     // 错误
-    FATAL      // 致命错误
+    DEBUG = 0, ///< 调试信息，最详尽
+    INFO,      ///< 普通信息，系统运行状态
+    WARN,      ///< 警告，可能存在潜在问题
+    ERROR,     ///< 错误，影响部分功能
+    FATAL      ///< 致命错误，导致程序退出
 };
+
+/**
+ * @brief WAL（预写日志）的刷新/刷盘策略
+ */
 enum class WALFlushStrategy
 {
-    BACKGROUND_THREAD = 0, // 后台线程定时刷新
-    IMMEDIATE_ON_WRITE,    // 写入时立即刷新
-    OS_BUFFERED            // 写入到内核缓冲区，依靠操作系统刷新
+    BACKGROUND_THREAD = 0, ///< 后台线程定时异步刷新
+    IMMEDIATE_ON_WRITE,    ///< 每次写入立刻同步刷盘（最安全，性能最低）
+    OS_BUFFERED            ///< 写入系统内核缓冲区，依靠操作系统调度刷盘
 };
+
+/**
+ * @brief SSTable 合并与压缩策略
+ */
 enum class SSTableMergeStrategy
 {
-    SIZE_TIERED_COMPACTION = 0, // 大小分层压缩
-    LEVEL_COMPACTION,           // 分层合并
+    SIZE_TIERED_COMPACTION = 0, ///< 大小分层压缩 (读放大较高，写放大较低)
+    LEVEL_COMPACTION,           ///< 层级合并 (读放大较低，写放大较高)
 };
-#define DEFAULT_PORT 5210
-#define DEFAULT_IP "0.0.0.0"
-#define DEFAULT_RAFT_PORT 5211
-#define DEFAULT_RAFT_TRUST_IP "127.0.0.1"
-#define DEFAULT_READ_ONLY false
-#define DEFAULT_LOG_LEVEL LogLevel::INFO
-#define DEFAULT_LOG_ROTATE_SIZE 1024 * 1024 // KB 日志轮转阈值，避免日志文件过大
-#define DEFAULT_SKIPLIST_MAX_LEVEL 16
-#define DEFAULT_SKIPLIST_PROBABILITY 0.5
-#define DEFAULT_SKIPLIST_MAX_NODE_COUNT 10000000
-#define DEFAULT_MEMTABLE_SIZE 1024 * 1024 // kb
-#define DEFAULT_WAL_ENABLE true
-#define DEFAULT_WAL_FILE_SIZE 1024 * 1024 * 10 // kb
-#define DEFAULT_WAL_FILE_MAX_COUNT 10
-#define DEFAULT_WAL_FLUSH_INTERVAL 1000                                             // ms wal刷新间隔
-#define DEFAULT_WAL_FLUSH_STRATEGY WALFlushStrategy::BACKGROUND_THREAD              // wal刷新策略
-#define DEFAULT_SSTABLE_MERGE_STRATEGY SSTableMergeStrategy::SIZE_TIERED_COMPACTION // sstable 合并策略
-#define DEFAULT_SSTABLE_MERGE_THRESHOLD 5                                           // sstable 合并阈值，文件数 对大小分层合并策略有效
-#define DEFAULT_SSTABLE_ZERO_LEVEL_SIZE 10                                          // sstable 0 层大小（MB） 对分层合并策略有效
-#define DEFAULT_SSTABLE_LEVEL_SIZE_RATIO 10                                         // sstable 层大小比例 对分层合并策略有效                                               // wal刷新策略 0: 后台线程每隔一段时间刷 1: 写入时立刻刷 2:写入到内核缓冲区，依靠操作系统刷
-#define DEFAULT_MAX_CONNECTIONS 10000                                               // 最大连接数
-#define DEFAULT_MEMORY_POOL_SIZE 1024 * 3                                           // 内存池大小
-#define DEFAULT_WAITING_QUEUE_SIZE 100                                              //  等待队列大小
-#define DEFAULT_MAX_WAITING_TIME 30                                                 // 最大等待时间 s
-#define DEFAULT_WORKER_THREAD_COUNT std::thread::hardware_concurrency() + 1
-#define DEFAULT_WORKER_QUEUE_SIZE 1000
-#define DEFAULT_WORKER_WAIT_TIMEOUT 30
+
+// ============================================================================
+// 默认配置项常量 (使用 C++17 inline constexpr 替代不安全的 #define)
+// ============================================================================
+inline constexpr uint16_t DEFAULT_PORT = 5210;
+inline constexpr const char *DEFAULT_IP = "0.0.0.0";
+inline constexpr uint16_t DEFAULT_RAFT_PORT = 5211;
+inline constexpr const char *DEFAULT_RAFT_TRUST_IP = "127.0.0.1";
+inline constexpr bool DEFAULT_READ_ONLY = false;
+inline constexpr LogLevel DEFAULT_LOG_LEVEL = LogLevel::INFO;
+inline constexpr uint32_t DEFAULT_LOG_ROTATE_SIZE = 1024 * 1024; // KB
+inline constexpr int DEFAULT_SKIPLIST_MAX_LEVEL = 16;
+inline constexpr double DEFAULT_SKIPLIST_PROBABILITY = 0.5;
+inline constexpr uint32_t DEFAULT_SKIPLIST_MAX_NODE_COUNT = 10000000;
+inline constexpr uint32_t DEFAULT_MEMTABLE_SIZE = 1024 * 1024; // KB
+inline constexpr bool DEFAULT_WAL_ENABLE = true;
+inline constexpr uint32_t DEFAULT_WAL_FILE_SIZE = 1024 * 1024 * 10; // KB
+inline constexpr uint32_t DEFAULT_WAL_FILE_MAX_COUNT = 10;
+inline constexpr uint32_t DEFAULT_WAL_FLUSH_INTERVAL = 1000; // ms
+inline constexpr WALFlushStrategy DEFAULT_WAL_FLUSH_STRATEGY = WALFlushStrategy::BACKGROUND_THREAD;
+inline constexpr SSTableMergeStrategy DEFAULT_SSTABLE_MERGE_STRATEGY = SSTableMergeStrategy::SIZE_TIERED_COMPACTION;
+inline constexpr uint32_t DEFAULT_SSTABLE_MERGE_THRESHOLD = 5;
+inline constexpr uint32_t DEFAULT_SSTABLE_ZERO_LEVEL_SIZE = 10; // MB
+inline constexpr uint32_t DEFAULT_SSTABLE_LEVEL_SIZE_RATIO = 10;
+inline constexpr uint32_t DEFAULT_MAX_CONNECTIONS = 10000;
+inline constexpr uint32_t DEFAULT_MEMORY_POOL_SIZE = 1024 * 3;
+inline constexpr uint32_t DEFAULT_WAITING_QUEUE_SIZE = 100;
+inline constexpr uint32_t DEFAULT_MAX_WAITING_TIME = 30; // s
+inline constexpr uint32_t DEFAULT_WORKER_QUEUE_SIZE = 1000;
+inline constexpr uint32_t DEFAULT_WORKER_WAIT_TIMEOUT = 30;
+// thread count 需要运行时获取，故仅使用 inline const
+inline const unsigned int DEFAULT_WORKER_THREAD_COUNT = std::thread::hardware_concurrency() + 1;
 
 // Raft 相关默认配置
-#define DEFAULT_RAFT_ELECTION_TIMEOUT_MIN 150    // 选举超时最小值(ms)
-#define DEFAULT_RAFT_ELECTION_TIMEOUT_MAX 300    // 选举超时最大值(ms)
-#define DEFAULT_RAFT_HEARTBEAT_INTERVAL 30       // 心跳间隔(ms)
-#define DEFAULT_RAFT_RPC_TIMEOUT 2000            // Raft RPC 超时(ms)
-#define DEFAULT_RAFT_FOLLOWER_IDLE_WAIT 1000     // Follower 空闲等待(ms)
-#define DEFAULT_RAFT_JOIN_MAX_RETRIES 3          // Follower 加入集群最大重试次数
-#define DEFAULT_RAFT_REQUEST_VOTE_TIMEOUT 200    // RequestVote 响应超时(ms)
-#define DEFAULT_RAFT_SUBMIT_TIMEOUT 500          // 提交命令等待超时(ms) - 优化: 从2000ms降低到500ms
-#define DEFAULT_RAFT_APPEND_BATCH 1000           // 单次 AppendEntries 最大日志条数 - 优化: 从100增加到1000
-#define DEFAULT_RAFT_SNAPSHOT_CHUNK (64 * 1024)  // 快照 chunk 大小(bytes)
-#define DEFAULT_RAFT_RESULT_CACHE_CAPACITY 10000 // 结果缓存容量
-#define DEFAULT_RAFT_THREADPOOL_WORKERS 4        // Raft 内部线程池工作线程数
-#define DEFAULT_RAFT_THREADPOOL_QUEUE 10000      // Raft 内部线程池队列大小
-#define DEFAULT_RAFT_THREADPOOL_WAIT 1000        // Raft 内部线程池等待超时(ms)
+inline constexpr uint32_t DEFAULT_RAFT_ELECTION_TIMEOUT_MIN = 150; // ms
+inline constexpr uint32_t DEFAULT_RAFT_ELECTION_TIMEOUT_MAX = 300; // ms
+inline constexpr uint32_t DEFAULT_RAFT_HEARTBEAT_INTERVAL = 30;    // ms
+inline constexpr uint32_t DEFAULT_RAFT_RPC_TIMEOUT = 2000;         // ms
+inline constexpr uint32_t DEFAULT_RAFT_FOLLOWER_IDLE_WAIT = 1000;  // ms
+inline constexpr uint32_t DEFAULT_RAFT_JOIN_MAX_RETRIES = 3;
+inline constexpr uint32_t DEFAULT_RAFT_REQUEST_VOTE_TIMEOUT = 200; // ms
+inline constexpr uint32_t DEFAULT_RAFT_SUBMIT_TIMEOUT = 500;       // ms
+inline constexpr uint32_t DEFAULT_RAFT_APPEND_BATCH = 1000;
+inline constexpr uint32_t DEFAULT_RAFT_SNAPSHOT_CHUNK = 64 * 1024; // Bytes
+inline constexpr uint32_t DEFAULT_RAFT_RESULT_CACHE_CAPACITY = 10000;
+inline constexpr uint32_t DEFAULT_RAFT_THREADPOOL_WORKERS = 4;
+inline constexpr uint32_t DEFAULT_RAFT_THREADPOOL_QUEUE = 10000;
+inline constexpr uint32_t DEFAULT_RAFT_THREADPOOL_WAIT = 1000; // ms
+inline constexpr uint32_t DEFAULT_RAFT_LOG_THRESHOLD = 1000000;
+inline constexpr double DEFAULT_RAFT_LOG_TRUNCATE_RATIO = 0.25;
+inline constexpr const char *DEFAULT_RAFT_WAL_FILENAME = "raft_wal.log";
+inline constexpr const char *DEFAULT_RAFT_INDEX_FILENAME = "raft_index.idx";
+inline constexpr bool DEFAULT_RAFT_NEED_MAJORITY_CONFIRM = false;
+inline constexpr uint32_t DEFAULT_BATCH_TIMEOUT_MS = 500;
 
-#define DEFAULT_RAFT_LOG_THRESHOLD 1000000           // 触发日志截断的阈值(条数)
-#define DEFAULT_RAFT_LOG_TRUNCATE_RATIO 0.25         // 截断比例
-#define DEFAULT_RAFT_WAL_FILENAME "raft_wal.log"     // WAL 文件名
-#define DEFAULT_RAFT_INDEX_FILENAME "raft_index.idx" // 索引文件名
-#define DEFAULT_RAFT_NEED_MAJORITY_CONFIRM false     // 是否需要多数确认
+// ============================================================================
+// 配置字典键名常量 (Keys)
+// ============================================================================
+inline constexpr const char *PORT_KEY = "port";
+inline constexpr const char *IP_KEY = "ip";
+inline constexpr const char *RAFT_PORT_KEY = "raft_port";
+inline constexpr const char *RAFT_TRUST_IP_KEY = "raft_trust_ip";
+inline constexpr const char *READ_ONLY_KEY = "read_only";
+inline constexpr const char *LOG_LEVEL_KEY = "log_level";
+inline constexpr const char *LOG_ROTATE_SIZE_KEY = "log_rotate_size";
+inline constexpr const char *SKIPLIST_MAX_LEVEL_KEY = "skiplist_max_level";
+inline constexpr const char *SKIPLIST_PROBABILITY_KEY = "skiplist_probability";
+inline constexpr const char *SKIPLIST_MAX_NODE_COUNT_KEY = "skiplist_max_node_count";
+inline constexpr const char *MEMTABLE_SIZE_KEY = "memtable_size";
+inline constexpr const char *WAL_ENABLE_KEY = "wal_enable";
+inline constexpr const char *WAL_DIR_KEY = "wal_dir";
+inline constexpr const char *WAL_FILE_SIZE_KEY = "wal_file_size";
+inline constexpr const char *WAL_FILE_MAX_COUNT_KEY = "wal_file_max_count";
+inline constexpr const char *WAL_FLUSH_INTERVAL_KEY = "wal_flush_interval";
+inline constexpr const char *WAL_FLUSH_STRATEGY_KEY = "wal_flush_strategy";
+inline constexpr const char *SSTABLE_MERGE_STRATEGY_KEY = "sstable_merge_strategy";
+inline constexpr const char *SSTABLE_ZERO_LEVEL_SIZE_KEY = "sstable_zero_level_size";
+inline constexpr const char *SSTABLE_LEVEL_SIZE_RATIO_KEY = "sstable_level_size_ratio";
+inline constexpr const char *SSTABLE_MERGE_THRESHOLD_KEY = "sstable_merge_threshold";
+inline constexpr const char *MAX_CONNECTIONS_KEY = "max_connections";
+inline constexpr const char *MEMORY_POOL_SIZE_KEY = "memory_pool_size";
+inline constexpr const char *WAITING_QUEUE_SIZE_KEY = "waiting_queue_size";
+inline constexpr const char *MAX_WAITING_TIME_KEY = "max_waiting_time";
+inline constexpr const char *LOG_DIR_KEY = "log_dir";
+inline constexpr const char *DATA_DIR_KEY = "data_dir";
+inline constexpr const char *PASSWORD_KEY = "password";
+inline constexpr const char *WORKER_THREAD_COUNT_KEY = "worker_thread_count";
+inline constexpr const char *WORKER_QUEUE_SIZE_KEY = "worker_queue_size";
+inline constexpr const char *WORKER_WAIT_TIMEOUT_KEY = "worker_wait_timeout";
 
-#define DEFAULT_BATCH_TIMEOUT_MS 500 // 批量超时（ms）
+inline constexpr const char *RAFT_ELECTION_TIMEOUT_MIN_KEY = "raft_election_timeout_min_ms";
+inline constexpr const char *RAFT_ELECTION_TIMEOUT_MAX_KEY = "raft_election_timeout_max_ms";
+inline constexpr const char *RAFT_HEARTBEAT_INTERVAL_KEY = "raft_heartbeat_interval_ms";
+inline constexpr const char *RAFT_RPC_TIMEOUT_KEY = "raft_rpc_timeout_ms";
+inline constexpr const char *RAFT_FOLLOWER_IDLE_WAIT_KEY = "raft_follower_idle_wait_ms";
+inline constexpr const char *RAFT_JOIN_MAX_RETRIES_KEY = "raft_join_max_retries";
+inline constexpr const char *RAFT_REQUEST_VOTE_TIMEOUT_KEY = "raft_request_vote_timeout_ms";
+inline constexpr const char *RAFT_SUBMIT_TIMEOUT_KEY = "raft_submit_timeout_ms";
+inline constexpr const char *RAFT_APPEND_BATCH_KEY = "raft_append_entries_max_batch";
+inline constexpr const char *RAFT_SNAPSHOT_CHUNK_KEY = "raft_snapshot_chunk_size_bytes";
+inline constexpr const char *RAFT_RESULT_CACHE_CAPACITY_KEY = "raft_result_cache_capacity";
+inline constexpr const char *RAFT_THREADPOOL_WORKERS_KEY = "raft_threadpool_workers";
+inline constexpr const char *RAFT_THREADPOOL_QUEUE_KEY = "raft_threadpool_queue_size";
+inline constexpr const char *RAFT_THREADPOOL_WAIT_KEY = "raft_threadpool_wait_timeout_ms";
+inline constexpr const char *RAFT_LOG_THRESHOLD_KEY = "raft_log_size_threshold";
+inline constexpr const char *RAFT_LOG_TRUNCATE_RATIO_KEY = "raft_log_truncate_ratio";
+inline constexpr const char *RAFT_WAL_FILENAME_KEY = "raft_wal_filename";
+inline constexpr const char *RAFT_INDEX_FILENAME_KEY = "raft_index_filename";
+inline constexpr const char *RAFT_NEED_MAJORITY_CONFIRM_KEY = "raft_need_majority_confirm";
+inline constexpr const char *BATCH_TIMEOUT_KEY = "batch_timeout";
 
-#define PORT_KEY "port"
-#define IP_KEY "ip"
-#define RAFT_PORT_KEY "raft_port"
-#define RAFT_TRUST_IP_KEY "raft_trust_ip"
-#define READ_ONLY_KEY "read_only"
-#define LOG_LEVEL_KEY "log_level"
-#define LOG_ROTATE_SIZE_KEY "log_rotate_size"
-#define SKIPLIST_MAX_LEVEL_KEY "skiplist_max_level"
-#define SKIPLIST_PROBABILITY_KEY "skiplist_probability"
-#define SKIPLIST_MAX_NODE_COUNT_KEY "skiplist_max_node_count"
-#define MEMTABLE_SIZE_KEY "memtable_size"
-#define WAL_ENABLE_KEY "wal_enable"
-#define WAL_DIR_KEY "wal_dir"
-#define WAL_FILE_SIZE_KEY "wal_file_size"
-#define WAL_FILE_MAX_COUNT_KEY "wal_file_max_count"
-#define WAL_FLUSH_INTERVAL_KEY "wal_flush_interval"
-#define WAL_FLUSH_STRATEGY_KEY "wal_flush_strategy"
-#define SSTABLE_MERGE_STRATEGY_KEY "sstable_merge_strategy"
-#define SSTABLE_ZERO_LEVEL_SIZE_KEY "sstable_zero_level_size"
-#define SSTABLE_LEVEL_SIZE_RATIO_KEY "sstable_level_size_ratio"
-#define SSTABLE_MERGE_THRESHOLD_KEY "sstable_merge_threshold"
-#define MAX_CONNECTIONS_KEY "max_connections"
-#define MEMORY_POOL_SIZE_KEY "memory_pool_size"
-#define WAITING_QUEUE_SIZE_KEY "waiting_queue_size"
-#define MAX_WAITING_TIME_KEY "max_waiting_time"
-#define LOG_DIR_KEY "log_dir"
-#define DATA_DIR_KEY "data_dir"
-#define PASSWORD_KEY "password"
-#define WORKER_THREAD_COUNT_KEY "worker_thread_count"
-#define WORKER_QUEUE_SIZE_KEY "worker_queue_size"
-#define WORKER_WAIT_TIMEOUT_KEY "worker_wait_timeout"
-
-// Raft 相关配置 key
-#define RAFT_ELECTION_TIMEOUT_MIN_KEY "raft_election_timeout_min_ms"
-#define RAFT_ELECTION_TIMEOUT_MAX_KEY "raft_election_timeout_max_ms"
-#define RAFT_HEARTBEAT_INTERVAL_KEY "raft_heartbeat_interval_ms"
-#define RAFT_RPC_TIMEOUT_KEY "raft_rpc_timeout_ms"
-#define RAFT_FOLLOWER_IDLE_WAIT_KEY "raft_follower_idle_wait_ms"
-#define RAFT_JOIN_MAX_RETRIES_KEY "raft_join_max_retries"
-#define RAFT_REQUEST_VOTE_TIMEOUT_KEY "raft_request_vote_timeout_ms"
-#define RAFT_SUBMIT_TIMEOUT_KEY "raft_submit_timeout_ms"
-#define RAFT_APPEND_BATCH_KEY "raft_append_entries_max_batch"
-#define RAFT_SNAPSHOT_CHUNK_KEY "raft_snapshot_chunk_size_bytes"
-#define RAFT_RESULT_CACHE_CAPACITY_KEY "raft_result_cache_capacity"
-#define RAFT_THREADPOOL_WORKERS_KEY "raft_threadpool_workers"
-#define RAFT_THREADPOOL_QUEUE_KEY "raft_threadpool_queue_size"
-#define RAFT_THREADPOOL_WAIT_KEY "raft_threadpool_wait_timeout_ms"
-
-#define RAFT_LOG_THRESHOLD_KEY "raft_log_size_threshold"
-#define RAFT_LOG_TRUNCATE_RATIO_KEY "raft_log_truncate_ratio"
-#define RAFT_WAL_FILENAME_KEY "raft_wal_filename"
-#define RAFT_INDEX_FILENAME_KEY "raft_index_filename"
-#define RAFT_NEED_MAJORITY_CONFIRM_KEY "raft_need_majority_confirm"
-
-#define BATCH_TIMEOUT_KEY "batch_timeout"
-
+/**
+ * @class EyaKVConfig
+ * @brief 系统全局配置管理器 (单例)
+ */
 class EyaKVConfig
 {
+public:
+    // 禁用拷贝和赋值，保障单例安全性
+    EyaKVConfig(const EyaKVConfig &) = delete;
+    void operator=(const EyaKVConfig &) = delete;
+
+    /**
+     * @brief 获取全局配置单例实例
+     * @return EyaKVConfig& 实例引用
+     */
+    static EyaKVConfig &get_instance()
+    {
+        static EyaKVConfig instance;
+        return instance;
+    }
+
+    /**
+     * @brief 根据键名获取配置项
+     * @param key 配置键名
+     * @return std::optional<std::string> 配置项的字符串值，如果未找到则返回 nullopt
+     */
+    std::optional<std::string> get_config(const std::string &key) const
+    {
+        // C++17 的初始化 if 语法，减少了一次哈希查找，极大提高性能
+        if (auto it = config_map_.find(key); it != config_map_.end())
+        {
+            return it->second;
+        }
+        return std::nullopt;
+    }
+
 private:
     std::string config_file_;
     std::unordered_map<std::string, std::string> config_map_;
 
-    // 配置 key 到环境变量 key 的映射表
-    static const std::unordered_map<std::string, std::string> ENV_KEY_MAP;
+    /**
+     * @brief 配置 Key 映射到 环境变量 Key 的静态常量表
+     * @details 使用 C++17 inline static 特性直接类内初始化，摒弃外部函数
+     */
+    inline static const std::unordered_map<std::string, std::string> ENV_KEY_MAP = {
+        {PORT_KEY, "EYAKV_PORT"},
+        {IP_KEY, "EYAKV_IP"},
+        {RAFT_PORT_KEY, "EYAKV_RAFT_PORT"},
+        {RAFT_TRUST_IP_KEY, "EYAKV_RAFT_TRUST_IP"},
+        {LOG_LEVEL_KEY, "EYAKV_LOG_LEVEL"},
+        {LOG_ROTATE_SIZE_KEY, "EYAKV_LOG_ROTATE_SIZE"},
+        {LOG_DIR_KEY, "EYAKV_LOG_DIR"},
+        {READ_ONLY_KEY, "EYAKV_READ_ONLY"},
+        {MEMTABLE_SIZE_KEY, "EYAKV_MEMTABLE_SIZE"},
+        {DATA_DIR_KEY, "EYAKV_DATA_DIR"},
+        {SKIPLIST_MAX_LEVEL_KEY, "EYAKV_SKIPLIST_MAX_LEVEL"},
+        {SKIPLIST_PROBABILITY_KEY, "EYAKV_SKIPLIST_PROBABILITY"},
+        {SKIPLIST_MAX_NODE_COUNT_KEY, "EYAKV_SKIPLIST_MAX_NODE_COUNT"},
+        {WAL_ENABLE_KEY, "EYAKV_WAL_ENABLE"},
+        {WAL_DIR_KEY, "EYAKV_WAL_DIR"},
+        {WAL_FILE_SIZE_KEY, "EYAKV_WAL_FILE_SIZE"},
+        {WAL_FILE_MAX_COUNT_KEY, "EYAKV_WAL_FILE_MAX_COUNT"},
+        {WAL_FLUSH_INTERVAL_KEY, "EYAKV_WAL_FLUSH_INTERVAL"},
+        {WAL_FLUSH_STRATEGY_KEY, "EYAKV_WAL_FLUSH_STRATEGY"},
+        {SSTABLE_MERGE_STRATEGY_KEY, "EYAKV_SSTABLE_MERGE_STRATEGY"},
+        {SSTABLE_ZERO_LEVEL_SIZE_KEY, "EYAKV_SSTABLE_ZERO_LEVEL_SIZE"},
+        {SSTABLE_LEVEL_SIZE_RATIO_KEY, "EYAKV_SSTABLE_LEVEL_SIZE_RATIO"},
+        {SSTABLE_MERGE_THRESHOLD_KEY, "EYAKV_SSTABLE_MERGE_THRESHOLD"},
+        {MAX_CONNECTIONS_KEY, "EYAKV_MAX_CONNECTIONS"},
+        {MEMORY_POOL_SIZE_KEY, "EYAKV_MEMORY_POOL_SIZE"},
+        {WAITING_QUEUE_SIZE_KEY, "EYAKV_WAITING_QUEUE_SIZE"},
+        {MAX_WAITING_TIME_KEY, "EYAKV_MAX_WAITING_TIME"},
+        {PASSWORD_KEY, "EYAKV_PASSWORD"},
+        {WORKER_THREAD_COUNT_KEY, "EYAKV_WORKER_THREAD_COUNT"},
+        {WORKER_QUEUE_SIZE_KEY, "EYAKV_WORKER_QUEUE_SIZE"},
+        {WORKER_WAIT_TIMEOUT_KEY, "EYAKV_WORKER_WAIT_TIMEOUT"},
+        {RAFT_ELECTION_TIMEOUT_MIN_KEY, "EYAKV_RAFT_ELECTION_TIMEOUT_MIN_MS"},
+        {RAFT_ELECTION_TIMEOUT_MAX_KEY, "EYAKV_RAFT_ELECTION_TIMEOUT_MAX_MS"},
+        {RAFT_HEARTBEAT_INTERVAL_KEY, "EYAKV_RAFT_HEARTBEAT_INTERVAL_MS"},
+        {RAFT_RPC_TIMEOUT_KEY, "EYAKV_RAFT_RPC_TIMEOUT_MS"},
+        {RAFT_FOLLOWER_IDLE_WAIT_KEY, "EYAKV_RAFT_FOLLOWER_IDLE_WAIT_MS"},
+        {RAFT_JOIN_MAX_RETRIES_KEY, "EYAKV_RAFT_JOIN_MAX_RETRIES"},
+        {RAFT_REQUEST_VOTE_TIMEOUT_KEY, "EYAKV_RAFT_REQUEST_VOTE_TIMEOUT_MS"},
+        {RAFT_SUBMIT_TIMEOUT_KEY, "EYAKV_RAFT_SUBMIT_TIMEOUT_MS"},
+        {RAFT_APPEND_BATCH_KEY, "EYAKV_RAFT_APPEND_ENTRIES_MAX_BATCH"},
+        {RAFT_LOG_THRESHOLD_KEY, "EYAKV_RAFT_LOG_SIZE_THRESHOLD"},
+        {RAFT_LOG_TRUNCATE_RATIO_KEY, "EYAKV_RAFT_LOG_TRUNCATE_RATIO"},
+        {RAFT_WAL_FILENAME_KEY, "EYAKV_RAFT_WAL_FILENAME"},
+        {RAFT_INDEX_FILENAME_KEY, "EYAKV_RAFT_INDEX_FILENAME"},
+        {RAFT_NEED_MAJORITY_CONFIRM_KEY, "EYAKV_RAFT_NEED_MAJORITY_CONFIRM"},
+        {RAFT_SNAPSHOT_CHUNK_KEY, "EYAKV_RAFT_SNAPSHOT_CHUNK_SIZE_BYTES"},
+        {RAFT_RESULT_CACHE_CAPACITY_KEY, "EYAKV_RAFT_RESULT_CACHE_CAPACITY"},
+        {RAFT_THREADPOOL_WORKERS_KEY, "EYAKV_RAFT_THREADPOOL_WORKERS"},
+        {RAFT_THREADPOOL_QUEUE_KEY, "EYAKV_RAFT_THREADPOOL_QUEUE_SIZE"},
+        {RAFT_THREADPOOL_WAIT_KEY, "EYAKV_RAFT_THREADPOOL_WAIT_TIMEOUT_MS"},
+        {BATCH_TIMEOUT_KEY, "EYAKV_BATCH_TIMEOUT"}};
 
-    // 初始化环境变量映射表
-    static std::unordered_map<std::string, std::string> init_env_key_map();
-
+    /**
+     * @brief 构造函数：按照 默认 -> 配置文件 -> 环境变量 顺序加载并覆盖
+     */
     EyaKVConfig()
     {
-        const char *env_config = std::getenv("EYAKV_CONFIG_PATH");
-        if (env_config != nullptr)
+        if (const char *env_config = std::getenv("EYAKV_CONFIG_PATH"))
         {
-            config_file_ = std::string(env_config);
+            config_file_ = env_config;
         }
         else
         {
             config_file_ = PathUtils::get_target_file_path("conf/eyakv.conf");
         }
+
         load_default_config();
         load_config();
-        load_config_from_env(); // 从环境变量加载配置
+        load_config_from_env();
         check_config();
     }
+
+    ~EyaKVConfig() = default;
+
+    /**
+     * @brief 从指定文件解析加载配置
+     */
     void load_config()
     {
         if (!std::filesystem::exists(config_file_))
-        {
             return;
-        }
+
         std::ifstream config_file(config_file_);
         if (!config_file.is_open())
         {
             throw std::runtime_error("Failed to open config file: " + config_file_);
         }
+
         std::string line;
         while (std::getline(config_file, line))
         {
-            size_t index = line.find('#');
-            if (index != std::string::npos)
+            size_t comment_idx = line.find('#');
+            if (comment_idx != std::string::npos)
             {
-                line = line.substr(0, index);
+                line.erase(comment_idx); // 避免生成新的字符串副本
             }
             if (line.empty())
-            {
                 continue;
-            }
-            index = line.find('=');
-            if (index == std::string::npos)
+
+            size_t eq_idx = line.find('=');
+            if (eq_idx == std::string::npos)
             {
-                throw std::runtime_error("Invalid config line: " + line);
+                throw std::runtime_error("Invalid config line (missing '='): " + line);
             }
-            std::string key = trim(line.substr(0, index)), value = trim(line.substr(index + 1));
+
+            std::string key = trim(line.substr(0, eq_idx));
+            std::string value = trim(line.substr(eq_idx + 1));
             if (key.empty() || value.empty())
             {
-                throw std::runtime_error("Invalid config line: " + line);
+                throw std::runtime_error("Invalid config line (empty key or value): " + line);
             }
-            config_map_[key] = value;
+            config_map_[key] = std::move(value);
         }
     }
 
     /**
-     * @brief 从环境变量加载配置
-     *
-     * 环境变量的命名规则：EYAKV_<KEY_NAME>
-     * 例如：port -> EYAKV_PORT, log_level -> EYAKV_LOG_LEVEL
-     * 环境变量优先级高于配置文件
+     * @brief 从系统环境变量中加载配置项
      */
     void load_config_from_env()
     {
         for (const auto &[config_key, env_key] : ENV_KEY_MAP)
         {
-            const char *env_value = std::getenv(env_key.c_str());
-            if (env_value != nullptr && std::string(env_value).length() > 0)
+            if (const char *env_value = std::getenv(env_key.c_str()); env_value && env_value[0] != '\0')
             {
-                config_map_[config_key] = std::string(env_value);
+                config_map_[config_key] = env_value;
             }
         }
     }
 
+    /**
+     * @brief 初始化默认字典
+     */
     void load_default_config()
     {
         config_map_[LOG_DIR_KEY] = PathUtils::get_target_file_path("logs");
+        config_map_[DATA_DIR_KEY] = PathUtils::get_target_file_path("data");
+        config_map_[WAL_DIR_KEY] = PathUtils::combine_path(PathUtils::get_target_file_path("data"), "wal");
+
         config_map_[LOG_LEVEL_KEY] = std::to_string(static_cast<int>(DEFAULT_LOG_LEVEL));
         config_map_[LOG_ROTATE_SIZE_KEY] = std::to_string(DEFAULT_LOG_ROTATE_SIZE);
         config_map_[IP_KEY] = DEFAULT_IP;
         config_map_[PORT_KEY] = std::to_string(DEFAULT_PORT);
-        config_map_[RAFT_PORT_KEY] = std::to_string(DEFAULT_RAFT_PORT);
-        config_map_[RAFT_TRUST_IP_KEY] = DEFAULT_RAFT_TRUST_IP;
-        config_map_[READ_ONLY_KEY] = std::to_string(DEFAULT_READ_ONLY);
+        config_map_[READ_ONLY_KEY] = DEFAULT_READ_ONLY ? "true" : "false";
+        config_map_[PASSWORD_KEY] = "";
+
         config_map_[SKIPLIST_MAX_LEVEL_KEY] = std::to_string(DEFAULT_SKIPLIST_MAX_LEVEL);
         config_map_[SKIPLIST_PROBABILITY_KEY] = std::to_string(DEFAULT_SKIPLIST_PROBABILITY);
         config_map_[SKIPLIST_MAX_NODE_COUNT_KEY] = std::to_string(DEFAULT_SKIPLIST_MAX_NODE_COUNT);
+
         config_map_[MEMTABLE_SIZE_KEY] = std::to_string(DEFAULT_MEMTABLE_SIZE);
-        config_map_[WAL_ENABLE_KEY] = std::to_string(DEFAULT_WAL_ENABLE);
-        config_map_[WAL_DIR_KEY] = PathUtils::combine_path(PathUtils::get_target_file_path("data"), "wal");
+        config_map_[WAL_ENABLE_KEY] = DEFAULT_WAL_ENABLE ? "true" : "false";
         config_map_[WAL_FILE_SIZE_KEY] = std::to_string(DEFAULT_WAL_FILE_SIZE);
         config_map_[WAL_FILE_MAX_COUNT_KEY] = std::to_string(DEFAULT_WAL_FILE_MAX_COUNT);
-        config_map_[SSTABLE_MERGE_THRESHOLD_KEY] = std::to_string(DEFAULT_SSTABLE_MERGE_THRESHOLD);
-        config_map_[SSTABLE_MERGE_STRATEGY_KEY] = std::to_string(static_cast<int>(DEFAULT_SSTABLE_MERGE_STRATEGY));
-        config_map_[SSTABLE_ZERO_LEVEL_SIZE_KEY] = std::to_string(DEFAULT_SSTABLE_ZERO_LEVEL_SIZE);
-        config_map_[SSTABLE_LEVEL_SIZE_RATIO_KEY] = std::to_string(DEFAULT_SSTABLE_LEVEL_SIZE_RATIO);
         config_map_[WAL_FLUSH_STRATEGY_KEY] = std::to_string(static_cast<int>(DEFAULT_WAL_FLUSH_STRATEGY));
         config_map_[WAL_FLUSH_INTERVAL_KEY] = std::to_string(DEFAULT_WAL_FLUSH_INTERVAL);
+
+        config_map_[SSTABLE_MERGE_STRATEGY_KEY] = std::to_string(static_cast<int>(DEFAULT_SSTABLE_MERGE_STRATEGY));
+        config_map_[SSTABLE_MERGE_THRESHOLD_KEY] = std::to_string(DEFAULT_SSTABLE_MERGE_THRESHOLD);
+        config_map_[SSTABLE_ZERO_LEVEL_SIZE_KEY] = std::to_string(DEFAULT_SSTABLE_ZERO_LEVEL_SIZE);
+        config_map_[SSTABLE_LEVEL_SIZE_RATIO_KEY] = std::to_string(DEFAULT_SSTABLE_LEVEL_SIZE_RATIO);
+
         config_map_[MAX_CONNECTIONS_KEY] = std::to_string(DEFAULT_MAX_CONNECTIONS);
         config_map_[MEMORY_POOL_SIZE_KEY] = std::to_string(DEFAULT_MEMORY_POOL_SIZE);
         config_map_[WAITING_QUEUE_SIZE_KEY] = std::to_string(DEFAULT_WAITING_QUEUE_SIZE);
         config_map_[MAX_WAITING_TIME_KEY] = std::to_string(DEFAULT_MAX_WAITING_TIME);
-        config_map_[DATA_DIR_KEY] = PathUtils::get_target_file_path("data");
-        config_map_[PASSWORD_KEY] = "";
+
         config_map_[WORKER_THREAD_COUNT_KEY] = std::to_string(DEFAULT_WORKER_THREAD_COUNT);
         config_map_[WORKER_QUEUE_SIZE_KEY] = std::to_string(DEFAULT_WORKER_QUEUE_SIZE);
         config_map_[WORKER_WAIT_TIMEOUT_KEY] = std::to_string(DEFAULT_WORKER_WAIT_TIMEOUT);
+        config_map_[BATCH_TIMEOUT_KEY] = std::to_string(DEFAULT_BATCH_TIMEOUT_MS);
 
-        // Raft 相关默认配置
+        // Raft 默认参数配置
+        config_map_[RAFT_PORT_KEY] = std::to_string(DEFAULT_RAFT_PORT);
+        config_map_[RAFT_TRUST_IP_KEY] = DEFAULT_RAFT_TRUST_IP;
         config_map_[RAFT_ELECTION_TIMEOUT_MIN_KEY] = std::to_string(DEFAULT_RAFT_ELECTION_TIMEOUT_MIN);
         config_map_[RAFT_ELECTION_TIMEOUT_MAX_KEY] = std::to_string(DEFAULT_RAFT_ELECTION_TIMEOUT_MAX);
         config_map_[RAFT_HEARTBEAT_INTERVAL_KEY] = std::to_string(DEFAULT_RAFT_HEARTBEAT_INTERVAL);
@@ -275,316 +400,87 @@ private:
         config_map_[RAFT_LOG_TRUNCATE_RATIO_KEY] = std::to_string(DEFAULT_RAFT_LOG_TRUNCATE_RATIO);
         config_map_[RAFT_WAL_FILENAME_KEY] = DEFAULT_RAFT_WAL_FILENAME;
         config_map_[RAFT_INDEX_FILENAME_KEY] = DEFAULT_RAFT_INDEX_FILENAME;
-        config_map_[RAFT_NEED_MAJORITY_CONFIRM_KEY] = std::to_string(DEFAULT_RAFT_NEED_MAJORITY_CONFIRM);
-
-        config_map_[BATCH_TIMEOUT_KEY] = std::to_string(DEFAULT_BATCH_TIMEOUT_MS);
+        config_map_[RAFT_NEED_MAJORITY_CONFIRM_KEY] = DEFAULT_RAFT_NEED_MAJORITY_CONFIRM ? "true" : "false";
     }
 
+    /**
+     * @brief 验证所有关键配置参数的有效性
+     * @details 提取冗余的 if 判断为 lambda 通用验证器
+     */
     void check_config()
     {
-        if (config_map_.find(LOG_LEVEL_KEY) != config_map_.end())
+        // 通用数值范围验证器
+        auto check_int = [&](const char *key, int min_val, int max_val = INT32_MAX)
         {
-            int log_level = std::stoi(config_map_[LOG_LEVEL_KEY]);
-            if (log_level < 0 || log_level > 4)
+            if (auto it = config_map_.find(key); it != config_map_.end())
             {
-                throw std::runtime_error("Invalid log level: " + config_map_[LOG_LEVEL_KEY]);
+                try
+                {
+                    int val = std::stoi(it->second);
+                    if (val < min_val || val > max_val)
+                    {
+                        throw std::runtime_error("Invalid range for " + std::string(key) + ": " + it->second);
+                    }
+                }
+                catch (const std::exception &)
+                {
+                    throw std::runtime_error("Invalid integer format for " + std::string(key) + ": " + it->second);
+                }
             }
-        }
-        if (config_map_.find(LOG_ROTATE_SIZE_KEY) != config_map_.end())
-        {
-            int log_rotate_size = std::stoi(config_map_[LOG_ROTATE_SIZE_KEY]);
-            if (log_rotate_size <= 0)
-            {
-                throw std::runtime_error("Invalid log rotate size: " + config_map_[LOG_ROTATE_SIZE_KEY]);
-            }
-        }
-        if (config_map_.find(PORT_KEY) != config_map_.end())
-        {
-            int port = std::stoi(config_map_[PORT_KEY]);
-            if (port < 1024 || port > 65535)
-            {
-                throw std::runtime_error("Invalid port: " + config_map_[PORT_KEY]);
-            }
-        }
-        if (config_map_.find(READ_ONLY_KEY) != config_map_.end())
-        {
-            std::string read_only = config_map_[READ_ONLY_KEY];
-            if (read_only != "true" && read_only != "false" && read_only != "0" && read_only != "1")
-            {
-                throw std::runtime_error("Invalid read_only: " + config_map_[READ_ONLY_KEY]);
-            }
-        }
+        };
 
-        // Skiplist配置校验
-        if (config_map_.find(SKIPLIST_MAX_LEVEL_KEY) != config_map_.end())
+        // 通用布尔型验证器
+        auto check_bool = [&](const char *key)
         {
-            int max_level = std::stoi(config_map_[SKIPLIST_MAX_LEVEL_KEY]);
-            if (max_level <= 0 || max_level > 64)
+            if (auto it = config_map_.find(key); it != config_map_.end())
             {
-                throw std::runtime_error("Invalid skiplist_max_level: " + config_map_[SKIPLIST_MAX_LEVEL_KEY]);
+                const auto &v = it->second;
+                if (v != "true" && v != "false" && v != "0" && v != "1")
+                {
+                    throw std::runtime_error("Invalid boolean format for " + std::string(key) + ": " + v);
+                }
             }
-        }
-        if (config_map_.find(SKIPLIST_PROBABILITY_KEY) != config_map_.end())
-        {
-            double probability = std::stod(config_map_[SKIPLIST_PROBABILITY_KEY]);
-            if (probability <= 0.0 || probability >= 1.0)
-            {
-                throw std::runtime_error("Invalid skiplist_probability: " + config_map_[SKIPLIST_PROBABILITY_KEY]);
-            }
-        }
-        if (config_map_.find(SKIPLIST_MAX_NODE_COUNT_KEY) != config_map_.end())
-        {
-            int max_node_count = std::stoi(config_map_[SKIPLIST_MAX_NODE_COUNT_KEY]);
-            if (max_node_count <= 0)
-            {
-                throw std::runtime_error("Invalid skiplist_max_node_count: " + config_map_[SKIPLIST_MAX_NODE_COUNT_KEY]);
-            }
-        }
+        };
 
-        // MemTable配置校验
-        if (config_map_.find(MEMTABLE_SIZE_KEY) != config_map_.end())
-        {
-            int memtable_size = std::stoi(config_map_[MEMTABLE_SIZE_KEY]);
-            if (memtable_size <= 0)
-            {
-                throw std::runtime_error("Invalid memtable_size: " + config_map_[MEMTABLE_SIZE_KEY]);
-            }
-        }
+        // 基础设定检查
+        check_int(LOG_LEVEL_KEY, 0, 4);
+        check_int(LOG_ROTATE_SIZE_KEY, 1);
+        check_int(PORT_KEY, 1024, 65535);
+        check_bool(READ_ONLY_KEY);
 
-        // WAL配置校验
-        if (config_map_.find(WAL_ENABLE_KEY) != config_map_.end())
+        // 数据结构和存储检查
+        check_int(SKIPLIST_MAX_LEVEL_KEY, 1, 64);
+        if (auto it = config_map_.find(SKIPLIST_PROBABILITY_KEY); it != config_map_.end())
         {
-            std::string wal_enable = config_map_[WAL_ENABLE_KEY];
-            if (wal_enable != "true" && wal_enable != "false" && wal_enable != "0" && wal_enable != "1")
+            double prob = std::stod(it->second);
+            if (prob <= 0.0 || prob >= 1.0)
             {
-                throw std::runtime_error("Invalid wal_enable: " + config_map_[WAL_ENABLE_KEY]);
+                throw std::runtime_error("Invalid skiplist_probability: " + it->second);
             }
         }
-        if (config_map_.find(WAL_FILE_SIZE_KEY) != config_map_.end())
-        {
-            int wal_file_size = std::stoi(config_map_[WAL_FILE_SIZE_KEY]);
-            if (wal_file_size <= 0)
-            {
-                throw std::runtime_error("Invalid wal_file_size: " + config_map_[WAL_FILE_SIZE_KEY]);
-            }
-        }
-        if (config_map_.find(WAL_FILE_MAX_COUNT_KEY) != config_map_.end())
-        {
-            int wal_file_max_count = std::stoi(config_map_[WAL_FILE_MAX_COUNT_KEY]);
-            if (wal_file_max_count <= 0)
-            {
-                throw std::runtime_error("Invalid wal_file_max_count: " + config_map_[WAL_FILE_MAX_COUNT_KEY]);
-            }
-        }
+        check_int(SKIPLIST_MAX_NODE_COUNT_KEY, 1);
+        check_int(MEMTABLE_SIZE_KEY, 1);
 
-        // WAL刷新策略校验
-        if (config_map_.find(WAL_FLUSH_STRATEGY_KEY) != config_map_.end())
-        {
-            int wal_flush_strategy = std::stoi(config_map_[WAL_FLUSH_STRATEGY_KEY]);
-            if (wal_flush_strategy < 0 || wal_flush_strategy > 2)
-            {
-                throw std::runtime_error("Invalid wal_flush_strategy: " + config_map_[WAL_FLUSH_STRATEGY_KEY]);
-            }
-        }
-        if (config_map_.find(WAL_FLUSH_INTERVAL_KEY) != config_map_.end())
-        {
-            int wal_flush_interval = std::stoi(config_map_[WAL_FLUSH_INTERVAL_KEY]);
-            if (wal_flush_interval <= 0)
-            {
-                throw std::runtime_error("Invalid wal_flush_interval: " + config_map_[WAL_FLUSH_INTERVAL_KEY]);
-            }
-        }
+        // WAL 和 SSTable 检查
+        check_bool(WAL_ENABLE_KEY);
+        check_int(WAL_FILE_SIZE_KEY, 1);
+        check_int(WAL_FILE_MAX_COUNT_KEY, 1);
+        check_int(WAL_FLUSH_STRATEGY_KEY, 0, 2);
+        check_int(WAL_FLUSH_INTERVAL_KEY, 1);
+        check_int(SSTABLE_MERGE_STRATEGY_KEY, 0, 1);
+        check_int(SSTABLE_MERGE_THRESHOLD_KEY, 1);
+        check_int(SSTABLE_ZERO_LEVEL_SIZE_KEY, 1);
+        check_int(SSTABLE_LEVEL_SIZE_RATIO_KEY, 2); // > 1
 
-        // SSTable配置校验
-        if (config_map_.find(SSTABLE_MERGE_STRATEGY_KEY) != config_map_.end())
-        {
-            int merge_strategy = std::stoi(config_map_[SSTABLE_MERGE_STRATEGY_KEY]);
-            if (merge_strategy < 0 || merge_strategy > 1)
-            {
-                throw std::runtime_error("Invalid sstable_merge_strategy: " + config_map_[SSTABLE_MERGE_STRATEGY_KEY]);
-            }
-        }
-        if (config_map_.find(SSTABLE_MERGE_THRESHOLD_KEY) != config_map_.end())
-        {
-            int merge_threshold = std::stoi(config_map_[SSTABLE_MERGE_THRESHOLD_KEY]);
-            if (merge_threshold <= 0)
-            {
-                throw std::runtime_error("Invalid sstable_merge_threshold: " + config_map_[SSTABLE_MERGE_THRESHOLD_KEY]);
-            }
-        }
-        if (config_map_.find(SSTABLE_ZERO_LEVEL_SIZE_KEY) != config_map_.end())
-        {
-            int zero_level_size = std::stoi(config_map_[SSTABLE_ZERO_LEVEL_SIZE_KEY]);
-            if (zero_level_size <= 0)
-            {
-                throw std::runtime_error("Invalid sstable_zero_level_size: " + config_map_[SSTABLE_ZERO_LEVEL_SIZE_KEY]);
-            }
-        }
-        if (config_map_.find(SSTABLE_LEVEL_SIZE_RATIO_KEY) != config_map_.end())
-        {
-            int level_size_ratio = std::stoi(config_map_[SSTABLE_LEVEL_SIZE_RATIO_KEY]);
-            if (level_size_ratio <= 1)
-            {
-                throw std::runtime_error("Invalid sstable_level_size_ratio: " + config_map_[SSTABLE_LEVEL_SIZE_RATIO_KEY]);
-            }
-        }
-
-        // 连接和内存池配置校验
-        if (config_map_.find(MAX_CONNECTIONS_KEY) != config_map_.end())
-        {
-            int max_connections = std::stoi(config_map_[MAX_CONNECTIONS_KEY]);
-            if (max_connections <= 0 || max_connections > 100000)
-            {
-                throw std::runtime_error("Invalid max_connections: " + config_map_[MAX_CONNECTIONS_KEY]);
-            }
-        }
-        if (config_map_.find(MEMORY_POOL_SIZE_KEY) != config_map_.end())
-        {
-            int memory_pool_size = std::stoi(config_map_[MEMORY_POOL_SIZE_KEY]);
-            if (memory_pool_size <= 0)
-            {
-                throw std::runtime_error("Invalid memory_pool_size: " + config_map_[MEMORY_POOL_SIZE_KEY]);
-            }
-        }
-        if (config_map_.find(WAITING_QUEUE_SIZE_KEY) != config_map_.end())
-        {
-            int waiting_queue_size = std::stoi(config_map_[WAITING_QUEUE_SIZE_KEY]);
-            if (waiting_queue_size <= 0)
-            {
-                throw std::runtime_error("Invalid waiting_queue_size: " + config_map_[WAITING_QUEUE_SIZE_KEY]);
-            }
-        }
-        if (config_map_.find(MAX_WAITING_TIME_KEY) != config_map_.end())
-        {
-            int max_waiting_time = std::stoi(config_map_[MAX_WAITING_TIME_KEY]);
-            if (max_waiting_time <= 0)
-            {
-                throw std::runtime_error("Invalid max_waiting_time: " + config_map_[MAX_WAITING_TIME_KEY]);
-            }
-        }
-        // 工作线程配置校验
-        if (config_map_.find(WORKER_THREAD_COUNT_KEY) != config_map_.end())
-        {
-            int worker_thread_num = std::stoi(config_map_[WORKER_THREAD_COUNT_KEY]);
-            if (worker_thread_num <= 0)
-            {
-                throw std::runtime_error("Invalid worker_thread_num: " + config_map_[WORKER_THREAD_COUNT_KEY]);
-            }
-        }
-        if (config_map_.find(WORKER_QUEUE_SIZE_KEY) != config_map_.end())
-        {
-            int worker_queue_size = std::stoi(config_map_[WORKER_QUEUE_SIZE_KEY]);
-            if (worker_queue_size <= 0)
-            {
-                throw std::runtime_error("Invalid worker_queue_size: " + config_map_[WORKER_QUEUE_SIZE_KEY]);
-            }
-        }
-        if (config_map_.find(WORKER_WAIT_TIMEOUT_KEY) != config_map_.end())
-        {
-            int worker_wait_timeout = std::stoi(config_map_[WORKER_WAIT_TIMEOUT_KEY]);
-            if (worker_wait_timeout <= 0)
-            {
-                throw std::runtime_error("Invalid worker_wait_timeout: " + config_map_[WORKER_WAIT_TIMEOUT_KEY]);
-            }
-        }
+        // 并发及网络检查
+        check_int(MAX_CONNECTIONS_KEY, 1, 100000);
+        check_int(MEMORY_POOL_SIZE_KEY, 1);
+        check_int(WAITING_QUEUE_SIZE_KEY, 1);
+        check_int(MAX_WAITING_TIME_KEY, 1);
+        check_int(WORKER_THREAD_COUNT_KEY, 1);
+        check_int(WORKER_QUEUE_SIZE_KEY, 1);
+        check_int(WORKER_WAIT_TIMEOUT_KEY, 1);
     }
-
-public:
-    static EyaKVConfig &get_instance()
-    {
-        static EyaKVConfig instance;
-        return instance;
-    }
-    std::optional<std::string> get_config(const std::string &key) const
-    {
-
-        if (config_map_.find(key) != config_map_.end())
-        {
-            return config_map_.at(key);
-        }
-        return std::nullopt;
-    }
-    ~EyaKVConfig() = default;
 };
 
-// 初始化环境变量映射表的静态实现
-inline std::unordered_map<std::string, std::string> EyaKVConfig::init_env_key_map()
-{
-    return {
-        // 网络配置
-        {PORT_KEY, "EYAKV_PORT"},
-        {IP_KEY, "EYAKV_IP"},
-        {RAFT_PORT_KEY, "EYAKV_RAFT_PORT"},
-        {RAFT_TRUST_IP_KEY, "EYAKV_RAFT_TRUST_IP"},
-
-        // 日志配置
-        {LOG_LEVEL_KEY, "EYAKV_LOG_LEVEL"},
-        {LOG_ROTATE_SIZE_KEY, "EYAKV_LOG_ROTATE_SIZE"},
-        {LOG_DIR_KEY, "EYAKV_LOG_DIR"},
-
-        // 存储配置
-        {READ_ONLY_KEY, "EYAKV_READ_ONLY"},
-        {MEMTABLE_SIZE_KEY, "EYAKV_MEMTABLE_SIZE"},
-        {DATA_DIR_KEY, "EYAKV_DATA_DIR"},
-
-        // SkipList 配置
-        {SKIPLIST_MAX_LEVEL_KEY, "EYAKV_SKIPLIST_MAX_LEVEL"},
-        {SKIPLIST_PROBABILITY_KEY, "EYAKV_SKIPLIST_PROBABILITY"},
-        {SKIPLIST_MAX_NODE_COUNT_KEY, "EYAKV_SKIPLIST_MAX_NODE_COUNT"},
-
-        // WAL 配置
-        {WAL_ENABLE_KEY, "EYAKV_WAL_ENABLE"},
-        {WAL_DIR_KEY, "EYAKV_WAL_DIR"},
-        {WAL_FILE_SIZE_KEY, "EYAKV_WAL_FILE_SIZE"},
-        {WAL_FILE_MAX_COUNT_KEY, "EYAKV_WAL_FILE_MAX_COUNT"},
-        {WAL_FLUSH_INTERVAL_KEY, "EYAKV_WAL_FLUSH_INTERVAL"},
-        {WAL_FLUSH_STRATEGY_KEY, "EYAKV_WAL_FLUSH_STRATEGY"},
-
-        // SSTable 配置
-        {SSTABLE_MERGE_STRATEGY_KEY, "EYAKV_SSTABLE_MERGE_STRATEGY"},
-        {SSTABLE_ZERO_LEVEL_SIZE_KEY, "EYAKV_SSTABLE_ZERO_LEVEL_SIZE"},
-        {SSTABLE_LEVEL_SIZE_RATIO_KEY, "EYAKV_SSTABLE_LEVEL_SIZE_RATIO"},
-        {SSTABLE_MERGE_THRESHOLD_KEY, "EYAKV_SSTABLE_MERGE_THRESHOLD"},
-
-        // 连接和线程配置
-        {MAX_CONNECTIONS_KEY, "EYAKV_MAX_CONNECTIONS"},
-        {MEMORY_POOL_SIZE_KEY, "EYAKV_MEMORY_POOL_SIZE"},
-        {WAITING_QUEUE_SIZE_KEY, "EYAKV_WAITING_QUEUE_SIZE"},
-        {MAX_WAITING_TIME_KEY, "EYAKV_MAX_WAITING_TIME"},
-        {PASSWORD_KEY, "EYAKV_PASSWORD"},
-        {WORKER_THREAD_COUNT_KEY, "EYAKV_WORKER_THREAD_COUNT"},
-        {WORKER_QUEUE_SIZE_KEY, "EYAKV_WORKER_QUEUE_SIZE"},
-        {WORKER_WAIT_TIMEOUT_KEY, "EYAKV_WORKER_WAIT_TIMEOUT"},
-
-        // Raft 选举配置
-        {RAFT_ELECTION_TIMEOUT_MIN_KEY, "EYAKV_RAFT_ELECTION_TIMEOUT_MIN_MS"},
-        {RAFT_ELECTION_TIMEOUT_MAX_KEY, "EYAKV_RAFT_ELECTION_TIMEOUT_MAX_MS"},
-        {RAFT_HEARTBEAT_INTERVAL_KEY, "EYAKV_RAFT_HEARTBEAT_INTERVAL_MS"},
-        {RAFT_RPC_TIMEOUT_KEY, "EYAKV_RAFT_RPC_TIMEOUT_MS"},
-        {RAFT_FOLLOWER_IDLE_WAIT_KEY, "EYAKV_RAFT_FOLLOWER_IDLE_WAIT_MS"},
-        {RAFT_JOIN_MAX_RETRIES_KEY, "EYAKV_RAFT_JOIN_MAX_RETRIES"},
-
-        // Raft 日志配置
-        {RAFT_REQUEST_VOTE_TIMEOUT_KEY, "EYAKV_RAFT_REQUEST_VOTE_TIMEOUT_MS"},
-        {RAFT_SUBMIT_TIMEOUT_KEY, "EYAKV_RAFT_SUBMIT_TIMEOUT_MS"},
-        {RAFT_APPEND_BATCH_KEY, "EYAKV_RAFT_APPEND_ENTRIES_MAX_BATCH"},
-        {RAFT_LOG_THRESHOLD_KEY, "EYAKV_RAFT_LOG_SIZE_THRESHOLD"},
-        {RAFT_LOG_TRUNCATE_RATIO_KEY, "EYAKV_RAFT_LOG_TRUNCATE_RATIO"},
-        {RAFT_WAL_FILENAME_KEY, "EYAKV_RAFT_WAL_FILENAME"},
-        {RAFT_INDEX_FILENAME_KEY, "EYAKV_RAFT_INDEX_FILENAME"},
-        {RAFT_NEED_MAJORITY_CONFIRM_KEY, "EYAKV_RAFT_NEED_MAJORITY_CONFIRM"},
-        // Raft 快照配置
-        {RAFT_SNAPSHOT_CHUNK_KEY, "EYAKV_RAFT_SNAPSHOT_CHUNK_SIZE_BYTES"},
-        {RAFT_RESULT_CACHE_CAPACITY_KEY, "EYAKV_RAFT_RESULT_CACHE_CAPACITY"},
-
-        // Raft 线程池配置
-        {RAFT_THREADPOOL_WORKERS_KEY, "EYAKV_RAFT_THREADPOOL_WORKERS"},
-        {RAFT_THREADPOOL_QUEUE_KEY, "EYAKV_RAFT_THREADPOOL_QUEUE_SIZE"},
-        {RAFT_THREADPOOL_WAIT_KEY, "EYAKV_RAFT_THREADPOOL_WAIT_TIMEOUT_MS"},
-
-        {BATCH_TIMEOUT_KEY, "EYAKV_BATCH_TIMEOUT"}};
-}
-
-// 静态成员变量定义
-inline const std::unordered_map<std::string, std::string> EyaKVConfig::ENV_KEY_MAP = EyaKVConfig::init_env_key_map();
-#endif
+#endif // CONFIG_H

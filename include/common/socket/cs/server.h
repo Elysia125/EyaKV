@@ -89,6 +89,8 @@ public:
         : TCPBase(ip, port), max_connections_(max_connections), connect_wait_queue_size_(connect_wait_queue_size), connect_wait_timeout_(connect_wait_timeout), current_connections_(0), is_running_(false), wait_thread_stop_monitor_(false), listen_socket_(INVALID_SOCKET_VALUE)
     {
 #ifdef _WIN32
+        WSADATA wsaData;
+        WSAStartup(MAKEWORD(2, 2), &wsaData);
         FD_ZERO(&master_set_);
 #endif
     }
@@ -141,6 +143,7 @@ public:
         {
             throw std::runtime_error("Failed to create epoll");
         }
+        events_ = new epoll_event[max_connections_];
         struct epoll_event ev;
         ev.events = EPOLLIN | EPOLLET; // 边缘触发模式
         ev.data.fd = listen_socket_;
@@ -155,6 +158,7 @@ public:
         {
             throw std::runtime_error("Failed to create kqueue");
         }
+        event_list_ = new kevent[max_connections_];
         struct kevent change;
         EV_SET(&change, listen_socket_, EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, NULL);
         if (kevent(kqueue_fd_, &change, 1, NULL, 0, NULL) == -1)
@@ -216,10 +220,14 @@ public:
         while (is_running_.load(std::memory_order_relaxed))
         {
 #ifdef __linux__
-            // LINUX (epoll)
-            int nfds = epoll_wait(epoll_fd_, events_, max_connections_, -1);
+            // LINUX (epoll) - 设置 100ms 超时，代替 -1（无限阻塞）
+            int nfds = epoll_wait(epoll_fd_, events_, max_connections_, 100);
             if (nfds == -1)
             {
+                if (errno == EINTR)
+                    continue; // 被系统信号打断是正常的，继续循环
+                if (!is_running_.load(std::memory_order_relaxed))
+                    break; // 如果已经要求停止，直接退出
                 LOG_ERROR("epoll_wait error: {}", strerror(errno));
                 break;
             }
@@ -237,11 +245,19 @@ public:
             }
 
 #elif defined(__APPLE__)
-            // macOS (kqueue)
-            int nev = kevent(kqueue_fd_, NULL, 0, event_list_, max_connections_, NULL);
+            // macOS (kqueue) - 设置 100ms 超时，代替 NULL
+            struct timespec timeout;
+            timeout.tv_sec = 0;
+            timeout.tv_nsec = 100 * 1000000; // 100ms
+            int nev = kevent(kqueue_fd_, NULL, 0, event_list_, max_connections_, &timeout);
             if (nev == -1)
             {
+                if (errno == EINTR)
+                    continue;
+                if (!is_running_.load(std::memory_order_relaxed))
+                    break;
                 LOG_ERROR("kevent error: {}", strerror(errno));
+                break;
             }
             for (int i = 0; i < nev; ++i)
             {
@@ -263,85 +279,144 @@ public:
 
 #else
             // Windows (select)
-            fd_set readSet = master_set_; // select会修改集合，需要拷贝
-            // 注意：Windows 下 select 的第一个参数会被忽略，但需要正确设置 FD_SETSIZE
-            // 在 socket.h 中已将 FD_SETSIZE 重新定义为 1024 以支持更多连接
-            int activity = select(0, &readSet, NULL, NULL, NULL);
+            fd_set readSet = master_set_;
+
+            // Windows 下如果传入空的 fd_set，select 会立刻报错 10022 (WSAEINVAL)。
+            // 为了防止 CPU 100% 空转，当没有连接且退出前，我们让它 sleep 一下。
+            if (readSet.fd_count == 0)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                continue;
+            }
+
+            // 设置 100ms 超时，代替 NULL（无限阻塞）
+            struct timeval timeout;
+            timeout.tv_sec = 0;
+            timeout.tv_usec = 100000; // 100,000 微秒 = 100ms
+
+            int activity = select(0, &readSet, NULL, NULL, &timeout);
 
             if (activity == SOCKET_ERROR_VALUE)
             {
                 int error = GET_SOCKET_ERROR();
+                // 如果是因为 stop() 中途关闭了 socket 导致的错误，正常退出
+                if (!is_running_.load(std::memory_order_relaxed))
+                {
+                    break;
+                }
                 LOG_ERROR("select error: {} - {}", error, socket_error_to_string(error).c_str());
-                // WSAENOTSOCK (10038): descriptor set contains invalid socket
-                // 可能是 fd_set 溢出
                 if (error == 10038)
                 {
                     LOG_ERROR("select failed: possibly too many sockets for FD_SETSIZE={}", FD_SETSIZE);
                 }
+                std::this_thread::sleep_for(std::chrono::milliseconds(50)); // 避免无限报错引发死循环
+                continue;
             }
-            // 遍历所有可能的socket
-            for (uint32_t i = 0; i < master_set_.fd_count; i++)
+
+            if (activity == 0)
             {
-                socket_t sock = master_set_.fd_array[i];
-                if (FD_ISSET(sock, &readSet))
+                // 每 100ms 没有消息就会来到这里。
+                // 此时循环继续，回到 while 条件判断 is_running_ 是否为 false，实现优雅退出。
+                continue;
+            }
+
+            // Windows 下直接遍历 readSet.fd_array 性能更高，无需遍历全局集合再 FD_ISSET
+            for (uint32_t i = 0; i < readSet.fd_count; i++)
+            {
+                socket_t sock = readSet.fd_array[i];
+                if (sock == listen_socket_)
                 {
-                    if (sock == listen_socket_)
-                    {
-                        handle_accept();
-                    }
-                    else
-                    {
-                        handle_client(sock);
-                    }
+                    handle_accept();
+                }
+                else
+                {
+                    handle_client(sock);
                 }
             }
 #endif
         }
+
+        LOG_INFO("TCPServer run loop gracefully exited."); // 加上这句日志，用于验证修复效果
     }
 
     virtual void stop()
     {
-        // 停止所有监控线程
+        // 1. 使用 CAS 保证 stop 逻辑只会被执行一次，完美解决被多次调用的问题
+        bool expected = true;
+        if (!is_running_.compare_exchange_strong(expected, false, std::memory_order_relaxed))
+        {
+            return; // 如果已经是 false，说明已经 stop 过了，直接返回
+        }
+
+        // 停止等待队列监控线程
+        LOG_INFO("Stopping queue monitor thread...");
         wait_thread_stop_monitor_.store(true, std::memory_order_relaxed);
         wait_queue_cv_.notify_all();
-
         if (queue_monitor_thread_.joinable())
         {
             queue_monitor_thread_.join();
         }
 
         // 清理等待队列中的所有连接
-        std::unique_lock<std::mutex> lock(wait_queue_mutex_);
-        while (!wait_queue_.empty())
+        LOG_INFO("Cleaning up wait queue...");
         {
-            CLOSE_SOCKET(wait_queue_.front().socket);
-            wait_queue_.pop_front();
+            std::unique_lock<std::mutex> lock(wait_queue_mutex_);
+            while (!wait_queue_.empty())
+            {
+                CLOSE_SOCKET(wait_queue_.front().socket);
+                wait_queue_.pop_front();
+            }
         }
-        lock.unlock();
-        // 关闭监听Socket
+        LOG_INFO("Wait queue cleaned up.");
+
+        // 关闭监听Socket和所有的客户端Socket
         {
+            LOG_INFO("Closing listen socket and all clients...");
             std::lock_guard<std::mutex> sockets_lock(sockets_mutex_);
             for (auto &socket : sockets_)
             {
                 CLOSE_SOCKET(socket);
             }
+            sockets_.clear(); // 修复：关闭后必须清空集合
         }
+        LOG_INFO("Listen socket and clients closed.");
+
         if (listen_socket_ != INVALID_SOCKET_VALUE)
         {
             CLOSE_SOCKET(listen_socket_);
+            listen_socket_ = INVALID_SOCKET_VALUE; // 修复：置为无效值
         }
 
 #ifdef _WIN32
         WSACleanup();
+        LOG_INFO("Windows socket cleanup completed.");
 #elif defined(__linux__)
         if (epoll_fd_ != -1)
+        {
             close(epoll_fd_);
-        delete[] events_;
+            epoll_fd_ = -1;
+        }
+        if (events_ != nullptr)
+        {
+            delete[] events_;
+            events_ = nullptr;
+        }
+        LOG_INFO("Linux socket cleanup completed.");
 #elif defined(__APPLE__)
         if (kqueue_fd_ != -1)
+        {
             close(kqueue_fd_);
-        delete[] event_list_;
+            kqueue_fd_ = -1;
+        }
+        if (event_list_ != nullptr)
+        {
+            delete[] event_list_;
+            event_list_ = nullptr;
+        }
+        LOG_INFO("macOS socket cleanup completed.");
 #endif
+
+        LOG_INFO("TCP server stopped.");
     }
 
     virtual void handle_accept()

@@ -378,32 +378,7 @@ void EyaKVStarter::shutdown()
     if (RaftNode::get_instance() != nullptr)
     {
         LOG_INFO("Stopping Raft node...");
-
-        // 使用线程 + 超时来避免无限等待
-        std::atomic<bool> raft_stopped{false};
-        std::thread stop_thread([&]()
-                                {
-            RaftNode::get_instance()->stop();
-            raft_stopped.store(true); });
-
-        // 等待最多 5 秒
-        auto start_time = std::chrono::steady_clock::now();
-        while (!raft_stopped.load() &&
-               std::chrono::steady_clock::now() - start_time < std::chrono::seconds(5))
-        {
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        }
-
-        if (raft_stopped.load())
-        {
-            stop_thread.join();
-        }
-        else
-        {
-            LOG_WARN("Raft node stop timed out after 5 seconds, forcing shutdown");
-            stop_thread.detach();
-        }
-
+        RaftNode::get_instance()->stop();
         LOG_INFO("Raft node stopped");
     }
 
