@@ -124,7 +124,8 @@ IndexEntry IndexEntry::deserialize(const char *data, size_t &offset)
 }
 
 // SSTable 实现
-SSTable::SSTable(const std::string &filepath) : filepath_(filepath)
+SSTable::SSTable(const std::string &filepath, std::shared_ptr<BlockCache> block_cache)
+    : filepath_(filepath), block_cache_(block_cache)
 {
     if (!load())
     {
@@ -312,31 +313,35 @@ size_t SSTable::find_block_index(const std::string &key) const
     return left > 0 ? left - 1 : 0;
 }
 
-std::vector<std::pair<std::string, EValue>> SSTable::read_data_block(size_t block_index) const
+BlockDataPtr SSTable::read_data_block(size_t block_index) const
 {
-    std::vector<std::pair<std::string, EValue>> entries;
-
+    auto entries = std::make_shared<BlockData>();
     if (block_index >= index_.size())
-    {
         return entries;
+
+    // 1. 构造唯一的 Cache Key (序列号_块索引)
+    std::string cache_key;
+    if (block_cache_)
+    {
+        cache_key = std::to_string(meta_.sequence_number) + "_" + std::to_string(block_index);
+        if (block_cache_->get(cache_key, entries))
+            return entries; // 缓存命中！直接返回，0 I/O 开销
     }
 
     const auto &idx = index_[block_index];
-
-    // 读取数据块
     std::vector<char> block_data(idx.block_size);
-    // 采用 OS 层面的原子读取(pread)，避免 fseek+fread 的并发争抢与加锁开销！
+
+    // 2. 缓存未命中，原子读取磁盘
     if (!pread_exact(file_, block_data.data(), idx.block_size, idx.block_offset))
     {
         LOG_ERROR("Failed to read data block from SSTable: {}", filepath_.c_str());
         return entries;
     }
 
-    // 解析数据块中的 KV 对
+    // 3. 反序列化
     size_t offset = 0;
     while (offset < idx.block_size)
     {
-        // 读取 key 长度和内容
         if (offset + sizeof(uint32_t) > idx.block_size)
             break;
         uint32_t key_len;
@@ -348,7 +353,6 @@ std::vector<std::pair<std::string, EValue>> SSTable::read_data_block(size_t bloc
         std::string key(block_data.data() + offset, key_len);
         offset += key_len;
 
-        // 读取 value 长度和内容
         if (offset + sizeof(uint32_t) > idx.block_size)
             break;
         uint32_t value_len;
@@ -358,12 +362,17 @@ std::vector<std::pair<std::string, EValue>> SSTable::read_data_block(size_t bloc
         if (offset + value_len > idx.block_size)
             break;
 
-        // 反序列化 EValue
         size_t value_offset = 0;
         EValue value = deserialize(block_data.data() + offset, value_offset);
         offset += value_len;
 
-        entries.emplace_back(std::move(key), std::move(value));
+        entries->emplace_back(std::move(key), std::move(value));
+    }
+
+    // 4. 写入缓存
+    if (block_cache_)
+    {
+        block_cache_->put(cache_key, entries);
     }
 
     return entries;
@@ -401,7 +410,7 @@ std::optional<EValue> SSTable::get(const std::string &key) const
 
     // 读取并搜索数据块
     auto block = read_data_block(block_index);
-    auto result = search_in_block(block, key);
+    auto result = search_in_block(*block, key);
 
     return result;
 }
@@ -432,7 +441,7 @@ std::vector<std::pair<std::string, EValue>> SSTable::range(
         }
 
         auto block = read_data_block(i);
-        for (const auto &[k, v] : block)
+        for (const auto &[k, v] : *block)
         {
             if (k >= start_key && k <= end_key)
             {
@@ -474,7 +483,7 @@ std::map<std::string, EValue> SSTable::range_map(
         }
 
         auto block = read_data_block(i);
-        for (const auto &[k, v] : block)
+        for (const auto &[k, v] : *block)
         {
             if (k >= start_key && k <= end_key)
             {
@@ -495,7 +504,7 @@ void SSTable::for_each(const std::function<bool(const std::string &, const EValu
     for (size_t i = 0; i < index_.size(); ++i)
     {
         auto block = read_data_block(i);
-        for (const auto &[k, v] : block)
+        for (const auto &[k, v] : *block)
         {
             if (!callback(k, v))
             {
@@ -763,6 +772,7 @@ SSTableManager::SSTableManager(const std::string &data_dir,
     {
         std::filesystem::create_directories(data_dir_);
     }
+    block_cache_ = std::make_shared<BlockCache>(BlockCacheCapacity);
     // 加载现有的 SSTable 文件
     load_all();
 }
@@ -806,7 +816,7 @@ bool SSTableManager::load_all()
             try
             {
                 LOG_INFO("SSTableManager::load_all: Loading SSTable: {}", filepath.c_str());
-                auto sstable = std::make_unique<SSTable>(entry.path().string());
+                auto sstable = std::make_shared<SSTable>(entry.path().string(), block_cache_);
 
                 // 更新下一个序列号
                 uint64_t seq = sstable->get_meta().sequence_number;

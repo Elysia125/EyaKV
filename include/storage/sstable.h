@@ -14,6 +14,13 @@
 #include "config/config.h"
 #include "storage/node.h"
 #include "common/ds/bloom_filter.h"
+#include "common/ds/lru_cache.h"
+
+#define BlockCacheCapacity 100000
+
+using BlockData = std::vector<std::pair<std::string, EValue>>;
+using BlockDataPtr = std::shared_ptr<BlockData>;
+using BlockCache = LRUCache<std::string, BlockDataPtr>;
 
 /**
  * @brief SSTable 文件格式:
@@ -112,8 +119,9 @@ public:
     /**
      * @brief 从文件加载 SSTable
      * @param filepath SSTable文件路径
+     * @param block_cache 块缓存
      */
-    explicit SSTable(const std::string &filepath);
+    explicit SSTable(const std::string &filepath, std::shared_ptr<BlockCache> block_cache = nullptr);
     ~SSTable();
 
     // 禁止拷贝
@@ -180,13 +188,14 @@ private:
     std::vector<IndexEntry> index_;
     BloomFilter bloom_filter_;
     SSTableMeta meta_;
+    std::shared_ptr<BlockCache> block_cache_;
 
     /**
      * @brief 从指定的数据块中读取所有 KV 对。
      * @param block_index 数据块在 index_ 中的索引
      * @return 该数据块包含的所有 KV 对
      */
-    std::vector<std::pair<std::string, EValue>> read_data_block(size_t block_index) const;
+    BlockDataPtr read_data_block(size_t block_index) const;
 
     /**
      * @brief 在内存中的数据块内进行二分查找。
@@ -385,6 +394,8 @@ private:
     double sstable_level_size_ratio_;
     uint64_t next_sequence_number_;
     uint32_t sstable_merge_threshold_;
+    std::shared_ptr<BlockCache> block_cache_; // 全局 SSTable 块缓存
+
     /**
      * @brief 生成唯一的 SSTable 文件名。
      * 格式：[sequence_number].sst
