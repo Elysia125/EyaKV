@@ -408,6 +408,13 @@ private:
     std::thread follower_client_thread_;                      // Follower客户端线程：处理从Leader接收到的消息
     std::atomic<bool> follower_client_thread_running_{false}; // Follower客户端线程运行标志
 
+    // 连接握手超时管理 (防僵尸连接)
+    std::unordered_map<socket_t, std::chrono::steady_clock::time_point> uninitialized_sockets_;
+    std::mutex uninitialized_sockets_mutex_;
+    std::thread uninitialized_monitor_thread_;
+    std::condition_variable uninitialized_cv_;
+    std::atomic<bool> stop_uninitialized_monitor_{false};
+
     // 元数据
     std::string root_dir_; // 数据根目录：存储日志、快照、元数据等的根目录
 
@@ -461,6 +468,9 @@ private:
 
     // 运行时配置
     RaftNodeConfig config_;
+
+    // 僵尸socket监控线程函数
+    void monitor_uninitialized_sockets();
 
     /// @brief 辅助方法：将角色设置为Follower
     void to_follower()
@@ -527,7 +537,8 @@ private:
     /// @brief 处理接收到的请求（TCPServer接口实现）
     /// @param body 请求消息体
     /// @param client_sock 客户端套接字
-    void handle_request(ProtocolBody *body, socket_t client_sock) override;
+    /// @param client_addr 客户端地址（可选，默认为空）
+    void handle_request(ProtocolBody *body, socket_t client_sock, const sockaddr_in &client_addr = sockaddr_in()) override;
 
     /// @brief 关闭套接字（TCPServer接口实现）
     /// @param sock 要关闭的套接字
@@ -582,7 +593,8 @@ private:
     /// @brief 处理新节点加入请求
     /// @param msg Raft消息
     /// @param client_sock 客户端套接字
-    void handle_join_cluster(const RaftMessage &msg, const socket_t &client_sock);
+    /// @param client_addr 客户端地址
+    void handle_join_cluster(const RaftMessage &msg, const socket_t &client_sock, const sockaddr_in &client_addr);
 
     /// @brief 处理InstallSnapshot请求（快照传输）
     /// @param msg Raft消息
@@ -757,7 +769,7 @@ private:
     /// @brief 添加新连接（TCPServer接口实现）
     /// @param client_sock 客户端套接字
     /// @param client_addr 客户端地址
-    void add_new_connection(socket_t client_sock, const sockaddr_in &client_addr) override;
+    void add_new_connection(socket_t&client_sock, const sockaddr_in &client_addr) override;
 
     /// @brief 从集群中移除节点
     /// @param addr 要移除的节点地址

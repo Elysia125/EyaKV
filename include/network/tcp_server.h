@@ -16,7 +16,6 @@
 #include <condition_variable>
 #include <optional>
 
-
 #undef DEFAULT_MAX_CONNECTIONS
 #undef DEFAULT_CONNECT_WAIT_QUEUE_SIZE
 #undef DEFAULT_CONNECT_WAIT_TIMEOUT
@@ -174,8 +173,9 @@ private:
      *
      * @param request 客户端请求对象
      * @param client_sock 客户端socket描述符
+     * @param client_addr 客户端地址
      */
-    void handle_request(ProtocolBody *body, socket_t client_sock) override;
+    void handle_request(ProtocolBody *body, socket_t client_sock, const sockaddr_in &client_addr = sockaddr_in()) override;
 
     /**
      * @brief 发送连接状态给客户端
@@ -189,6 +189,10 @@ private:
      * @param client_sock 客户端 socket 描述符
      */
     void send_connection_state(ConnectionState state, socket_t client_sock);
+    /**
+     * @brief 等待队列激活回调
+     */
+    void on_wait_queue_activated(socket_t sock, const sockaddr_in &addr) override;
 
 private:
     //  服务器配置参数

@@ -514,11 +514,52 @@ void RaftNode::start_background_threads()
 {
     election_thread_running_ = true;
     election_thread_ = std::thread(&RaftNode::election_loop, this);
+    LOG_INFO("Election thread started");
     heartbeat_thread_running_ = true;
     heartbeat_thread_ = std::thread(&RaftNode::heartbeat_loop, this);
+    LOG_INFO("Heartbeat thread started");
     follower_client_thread_running_ = true;
     follower_client_thread_ = std::thread(&RaftNode::follower_client_loop, this);
-    LOG_INFO("Background threads started");
+    LOG_INFO("Follower client thread started");
+    // 启动空闲连接监控线程
+    stop_uninitialized_monitor_ = false;
+    uninitialized_monitor_thread_ = std::thread(&RaftNode::monitor_uninitialized_sockets, this);
+    LOG_INFO("All Background threads started");
+}
+
+void RaftNode::monitor_uninitialized_sockets()
+{
+    while (!stop_uninitialized_monitor_.load())
+    {
+        std::unique_lock<std::mutex> lock(uninitialized_sockets_mutex_);
+        uninitialized_cv_.wait_for(lock, std::chrono::milliseconds(1000), [this]()
+                                   { return stop_uninitialized_monitor_.load(); });
+        if (stop_uninitialized_monitor_.load())
+            break;
+
+        auto now = std::chrono::steady_clock::now();
+        std::vector<socket_t> to_close;
+        for (auto it = uninitialized_sockets_.begin(); it != uninitialized_sockets_.end();)
+        {
+            // 如果连接建立后超过 raft_msg_timeout_ 毫秒没发消息，判死刑
+            if (now - it->second > std::chrono::milliseconds(config_.raft_rpc_timeout_ms))
+            {
+                to_close.push_back(it->first);
+                it = uninitialized_sockets_.erase(it);
+            }
+            else
+            {
+                ++it;
+            }
+        }
+        lock.unlock();
+
+        for (socket_t sock : to_close)
+        {
+            LOG_WARN("Socket {} timed out waiting for initial raft message, dropping it.", sock);
+            close_socket(sock);
+        }
+    }
 }
 
 // 获取当前时间戳
@@ -1595,19 +1636,21 @@ void RaftNode::handle_query_leader(const RaftMessage &msg, const socket_t &clien
         LOG_WARN("Untrusted node attempted to query leader");
     }
     response_msg = RaftMessage::query_leader_response(leader_addr);
-    send(response_msg, client_sock);
-    close_socket(client_sock);
+    // send(response_msg, client_sock);
+    // close_socket(client_sock);
+    // 查完 Leader 直接优雅关闭。底层会自动在数据全推给网卡后再断开。
+    send_and_close(response_msg, client_sock);
 }
 
 // 处理新节点加入请求
-void RaftNode::handle_join_cluster(const RaftMessage &msg, const socket_t &client_sock)
+void RaftNode::handle_join_cluster(const RaftMessage &msg, const socket_t &client_sock, const sockaddr_in &client_addr)
 {
     if (role_ != RaftRole::Leader)
     {
         LOG_WARN("Only leader can handle JoinCluster");
         RaftMessage response_msg = RaftMessage::query_leader_response(persistent_state_.cluster_metadata_.current_leader_);
-        send(response_msg, client_sock);
-        close_socket(client_sock);
+        send_and_close(response_msg, client_sock);
+        // close_socket(client_sock);
         return;
     }
 
@@ -1636,8 +1679,8 @@ void RaftNode::handle_join_cluster(const RaftMessage &msg, const socket_t &clien
             LOG_WARN("New node {} is not trusted, rejecting JoinCluster", new_node_addr.to_string().c_str());
             response.error_message = "Node is not trusted";
             response_msg.join_cluster_response_data = response;
-            send(response_msg, client_sock);
-            close_socket(client_sock);
+            send_and_close(response_msg, client_sock);
+            // close_socket(client_sock);
             return;
         }
         new_node_addr.port = data.port;
@@ -1668,6 +1711,11 @@ void RaftNode::handle_join_cluster(const RaftMessage &msg, const socket_t &clien
         std::thread([this, client_sock]()
                     { this->trigger_log_sync(client_sock); })
             .detach();
+        /*if (!assign_to_slave(client_sock, client_addr))
+        {
+            LOG_ERROR("Failed to assign new node to slave thread");
+            CLOSE_SOCKET(client_sock);
+        }*/
         // 更新集群配置
         {
             std::lock_guard<std::recursive_mutex> lock(mutex_);
@@ -1680,16 +1728,14 @@ void RaftNode::handle_join_cluster(const RaftMessage &msg, const socket_t &clien
             follower_sockets_.insert(client_sock);
             follower_address_map_[new_node_addr] = client_sock;
         }
-        // 添加到io多路复用
-        add_socket_to_epoll(client_sock);
         LOG_INFO("New node joined: {}", new_node_addr.to_string().c_str());
     }
     else
     {
         LOG_ERROR("Failed to get opposite address for JoinCluster");
         response.error_message = "Failed to get opposite address";
-        send(response_msg, client_sock);
-        close_socket(client_sock);
+        send_and_close(response_msg, client_sock);
+        // close_socket(client_sock);
         return;
     }
 }
@@ -2664,10 +2710,28 @@ Response RaftNode::handle_raft_command(uint8_t type, const std::vector<std::stri
     return response;
 }
 
-void RaftNode::add_new_connection(socket_t client_sock, const sockaddr_in &client_addr)
+void RaftNode::add_new_connection(socket_t &client_sock, const sockaddr_in &client_addr)
 {
+    char clientIp[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &client_addr.sin_addr, clientIp, INET_ADDRSTRLEN);
+    Address client_address(clientIp, ntohs(client_addr.sin_port));
+    if (!is_trust(client_address))
+    {
+        LOG_WARN("Connection from {} rejected: not in trust list", client_address.to_string().c_str());
+        CLOSE_SOCKET(client_sock);
+        return;
+    }
+    TCPServer::add_new_connection(client_sock, client_addr);
+
+    // 刚连上，立即登记到监控队列
+    if (client_sock != INVALID_SOCKET)
+    {
+        std::lock_guard<std::mutex> lock(uninitialized_sockets_mutex_);
+        uninitialized_sockets_[client_sock] = std::chrono::steady_clock::now();
+    }
+
     // 接受连接,但不添加到io多路复用，因为后续消息需要超时等待响应
-    if (current_connections_ < max_connections_)
+    /*if (current_connections_ < max_connections_)
     {
         // 连接数未满，直接接受
         set_non_blocking(client_sock);
@@ -2684,12 +2748,16 @@ void RaftNode::add_new_connection(socket_t client_sock, const sockaddr_in &clien
 
         current_connections_++;
         {
-            std::lock_guard<std::mutex> sockets_lock(sockets_mutex_);
-            sockets_.insert(client_sock);
+            std::lock_guard<std::mutex> sockets_lock(waiting_sockets_mutex_);
+            waiting_sockets_.insert(client_sock);
         }
         // 无论是主从，被主动连接都需要在一定时间安内接收到响应
         ProtocolBody *msg = new_body();
         int ret = receive(*msg, client_sock, raft_msg_timeout_);
+        {
+            std::lock_guard<std::mutex> sockets_lock(waiting_sockets_mutex_);
+            waiting_sockets_.erase(client_sock);
+        }
         if (ret < 0)
         {
             // 出现错误（可能是超时或连接关闭），关闭连接
@@ -2698,7 +2766,7 @@ void RaftNode::add_new_connection(socket_t client_sock, const sockaddr_in &clien
         }
         else
         {
-            handle_request(msg, client_sock);
+            handle_request(msg, client_sock, client_addr);
         }
     }
     else
@@ -2706,17 +2774,23 @@ void RaftNode::add_new_connection(socket_t client_sock, const sockaddr_in &clien
         // 等待队列已满，拒绝连接
         LOG_WARN("Connection rejected: active connections full");
         CLOSE_SOCKET(client_sock);
-    }
+    }*/
 }
 
-void RaftNode::handle_request(ProtocolBody *body, socket_t client_sock)
+void RaftNode::handle_request(ProtocolBody *body, socket_t client_sock, const sockaddr_in &client_addr)
 {
+    // 只要收到合法请求，就从"待淘汰队列"里解除登记，避免误杀
+    {
+        std::lock_guard<std::mutex> lock(uninitialized_sockets_mutex_);
+        uninitialized_sockets_.erase(client_sock);
+    }
+    std::unique_ptr<ProtocolBody> safe_body(body);
     // 处理客户端请求
-    RaftMessage *msg = dynamic_cast<RaftMessage *>(body);
+    RaftMessage *msg = dynamic_cast<RaftMessage *>(safe_body.get());
     switch (msg->type)
     {
     case RaftMessageType::JOIN_CLUSTER:
-        handle_join_cluster(*msg, client_sock);
+        handle_join_cluster(*msg, client_sock, client_addr);
         break;
     case RaftMessageType::QUERY_LEADER:
         handle_query_leader(*msg, client_sock);
@@ -2735,7 +2809,6 @@ void RaftNode::handle_request(ProtocolBody *body, socket_t client_sock)
         close_socket(client_sock);
         break;
     }
-    delete body;
 }
 
 void RaftNode::broadcast_to_followers(const RaftMessage &msg)
@@ -2758,40 +2831,36 @@ void RaftNode::broadcast_to_followers(const RaftMessage &msg)
 
 void RaftNode::close_socket(socket_t sock)
 {
-    int ret = shutdown(sock, SHUT_WR);
-#ifdef _WIN32
-    if (ret == SOCKET_ERROR)
-    {
-        LOG_ERROR("Shutdown error on fd {}: {}", sock, socket_error_to_string(errno));
-    }
-#else
-    if (ret == -1)
-    {
-        LOG_ERROR("Shutdown error on fd {}: {}", sock, socket_error_to_string(errno));
-    }
-#endif
-    CLOSE_SOCKET(sock);
-#ifdef __APPLE__
-#elif _WIN32
-    FD_CLR(sock, &master_set_);
-#elif __linux__
-    epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, sock, NULL);
-#endif
-
-    if (current_connections_ > 0)
-    {
-        current_connections_--;
-    }
-    // 从sockets集合中移除
-    {
-        std::lock_guard<std::mutex> sockets_lock(sockets_mutex_);
-        sockets_.erase(sock);
-    }
-    // 从follower_sockets集合中移除
+    // 1. 先清理 RaftNode 派生类自身特有的业务状态
     {
         std::lock_guard<std::shared_mutex> lock(follower_sockets_mutex_);
         follower_sockets_.erase(sock);
     }
+    {
+        std::lock_guard<std::mutex> lock(uninitialized_sockets_mutex_);
+        uninitialized_sockets_.erase(sock);
+    }
+    {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        next_index_.erase(sock);
+        match_index_.erase(sock);
+        snapshot_state_.erase(sock);
+        // 清理地址映射
+        for (auto it = follower_address_map_.begin(); it != follower_address_map_.end();)
+        {
+            if (it->second == sock)
+            {
+                it = follower_address_map_.erase(it);
+            }
+            else
+            {
+                ++it;
+            }
+        }
+    }
+
+    // 2. 然后调用基类方法，全权交给基类去清理 Reactor 监听树、缓冲池并真正执行 close
+    TCPServer::close_socket(sock);
 }
 
 bool RaftNode::remove_node(const Address &node_to_remove)
@@ -3006,6 +3075,7 @@ void RaftNode::stop()
     {
         election_thread_.join();
     }
+
     LOG_INFO("Stopping heartbeat thread...");
     heartbeat_thread_running_.store(false);
     heartbeat_cv_.notify_all();
@@ -3019,6 +3089,17 @@ void RaftNode::stop()
     if (follower_client_thread_.joinable())
     {
         follower_client_thread_.join();
+    }
+    LOG_INFO("Stopping uninitialized monitor thread...");
+    stop_uninitialized_monitor_.store(true);
+    uninitialized_cv_.notify_all();
+    if (uninitialized_monitor_thread_.joinable())
+    {
+        uninitialized_monitor_thread_.join();
+    }
+    for (const auto &sock : follower_sockets_)
+    {
+        CLOSE_SOCKET(sock);
     }
     LOG_INFO("Stopping TCP server...");
     TCPServer::stop();

@@ -294,15 +294,17 @@ bool authenticate(SocketGuard &socket_guard, const std::string &password, std::s
 {
     Request request = Request::auth(generate_random_string(16), password);
     std::string data = request.serialize();
+    std::cout << "Authenticating with server..." << std::endl;
     if (!send_data(socket_guard.get(), data))
     {
         std::cerr << "Send auth message failed: " << socket_error_to_string(GET_SOCKET_ERROR()) << std::endl;
         return false;
     }
-
+    std::cout << "Auth message sent, waiting for response..." << std::endl;
     try
     {
         Response response = receive_server_response(socket_guard.get());
+        std::cout << "Auth response received: code=" << response.code_ << ", error_msg=" << response.error_msg_ << std::endl;
         if (response.code_ == 0)
         {
             std::cerr << "Authentication failed: " << response.error_msg_ << std::endl;
@@ -356,6 +358,7 @@ int client_main(const std::string &host, int port, const std::string &password)
 
     Response resp = receive_server_response(socket_guard.get());
     ConnectionState state = static_cast<ConnectionState>(stoi(std::get<std::string>(resp.data_)));
+    std::cout << "Initial connection state: " << (state == ConnectionState::WAITING ? "WAITING" : "READY") << std::endl;
     if (state == ConnectionState::WAITING)
     {
         std::cout << "Waiting ..." << std::endl;

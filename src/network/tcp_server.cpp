@@ -26,15 +26,6 @@ EyaServer::EyaServer(const std::string &ip,
       worker_wait_timeout_(worker_wait_timeout),
       stop_auth_monitor_(false)
 {
-    /*#ifdef _WIN32
-        WSADATA wsaData;
-        WSAStartup(MAKEWORD(2, 2), &wsaData);
-        FD_ZERO(&master_set_);
-    #elif defined(__linux__)
-        events_ = new epoll_event[max_connections_];
-    #elif defined(__APPLE__)
-        event_list_ = new kevent[max_connections_];
-    #endif*/
     if (!password_.empty())
     {
         auth_key_ = generate_random_string(32);
@@ -60,9 +51,7 @@ void EyaServer::stop()
 
 void EyaServer::start()
 {
-    TCPServer::start();
-    is_running_ = false;
-    // 初始化线程池
+    // 1. 先初始化所有前置资源（如线程池），不要提前启动底层 Server！
     ThreadPool::Config pool_config{
         worker_thread_count_,       // 工作线程数量
         worker_queue_size_,         // 任务队列大小
@@ -78,11 +67,12 @@ void EyaServer::start()
         LOG_ERROR("Failed to initialize ThreadPool: {}", e.what());
         throw std::runtime_error("Failed to initialize ThreadPool:" + std::string(e.what()));
     }
+
+    // 2. 前置资源就绪后，再启动底层的 Reactor 线程引擎！
+    TCPServer::start();
     // 启动认证线程
-    if (!password_.empty())
-    {
-        auth_monitor_thread_ = std::thread([this]()
-                                           {
+    auth_monitor_thread_ = std::thread([this]()
+                                       {
             while (!stop_auth_monitor_.load(std::memory_order_relaxed))
             {
                 std::unique_lock<std::mutex> lock(auth_mutex_);
@@ -101,7 +91,7 @@ void EyaServer::start()
                 {
                     if (now - it->start_time > std::chrono::seconds(2))
                     {
-                        LOG_WARN("Connection without auth timeout, closing socket");
+                        LOG_INFO("❌ 客户端 {} 超过 2 秒未发送 AUTH 认证，触发超时踢出！", it->socket);
                         sockets_to_close.push_back(it->socket);
                         it = connections_without_auth_.erase(it);
                     }
@@ -117,13 +107,11 @@ void EyaServer::start()
                     close_socket(sock);
                 }
             } });
-    }
     is_running_ = true;
 }
 
 void EyaServer::handle_accept()
 {
-#ifdef __linux__
     // 边缘触发模式下需要循环 accept 直到返回 EAGAIN
     while (true)
     {
@@ -133,12 +121,16 @@ void EyaServer::handle_accept()
         socket_t client_sock = accept(listen_socket_, (struct sockaddr *)&client_addr, &client_len);
         if (client_sock == INVALID_SOCKET_VALUE)
         {
-            if (errno == EAGAIN || errno == EWOULDBLOCK)
-            {
-                break; // 所有连接已处理完毕
-            }
-            LOG_ERROR("Accept error: {}", strerror(errno));
-            return;
+            int err = GET_SOCKET_ERROR();
+#ifdef _WIN32
+            if (err == WSAEWOULDBLOCK)
+                break;
+#else
+            if (err == EAGAIN || err == EWOULDBLOCK || err == EINTR)
+                break;
+#endif
+            LOG_ERROR("Accept error: {}", socket_error_to_string(err));
+            break; // 没有新连接了，跳出循环
         }
 
         // 检查连接数限制和等待队列
@@ -153,16 +145,18 @@ void EyaServer::handle_accept()
             inet_ntop(AF_INET, &client_addr.sin_addr, clientIp, INET_ADDRSTRLEN);
             LOG_INFO("New connection accepted: {}:{}", clientIp, ntohs(client_addr.sin_port));
 
-            struct epoll_event ev;
-            ev.events = EPOLLIN | EPOLLET; // 边缘触发模式
-            ev.data.fd = client_sock;
-            if (epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, client_sock, &ev) == -1)
+            if (assign_to_slave(client_sock, client_addr))
             {
-                LOG_ERROR("Epoll ctl failed for client socket: {}", strerror(errno));
+                LOG_INFO("Client socket {} assigned to slave successfully", client_sock);
+                current_connections_++;
+            }
+            else
+            {
+                LOG_ERROR("Failed to assign client socket to slave: {}", client_sock);
                 CLOSE_SOCKET(client_sock);
+                lock.unlock();
                 continue;
             }
-            current_connections_++;
             lock.unlock();
 
             // 在锁外处理认证和发送状态
@@ -170,12 +164,9 @@ void EyaServer::handle_accept()
                 std::lock_guard<std::mutex> auth_lock(auth_mutex_);
                 connections_without_auth_.insert({client_sock, std::chrono::steady_clock::now()});
             }
-            {
-                std::lock_guard<std::mutex> sockets_lock(sockets_mutex_);
-                sockets_.insert(client_sock);
-            }
             auth_cv_.notify_one();
             send_connection_state(ConnectionState::READY, client_sock);
+            LOG_INFO("Connection accepted and ready: {}:{}", clientIp, ntohs(client_addr.sin_port));
         }
         else if (wait_queue_.size() < connect_wait_queue_size_)
         {
@@ -208,96 +199,6 @@ void EyaServer::handle_accept()
             continue;
         }
     }
-#else
-    // 非Linux平台（macOS、Windows）保持原有逻辑
-    sockaddr_in client_addr;
-#ifdef _WIN32
-    int client_len = sizeof(client_addr);
-#else
-    socklen_t client_len = sizeof(client_addr);
-#endif
-
-    socket_t client_sock = accept(listen_socket_, (struct sockaddr *)&client_addr, &client_len);
-    if (client_sock == INVALID_SOCKET_VALUE)
-    {
-#ifdef _WIN32
-        int error = WSAGetLastError();
-        if (error != WSAEWOULDBLOCK)
-        {
-            LOG_ERROR("Accept error: {}", error);
-        }
-#else
-        if (errno != EAGAIN && errno != EWOULDBLOCK)
-        {
-            LOG_ERROR("Accept error: {}", strerror(errno));
-        }
-#endif
-        return;
-    }
-
-    // 尝试接受连接
-    std::unique_lock<std::mutex> lock(wait_queue_mutex_);
-
-    if (current_connections_ < max_connections_)
-    {
-        // 连接数未满，直接接受
-        set_non_blocking(client_sock);
-        char clientIp[INET_ADDRSTRLEN];
-        inet_ntop(AF_INET, &client_addr.sin_addr, clientIp, INET_ADDRSTRLEN);
-        LOG_INFO("New connection accepted: {}:{}", clientIp, ntohs(client_addr.sin_port));
-
-        // 添加到IO复用
-#ifdef __APPLE__
-        struct kevent change;
-        EV_SET(&change, client_sock, EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, NULL);
-        kevent(kqueue_fd_, &change, 1, NULL, 0, NULL);
-#else // Windows
-        FD_SET(client_sock, &master_set_);
-#endif
-
-        current_connections_++;
-        lock.unlock();
-
-        // 在锁外处理认证和发送状态
-        {
-            std::lock_guard<std::mutex> auth_lock(auth_mutex_);
-            connections_without_auth_.insert({client_sock, std::chrono::steady_clock::now()});
-        }
-        {
-            std::lock_guard<std::mutex> sockets_lock(sockets_mutex_);
-            sockets_.insert(client_sock);
-        }
-        auth_cv_.notify_one();
-        send_connection_state(ConnectionState::READY, client_sock);
-    }
-    else if (wait_queue_.size() < connect_wait_queue_size_)
-    {
-        // 连接数已满，加入等待队列
-        bool was_empty = wait_queue_.empty();
-        set_non_blocking(client_sock);
-        LOG_INFO("Connection added to wait queue (current: {}, waiting: {})",
-                 current_connections_.load(), wait_queue_.size() + 1);
-
-        wait_queue_.push_back({client_sock,
-                               std::chrono::steady_clock::now(),
-                               client_addr});
-
-        // 只在队列从空变非空时通知
-        lock.unlock();
-        if (was_empty)
-        {
-            wait_queue_cv_.notify_one();
-        }
-        send_connection_state(ConnectionState::WAITING, client_sock);
-    }
-    else
-    {
-        // 等待队列已满，拒绝连接
-        lock.unlock();
-        LOG_WARN("Connection rejected: both active and wait queues full");
-        CLOSE_SOCKET(client_sock);
-    }
-#endif
 }
 
 void EyaServer::send_connection_state(ConnectionState state, socket_t client_sock)
@@ -308,96 +209,39 @@ void EyaServer::send_connection_state(ConnectionState state, socket_t client_soc
 
 void EyaServer::close_socket(socket_t sock)
 {
-    int ret = shutdown(sock, SHUT_WR);
-#ifdef _WIN32
-    if (ret == SOCKET_ERROR)
-    {
-        LOG_ERROR("Shutdown error on fd {}: {}", sock, socket_error_to_string(errno));
-    }
-#else
-    if (ret == -1)
-    {
-        LOG_ERROR("Shutdown error on fd {}: {}", sock, socket_error_to_string(errno));
-    }
-#endif
-    CLOSE_SOCKET(sock);
-#ifdef __APPLE__
-#elif _WIN32
-    FD_CLR(sock, &master_set_);
-#elif __linux__
-    epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, sock, NULL);
-#endif
-
-    if (current_connections_ > 0)
-    {
-        current_connections_--;
-    }
-
-    // 从未认证集合中移除
+    // 1. 清理 EyaServer 派生类特有的状态
     {
         std::lock_guard<std::mutex> lock(auth_mutex_);
         connections_without_auth_.erase({sock});
     }
-    // 从sockets集合中移除
-    {
-        std::lock_guard<std::mutex> sockets_lock(sockets_mutex_);
-        sockets_.erase(sock);
-    }
-    // 检查等待队列，激活等待的连接
-    std::optional<Connection> to_activate;
-    {
-        std::lock_guard<std::mutex> lock(wait_queue_mutex_);
-        if (!wait_queue_.empty())
-        {
-            to_activate = wait_queue_.front();
-            wait_queue_.pop_front();
-            current_connections_++;
-        }
-    }
 
-    if (to_activate)
-    {
-        // 在锁外执行耗时操作
-        set_non_blocking(to_activate->socket);
-        char clientIp[INET_ADDRSTRLEN];
-        inet_ntop(AF_INET, &to_activate->client_addr.sin_addr, clientIp, INET_ADDRSTRLEN);
-        LOG_INFO("Waiting connection activated: {}:{}", clientIp, ntohs(to_activate->client_addr.sin_port));
-
-        // 添加到IO复用
-#ifdef __linux__
-        struct epoll_event ev;
-        ev.events = EPOLLIN | EPOLLET;
-        ev.data.fd = to_activate->socket;
-        epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, to_activate->socket, &ev);
-#elif defined(__APPLE__)
-        struct kevent change;
-        EV_SET(&change, to_activate->socket, EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, NULL);
-        kevent(kqueue_fd_, &change, 1, NULL, 0, NULL);
-#else // Windows
-        FD_SET(to_activate->socket, &master_set_);
-#endif
-
-        // 添加到未认证集合并通知
-        {
-            std::lock_guard<std::mutex> auth_lock(auth_mutex_);
-            connections_without_auth_.insert({to_activate->socket, std::chrono::steady_clock::now()});
-        }
-        auth_cv_.notify_one();
-        send_connection_state(ConnectionState::READY, to_activate->socket);
-    }
+    // 2. 其它底层释放、唤醒等待队列等复杂操作，全权交给基类！
+    TCPServer::close_socket(sock);
 }
-void EyaServer::handle_request(ProtocolBody *body, socket_t client_sock)
+void EyaServer::on_wait_queue_activated(socket_t sock, const sockaddr_in &addr)
 {
+    // 基类已经把它放入 Reactor，这里只管特有业务：添加未认证集合并发送 READY
+    {
+        std::lock_guard<std::mutex> auth_lock(auth_mutex_);
+        connections_without_auth_.insert({sock, std::chrono::steady_clock::now()});
+    }
+    auth_cv_.notify_one();
+    send_connection_state(ConnectionState::READY, sock);
+}
+void EyaServer::handle_request(ProtocolBody *body, socket_t client_sock, const sockaddr_in &client_addr)
+{
+    LOG_INFO("Handling request from client: {}", client_sock);
+    std::shared_ptr<ProtocolBody> safe_body(body);
     // 将请求转换为Request对象
-    bool is_submitted = thread_pool_->submit([this, body, client_sock]()
+    bool is_submitted = thread_pool_->submit([this, safe_body, client_sock]()
                                              {
-        Request *request = dynamic_cast<Request *>(body);
+        //std::unique_ptr<ProtocolBody> safe_body(body); 
+        Request *request = dynamic_cast<Request *>(safe_body.get());
     if (request == nullptr)
     {
         LOG_ERROR("Transferred data is not a request");
         Response response = Response::error("Server error");
         send(response, client_sock);
-        delete body;
         return;
     }
     LOG_DEBUG("Processing request from fd {}: {}",
@@ -431,14 +275,12 @@ void EyaServer::handle_request(ProtocolBody *body, socket_t client_sock)
                 response = Response::error("Authentication required");
                 send(response, client_sock);
                 close_socket(client_sock);
-                delete body;
                 return;
             }
             else
             {
                 if(!RaftNode::is_init()){
                     LOG_ERROR("Raft is not initialized");
-                    delete body;
                     exit(1);
                 }
                 static RaftNode*raft_node=RaftNode::get_instance();
@@ -447,7 +289,6 @@ void EyaServer::handle_request(ProtocolBody *body, socket_t client_sock)
                 }else{
                     auto batch_responses=raft_node->submit_batch_command(request->commands);
                     send(serialize({request->id,batch_responses}),client_sock);
-                    delete body;
                     return;
                 }
             }
@@ -469,8 +310,7 @@ void EyaServer::handle_request(ProtocolBody *body, socket_t client_sock)
         response = Response::error("Unknown server error");
     }
     // 发送响应
-    send(response, client_sock);
-        delete body; });
+    send(response, client_sock); });
     if (!is_submitted)
     {
         LOG_ERROR("Failed to submit request to thread pool");
