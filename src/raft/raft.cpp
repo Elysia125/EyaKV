@@ -2724,7 +2724,7 @@ void RaftNode::add_new_connection(socket_t &client_sock, const sockaddr_in &clie
     TCPServer::add_new_connection(client_sock, client_addr);
 
     // 刚连上，立即登记到监控队列
-    if (client_sock != INVALID_SOCKET)
+    if (client_sock != INVALID_SOCKET_VALUE)
     {
         std::lock_guard<std::mutex> lock(uninitialized_sockets_mutex_);
         uninitialized_sockets_[client_sock] = std::chrono::steady_clock::now();

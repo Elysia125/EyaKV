@@ -616,12 +616,12 @@ public:
             {
                 if (loop->events[i].events & EPOLLIN)
                 {
-                    LOG_INFO("Handling read event for client: {}", loop->events[i].data.fd);
+                    //LOG_INFO("Handling read event for client: {}", loop->events[i].data.fd);
                     handle_client_read(loop->events[i].data.fd);
                 }
                 if (loop->events[i].events & EPOLLOUT)
                 {
-                    LOG_INFO("Handling write event for client: {}", loop->events[i].data.fd);
+                    //LOG_INFO("Handling write event for client: {}", loop->events[i].data.fd);
                     handle_client_write(loop->events[i].data.fd);
                 }
             }
