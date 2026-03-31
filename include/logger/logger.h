@@ -48,7 +48,10 @@ public:
      * @brief 强制将缓存中的日志刷入磁盘
      */
     static void Flush();
-
+    /**
+     * @brief 关闭日志系统，释放资源
+     */
+    static void Shutdown();
     // 提供获取 Logger 实例的接口（跨 DLL 边界调用）
     static std::shared_ptr<spdlog::logger> &GetInstance();
 

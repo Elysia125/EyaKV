@@ -7,12 +7,20 @@
 #include "common/util/path_utils.h"
 #include "common/util/ip_utils.h"
 #include "common/util/file_utils.h"
+#include <string>
+#include <string_view>
 #ifdef _WIN32
 #include <io.h>
 #include <direct.h>
 #define mkdir _mkdir
+#define FILENO _fileno
+#define FTRUNCATE _chsize
+#define FSYNC _commit
 #else
 #include <unistd.h>
+#define FILENO fileno
+#define FTRUNCATE ftruncate
+#define FSYNC fsync
 #endif
 
 std::unique_ptr<RaftNode> RaftNode::instance_ = nullptr;
@@ -86,10 +94,32 @@ RaftNode::RaftNode(const std::string root_dir,
     log_array_ = std::make_unique<RaftLogArray>(
         PathUtils::combine_path(root_dir, ".raft"),
         config_.log_config);
-#ifdef _WIN32
-    WSADATA wsaData;
-    WSAStartup(MAKEWORD(2, 2), &wsaData);
-#endif
+    /*#ifdef _WIN32
+        WSADATA wsaData;
+        WSAStartup(MAKEWORD(2, 2), &wsaData);
+    #endif*/
+
+    //  确保目录存在
+    std::string raft_dir = PathUtils::combine_path(root_dir_, ".raft");
+    std::error_code ec;
+    std::filesystem::create_directories(raft_dir, ec);
+
+    // 打开元数据文件（以读写模式打开，文件不存在则创建）
+    std::string meta_path = PathUtils::combine_path(raft_dir, ".raft_meta");
+    meta_file_ = fopen(meta_path.c_str(), "r+b");
+    if (!meta_file_)
+    {
+        meta_file_ = fopen(meta_path.c_str(), "w+b"); // 如果不存在，创建它
+    }
+
+    if (meta_file_)
+    {
+        meta_fd_ = FILENO(meta_file_); // 获取底层文件描述符
+    }
+    else
+    {
+        LOG_FATAL("Failed to open meta file: {}", meta_path);
+    }
 
     // 2. 加载持久化状态
     load_persistent_state();
@@ -162,7 +192,11 @@ RaftNode::~RaftNode()
              node_id.c_str(),
              role_to_string(role_.load()),
              persistent_state_.current_term_.load());
-
+    if (meta_file_)
+    {
+        fclose(meta_file_);
+        meta_file_ = nullptr;
+    }
     // 停止后台线程
     election_thread_running_ = false;
     heartbeat_thread_running_ = false;
@@ -196,54 +230,63 @@ RaftNode::~RaftNode()
 // 加载持久化状态
 void RaftNode::load_persistent_state()
 {
-    std::string meta_path = PathUtils::combine_path(PathUtils::combine_path(root_dir_, ".raft"), ".raft_meta");
-    FILE *file = fopen(meta_path.c_str(), "rb");
-    if (file == nullptr)
-    {
-        LOG_INFO("No persistent state file found: {}", meta_path.c_str());
+    if (!meta_file_)
         return;
-    }
 
-    fseek(file, 0, SEEK_END);
-    long file_size = ftell(file);
-    fseek(file, 0, SEEK_SET);
+    // 移动指针到末尾获取文件大小
+    fseek(meta_file_, 0, SEEK_END);
+    long file_size = ftell(meta_file_);
+
+    // 恢复指针到开头，准备读取
+    fseek(meta_file_, 0, SEEK_SET);
 
     if (file_size > 0)
     {
         std::string data(file_size, '\0');
-        if (fread(&data[0], 1, file_size, file) != (size_t)file_size)
+        if (fread(&data[0], 1, file_size, meta_file_) != static_cast<size_t>(file_size))
         {
             LOG_ERROR("Failed to read persistent state from file");
-            fclose(file);
             return;
         }
         size_t offset = 0;
         persistent_state_ = PersistentState::deserialize(data.data(), offset);
     }
-    fclose(file);
 }
 
 // 保存持久化状态
 void RaftNode::save_persistent_state()
 {
-    std::string meta_path = PathUtils::combine_path(PathUtils::combine_path(root_dir_, ".raft"), ".raft_meta");
-    FILE *file = fopen(meta_path.c_str(), "wb");
-    if (file == nullptr)
-    {
-        LOG_ERROR("Failed to open metadata file for writing: {}", meta_path.c_str());
+    if (!meta_file_)
         return;
-    }
 
     std::string serialized_data = persistent_state_.serialize();
-    if (fwrite(serialized_data.data(), 1, serialized_data.size(), file) != serialized_data.size())
+
+    // 1. 文件指针归零，直接覆盖老数据
+    fseek(meta_file_, 0, SEEK_SET);
+
+    // 2. 写入新数据
+    if (fwrite(serialized_data.data(), 1, serialized_data.size(), meta_file_) != serialized_data.size())
     {
-        LOG_ERROR("Failed to write persistent state to file: {}", meta_path.c_str());
-        fclose(file);
+        LOG_ERROR("Failed to write persistent state to file");
         return;
     }
 
-    fflush(file);
-    fclose(file);
+    // 3. 截断文件
+    // 如果新的序列化数据比旧数据短（例如集群节点被移除了），
+    // 必须把尾部多余的老数据截断，否则下次 load 时反序列化会报错。
+    if (FTRUNCATE(meta_fd_, serialized_data.size()) != 0)
+    {
+        LOG_ERROR("Failed to truncate meta file");
+    }
+
+    // 4. 将 C 库缓冲刷入操作系统内核
+    fflush(meta_file_);
+
+    // 5. 将操作系统内核缓冲强制刷入物理磁盘（保证断电不丢数据）
+    if (FSYNC(meta_fd_) != 0)
+    {
+        LOG_ERROR("Failed to fsync meta file to disk");
+    }
 }
 
 // 客户端线程工作函数
@@ -774,16 +817,41 @@ void RaftNode::election_loop()
             LOG_DEBUG("[Node={}] Election thread: Already Leader, waiting for role change", node_id.c_str());
             std::unique_lock<std::mutex> lock(election_cv_mutex_);
             // 等待被唤醒（role变为非Leader或线程被停止）
-            election_cv_.wait_for(lock, std::chrono::milliseconds(election_timeout_),
+            /*election_cv_.wait_for(lock, std::chrono::milliseconds(election_timeout_),
                                   [this]()
                                   {
                                       return !election_thread_running_ || role_ != RaftRole::Leader;
-                                  });
+                                  });*/
+            election_cv_.wait(lock, [this]()
+                              { return !election_thread_running_ || role_ != RaftRole::Leader; });
             continue;
         }
 
+        std::unique_lock<std::mutex> lock(election_cv_mutex_);
+        // 直接计算出准确的唤醒绝对时间点
+        auto timeout_duration = std::chrono::milliseconds(election_timeout_);
+        auto wake_up_time = last_heartbeat_time_ + timeout_duration;
+
+        // wait_until 会让线程彻底休眠，直到时间到达，或者被心跳提前唤醒
+        bool timeout_triggered = !election_cv_.wait_until(lock, wake_up_time, [this, wake_up_time]()
+                                                          {
+            // 被提前唤醒的条件：线程停止、变回Leader、或者 last_heartbeat_time_ 被更新导致 wake_up_time 改变
+            return !election_thread_running_ || 
+                   role_ == RaftRole::Leader || 
+                   (last_heartbeat_time_ + std::chrono::milliseconds(election_timeout_) > wake_up_time); });
+
+        // 检查是否是真的超时（排除被心跳更新唤醒或系统退出）
+        if (election_thread_running_ && role_ != RaftRole::Leader && timeout_triggered)
+        {
+            // 二次确认时间确实过了（防御伪唤醒）
+            if (std::chrono::steady_clock::now() >= last_heartbeat_time_ + std::chrono::milliseconds(election_timeout_))
+            {
+                LOG_WARN("[Node={}] Election timeout, starting new election", node_id);
+                become_candidate();
+            }
+        }
         // 计算等待时间
-        uint32_t sleep_time = static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::milliseconds>(last_heartbeat_time_.time_since_epoch()).count()) + election_timeout_ - get_current_timestamp();
+        /*uint32_t sleep_time = static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::milliseconds>(last_heartbeat_time_.time_since_epoch()).count()) + election_timeout_ - get_current_timestamp();
 
         if (sleep_time > 0)
         {
@@ -806,7 +874,7 @@ void RaftNode::election_loop()
                      persistent_state_.current_term_.load(),
                      election_timeout_);
             become_candidate();
-        }
+        }*/
     }
     LOG_INFO("[Node={}] Election loop stopped", node_id.c_str());
 }
@@ -894,10 +962,11 @@ void RaftNode::send_request_vote()
              last_log_index,
              last_log_term);
 
-    // 遍历发送
+    // std::shared_ptr<RaftMessage> msg_ptr = std::make_shared<RaftMessage>(msg);
+    //  遍历发送
     for (const auto &node : nodes)
     {
-        bool is_submitted = thread_pool_->submit([node, msg, this, node_id]()
+        bool is_submitted = thread_pool_->submit([&node, &msg, this, node_id]()
                                                  {
             // 创建临时的 TCPClient
             TCPClient client(node.host, node.port);
@@ -1031,181 +1100,170 @@ void RaftNode::send_append_entries_nolock(const socket_t &sock)
 bool RaftNode::handle_append_entries(const RaftMessage &msg)
 {
     std::string node_id = get_node_id();
-    std::lock_guard<std::recursive_mutex> lock(mutex_);
 
-    // 1. 检查term
-    if (msg.term < persistent_state_.current_term_.load())
+    // 用于构建网络响应的局部变量
+    bool success = false;
+    uint32_t resp_term = 0;
+    uint32_t resp_last_idx = 0;
+
+    // 延迟执行的标记 (将耗时操作移出锁)
+    bool need_save_state = false;
+    bool need_apply_logs = false;
+
     {
-        LOG_WARN("[Node={}][Role={}][Term={}] REJECTED AppendEntries from old term {}",
-                 node_id.c_str(),
-                 role_to_string(role_.load()),
-                 persistent_state_.current_term_.load(),
-                 msg.term);
-        // 发送失败响应
-        if (follower_client_)
+        // 核心临界区开始：仅保护内存状态和日志校验
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+
+        resp_term = persistent_state_.current_term_.load();
+        resp_last_idx = log_array_->get_last_index();
+
+        // 1. 检查 term
+        if (msg.term < resp_term)
         {
-            uint32_t last_idx = log_array_->get_last_index();
-            RaftMessage response = RaftMessage::append_entries_response(persistent_state_.current_term_.load(), false, last_idx);
-            follower_client_->send(response);
+            LOG_WARN("[Node={}][Role={}][Term={}] REJECTED AppendEntries from old term {}",
+                     node_id, role_to_string(role_.load()), resp_term, msg.term);
+            // 失败，直接跳出锁区域去发送响应
         }
-        return false;
-    }
-    to_follower();
-
-    // 2. 发现更高term,更新term
-    if (msg.term > persistent_state_.current_term_.load())
-    {
-        uint32_t old_term = persistent_state_.current_term_.load();
-        persistent_state_.current_term_.store(msg.term);
-        LOG_INFO("[Node={}] TERM UPDATE: {} -> {} (discovered from leader)",
-                 node_id.c_str(),
-                 old_term,
-                 msg.term);
-    }
-
-    // 重置选举超时
-    reset_election_timeout();
-
-    if (!msg.append_entries_data)
-    {
-        LOG_ERROR("[Node={}] AppendEntries message missing data", node_id.c_str());
-        // 发送失败响应
-        if (follower_client_)
+        else
         {
-            uint32_t last_idx = log_array_->get_last_index();
-            RaftMessage response = RaftMessage::append_entries_response(persistent_state_.current_term_.load(), false, last_idx);
-            follower_client_->send(response);
-        }
-        return false;
-    }
+            // 收到有效的 AppendEntries，确认为 Follower
+            to_follower();
 
-    const auto &data = *msg.append_entries_data;
-
-    // 3. 检查prev_log_index和term
-    if (data.prev_log_index > 0)
-    {
-        LogEntry prev_entry;
-        if (!log_array_->get(data.prev_log_index, prev_entry))
-        {
-            LOG_WARN("[Node={}] Prev log index {} not found, rejecting AppendEntries",
-                     node_id.c_str(),
-                     data.prev_log_index);
-            // 发送失败响应
-            if (follower_client_)
+            // 2. 发现更高 term，更新 term
+            if (msg.term > resp_term)
             {
-                uint32_t last_idx = log_array_->get_last_index();
-                RaftMessage response = RaftMessage::append_entries_response(persistent_state_.current_term_.load(), false, last_idx);
-                follower_client_->send(response);
+                uint32_t old_term = resp_term;
+                persistent_state_.current_term_.store(msg.term);
+                resp_term = msg.term; // 更新响应的 term
+                need_save_state = true;
+                LOG_INFO("[Node={}] TERM UPDATE: {} -> {} (discovered from leader)",
+                         node_id, old_term, msg.term);
             }
-            return false;
-        }
 
-        if (prev_entry.term != data.prev_log_term)
-        {
-            LOG_WARN("[Node={}] Prev log term mismatch at index {}: expected {}, got {}",
-                     node_id.c_str(),
-                     data.prev_log_index,
-                     prev_entry.term,
-                     data.prev_log_term);
-            // 发送失败响应
-            if (follower_client_)
+            // 只要收到合法 Leader 的包，就重置选举超时
+            reset_election_timeout();
+
+            if (!msg.append_entries_data)
             {
-                uint32_t last_idx = log_array_->get_last_index();
-                RaftMessage response = RaftMessage::append_entries_response(persistent_state_.current_term_.load(), false, last_idx);
-                follower_client_->send(response);
+                LOG_ERROR("[Node={}] AppendEntries message missing data", node_id);
             }
-            return false;
-        }
-    }
-
-    // 4. 追加新日志
-    if (data.entries && !data.entries->empty())
-    {
-        size_t appended = 0;
-        size_t conflicted = 0;
-        for (const auto &entry : *data.entries)
-        {
-            // 检查该索引是否已存在且任期一致
-            bool found = false;
-            LogEntry existing_entry;
-            if (log_array_->get(entry.index, existing_entry))
+            else
             {
-                if (existing_entry.term != entry.term)
+                const auto &data = *msg.append_entries_data;
+                bool check_passed = true;
+
+                // 3. 检查 prev_log_index 和 term
+                if (data.prev_log_index > 0)
                 {
-                    // term不匹配，删除冲突日志及之后的所有日志
-                    LOG_INFO("[Node={}] LOG CONFLICT at index {}: local_term={}, remote_term={}, truncating",
-                             node_id.c_str(),
-                             entry.index,
-                             existing_entry.term,
-                             entry.term);
-                    log_array_->truncate_from(entry.index);
-                    conflicted++;
+                    LogEntry prev_entry;
+                    if (!log_array_->get(data.prev_log_index, prev_entry))
+                    {
+                        LOG_WARN("[Node={}] Prev log index {} not found, rejecting AppendEntries",
+                                 node_id, data.prev_log_index);
+                        check_passed = false;
+                    }
+                    else if (prev_entry.term != data.prev_log_term)
+                    {
+                        LOG_WARN("[Node={}] Prev log term mismatch at index {}: expected {}, got {}",
+                                 node_id, data.prev_log_index, prev_entry.term, data.prev_log_term);
+                        check_passed = false;
+                    }
                 }
-                else
+
+                if (check_passed)
                 {
-                    // 已存在且任期一致，跳过此条目
-                    found = true;
+                    // 4. 追加新日志
+                    if (data.entries && !data.entries->empty())
+                    {
+                        size_t appended = 0;
+                        size_t conflicted = 0;
+                        for (const auto &entry : *data.entries)
+                        {
+                            bool found = false;
+                            LogEntry existing_entry;
+                            if (log_array_->get(entry.index, existing_entry))
+                            {
+                                if (existing_entry.term != entry.term)
+                                {
+                                    // term 不匹配，删除冲突日志及之后的所有日志
+                                    LOG_INFO("[Node={}] LOG CONFLICT at index {}: local_term={}, remote_term={}, truncating",
+                                             node_id, entry.index, existing_entry.term, entry.term);
+                                    log_array_->truncate_from(entry.index);
+                                    conflicted++;
+                                }
+                                else
+                                {
+                                    // 已存在且任期一致，跳过此条目
+                                    found = true;
+                                }
+                            }
+
+                            if (!found)
+                            {
+                                // 追加新日志
+                                if (log_array_->append(const_cast<LogEntry &>(entry)))
+                                {
+                                    appended++;
+                                }
+                            }
+                        }
+                        if (appended > 0)
+                        {
+                            need_save_state = true;
+                            LOG_INFO("[Node={}][Role={}][Term={}] APPENDED: {} new entries, {} conflicts, PrevIndex={}",
+                                     node_id, role_to_string(role_.load()), resp_term, appended, conflicted, data.prev_log_index);
+                        }
+                    }
+
+                    // 5. 更新 commit_index
+                    if (data.leader_commit > persistent_state_.commit_index_.load(std::memory_order_relaxed))
+                    {
+                        uint32_t last_index = log_array_->get_last_index();
+                        uint32_t old_commit = persistent_state_.commit_index_.load();
+                        // commit_index 取 leader_commit 和 本地最新日志索引 的较小值
+                        uint32_t new_commit = std::min(data.leader_commit, last_index);
+
+                        if (new_commit > old_commit)
+                        {
+                            persistent_state_.commit_index_.store(new_commit, std::memory_order_relaxed);
+                            need_save_state = true;
+                            need_apply_logs = true; // 标记需要应用状态机
+
+                            if (new_commit % 100 == 0)
+                            {
+                                LOG_DEBUG("[Node={}] COMMIT INDEX updated: {} -> {}", node_id, old_commit, new_commit);
+                            }
+                        }
+                    }
+
+                    // 走到这里，说明日志一致性检查通过
+                    success = true;
+                    resp_last_idx = log_array_->get_last_index();
                 }
             }
-
-            if (!found)
-            {
-                // 追加新日志
-                if (log_array_->append(const_cast<LogEntry &>(entry)))
-                {
-                    appended++;
-                }
-            }
-        }
-        if (appended > 0)
-        {
-            LOG_INFO("[Node={}][Role={}][Term={}] APPENDED: {} new entries, {} conflicts, PrevIndex={}",
-                     node_id.c_str(),
-                     role_to_string(role_.load()),
-                     persistent_state_.current_term_.load(),
-                     appended,
-                     conflicted,
-                     data.prev_log_index);
         }
     }
 
-    // 5. 更新commit_index
-    if (data.leader_commit > persistent_state_.commit_index_.load(std::memory_order_relaxed))
+    // 6. 状态持久化 (磁盘 I/O)
+    if (need_save_state)
     {
-        uint32_t last_index = log_array_->get_last_index(); // 获取本地最新日志
-        // commit_index 取 leader_commit 和 本地最新日志索引 的较小值
-        uint32_t old_commit = persistent_state_.commit_index_.load();
-        uint32_t new_commit = std::min(data.leader_commit, last_index);
-
-        if (new_commit > old_commit)
-        {
-            persistent_state_.commit_index_.store(new_commit, std::memory_order_relaxed);
-            save_persistent_state();
-            // 减少日志输出，只在批量更新时打印
-            if (new_commit % 100 == 0)
-            {
-                LOG_DEBUG("[Node={}] COMMIT INDEX updated: {} -> {}", node_id.c_str(), old_commit, new_commit);
-            }
-            apply_committed_entries_nolock(); // Follower 也要应用日志
-        }
-    }
-    else
-    {
-        LOG_DEBUG("[Node={}] LeaderCommit={} <= LocalCommit={}, no update needed",
-                  node_id.c_str(),
-                  data.leader_commit,
-                  persistent_state_.commit_index_.load());
+        save_persistent_state();
     }
 
-    // 5. 发送成功响应
+    // 7. 发送网络响应
     if (follower_client_)
     {
-        uint32_t last_idx = log_array_->get_last_index();
-        RaftMessage response = RaftMessage::append_entries_response(persistent_state_.current_term_.load(), true, last_idx);
+        RaftMessage response = RaftMessage::append_entries_response(resp_term, success, resp_last_idx);
         follower_client_->send(response);
     }
 
-    return true;
+    // 8. 应用已提交的日志到状态机 (计算密集型/业务锁)
+    if (need_apply_logs)
+    {
+        apply_committed_entries();
+    }
+
+    return success;
 }
 
 // 处理RequestVote请求
@@ -1258,7 +1316,6 @@ bool RaftNode::handle_request_vote(const RaftMessage &msg, const socket_t &clien
     }
 
     // --- 规则 2: 如果对方任期比我大，我更新任期并转为 Follower ---
-
     if (candidate_term > my_term)
     {
         LOG_INFO("[Node={}] TERM UPDATE: {} -> {} (from candidate {})",
@@ -2149,7 +2206,9 @@ Response RaftNode::execute_command(const std::string &cmd)
         exit(1);
     }
     static Storage *storage_ = Storage::get_instance();
+    std::string_view cmd_view(cmd);
     std::vector<std::string> command_parts = split_by_spacer(cmd);
+    // std::vector<std::string_view> command_parts = split_by_spacer(cmd_view);
     if (command_parts.empty())
     {
         return Response::error("Empty command");
@@ -2967,7 +3026,7 @@ void RaftNode::broadcast_new_master_impl()
     // 向所有已知节点发送NEW_MASTER消息
     for (const auto &node : nodes)
     {
-        bool is_submitted = thread_pool_->submit([node, current_term, this]()
+        bool is_submitted = thread_pool_->submit([&node, current_term, this]()
                                                  {
             TCPClient client(node.host, node.port);
             try

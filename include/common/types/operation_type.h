@@ -150,6 +150,18 @@ inline uint8_t stringToOperationType(const std::string &cmd)
     throw std::runtime_error("unknown operation type: " + cmd);
 }
 
+inline uint8_t stringToOperationType(const std::string_view &cmd)
+{
+    std::string lower_cmd = std::string(cmd);
+    std::transform(lower_cmd.begin(), lower_cmd.end(), lower_cmd.begin(), ::tolower);
+    auto it = operationTypeMap.find(lower_cmd);
+    if (it != operationTypeMap.end())
+    {
+        return it->second;
+    }
+    throw std::runtime_error("unknown operation type: " + lower_cmd);
+}
+
 inline bool isReadOperation(uint8_t op_type)
 {
     return read_types.find(op_type) != read_types.end();

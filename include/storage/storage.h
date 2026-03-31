@@ -125,6 +125,8 @@ public:
     std::optional<EyaValue> get(const std::string &key) const;
 
     Response execute(uint8_t type, std::vector<std::string> &args);
+
+    //Response execute(uint8_t type, std::vector<std::string_view> &args);
     /**
      * @brief 注册自定义命令处理器
      */

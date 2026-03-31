@@ -364,7 +364,9 @@ private:
 
     // 持久化状态对象
     PersistentState persistent_state_; // 持久化状态：包含current_term、voted_for等需要持久化的状态
-
+    // 元数据文件句柄常驻内存
+    FILE *meta_file_ = nullptr;
+    int meta_fd_ = -1; // 用于底层强制刷盘(fsync)
     // 易失性状态
     std::atomic<RaftRole> role_; // 当前角色：Follower、Candidate或Leader
 
@@ -769,7 +771,7 @@ private:
     /// @brief 添加新连接（TCPServer接口实现）
     /// @param client_sock 客户端套接字
     /// @param client_addr 客户端地址
-    void add_new_connection(socket_t&client_sock, const sockaddr_in &client_addr) override;
+    void add_new_connection(socket_t &client_sock, const sockaddr_in &client_addr) override;
 
     /// @brief 从集群中移除节点
     /// @param addr 要移除的节点地址

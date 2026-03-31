@@ -52,7 +52,8 @@ inline std::string generate_random_string(size_t length)
 inline std::vector<std::string> split(const std::string &str, char delimiter)
 {
     std::vector<std::string> result;
-    std::string current_substr; // 存储当前截取的子串
+    result.reserve(str.size() / 2 + 1); // 预估分割后字符串数量，提升效率
+    std::string current_substr;         // 存储当前截取的子串
 
     // 遍历原字符串的每个字符
     for (char c : str)
@@ -76,9 +77,32 @@ inline std::vector<std::string> split(const std::string &str, char delimiter)
     return result;
 }
 
+inline std::vector<std::string_view> split(std::string_view str, char delimiter)
+{
+    std::vector<std::string_view> result;
+    result.reserve(str.size() / 2 + 1); // 预估分割后字符串数量，提升效率
+    size_t start = 0;                   // 当前子串的起始位置
+
+    for (size_t i = 0; i < str.size(); ++i)
+    {
+        if (str[i] == delimiter)
+        {
+            // 遇到分隔符：将当前子串加入结果
+            result.emplace_back(str.data() + start, i - start);
+            start = i + 1; // 更新起始位置
+        }
+    }
+
+    // 处理最后一段子串（原字符串末尾没有分隔符的情况）
+    result.emplace_back(str.data() + start, str.size() - start);
+
+    return result;
+}
+
 inline std::vector<std::string> split_by_spacer(const std::string &str)
 {
     std::vector<std::string> result;
+    result.reserve(str.size() / 2 + 1); // 预估分割后字符串数量，提升效率
     std::string current_substr;
     for (char c : str)
     {
@@ -100,6 +124,34 @@ inline std::vector<std::string> split_by_spacer(const std::string &str)
 
     // 处理最后一段子串（原字符串末尾没有分隔符的情况）
     result.push_back(current_substr);
+
+    return result;
+}
+
+inline std::vector<std::string_view> split_by_spacer(std::string_view str)
+{
+    std::vector<std::string_view> result;
+    result.reserve(str.size() / 2 + 1); // 预估分割后字符串数量，提升效率
+    size_t start = 0;                   // 当前子串的起始位置
+
+    for (size_t i = 0; i < str.size(); ++i)
+    {
+        if (str[i] == ' ')
+        {
+            // 遇到分隔符：将当前子串加入结果
+            if (i > start) // 确保不是连续的空格
+            {
+                result.emplace_back(str.data() + start, i - start);
+            }
+            start = i + 1; // 更新起始位置
+        }
+    }
+
+    // 处理最后一段子串（原字符串末尾没有分隔符的情况）
+    if (start < str.size())
+    {
+        result.emplace_back(str.data() + start, str.size() - start);
+    }
 
     return result;
 }

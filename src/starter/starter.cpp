@@ -374,7 +374,7 @@ void EyaKVStarter::shutdown()
     }
 
     LOG_INFO("Initiating graceful shutdown...");
-    Logger::Flush(); // 确保所有日志都被写入磁盘
+    // Logger::Flush(); // 确保所有日志都被写入磁盘
     if (server_)
     {
         LOG_INFO("Stopping server...");
@@ -391,6 +391,7 @@ void EyaKVStarter::shutdown()
     }
 
     LOG_INFO("Graceful shutdown completed");
+    Logger::Shutdown(); // 关闭日志系统，释放资源
     // exit(EXIT_SUCCESS);
 }
 

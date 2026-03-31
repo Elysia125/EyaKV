@@ -118,3 +118,20 @@ void Logger::Flush()
         async_logger_->flush();
     }
 }
+
+void Logger::Shutdown()
+{
+    // 1. 强制刷盘，保证遗留日志不丢失
+    if (async_logger_)
+    {
+        async_logger_->flush();
+    }
+
+    // 2. 将热路径指针置空（关键！）
+    // 置空后，任何在 Shutdown 之后调用的 LOG_INFO 都会在宏内部的 if (_l) 处被直接短路丢弃
+    hot_logger_ptr_ = nullptr;
+
+    // 3. 关闭 spdlog，释放其内部的异步线程池
+    spdlog::shutdown();
+    async_logger_.reset();
+}
