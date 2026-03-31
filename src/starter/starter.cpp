@@ -14,8 +14,6 @@
 #include <vector>
 #ifdef _WIN32
 #include <windows.h>
-#elifdef __linux__
-#include <sys/resource.h>
 #endif
 
 // 外部单例引用
@@ -146,13 +144,7 @@ void EyaKVStarter::initialize()
     {
         throw std::runtime_error("WSAStartup failed with error code: " + std::to_string(wsaRes));
     }
-#elifdef __linux__
-    struct rlimit rl;
-    getrlimit(RLIMIT_NOFILE, &rl);
-    // LOG_INFO("当前进程的文件描述符软限制: {}, 硬限制: {}", rl.rlim_cur, rl.rlim_max);
-    std::cout << "当前进程的文件描述符软限制: " << rl.rlim_cur << ", 硬限制: " << rl.rlim_max << std::endl;
 #endif
-
     print_banner();
     initialize_logger();
     initialize_storage();
