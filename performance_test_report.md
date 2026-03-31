@@ -11,9 +11,9 @@
 
 | 项目 | 配置 |
 | --- | --- |
-| 操作系统 | Windows 11 |
-| 内核版本 | 10.0.26200 |
-| 架构 | AMD64 |
+| 操作系统 | Ubuntu 24.04 LTS |
+| 内核版本 | 6.8.0-generic |
+| 架构 | x86_64 |
 | CPU | Intel64 Family 6 Model 186 Stepping 2, GenuineIntel |
 | 物理核心数 | 10 |
 | 逻辑核心数 | 16 |

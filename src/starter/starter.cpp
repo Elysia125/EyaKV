@@ -149,7 +149,8 @@ void EyaKVStarter::initialize()
 #elifdef __linux__
     struct rlimit rl;
     getrlimit(RLIMIT_NOFILE, &rl);
-    LOG_INFO("当前进程的文件描述符软限制: {}, 硬限制: {}", rl.rlim_cur, rl.rlim_max);
+    // LOG_INFO("当前进程的文件描述符软限制: {}, 硬限制: {}", rl.rlim_cur, rl.rlim_max);
+    std::cout << "当前进程的文件描述符软限制: " << rl.rlim_cur << ", 硬限制: " << rl.rlim_max << std::endl;
 #endif
 
     print_banner();
