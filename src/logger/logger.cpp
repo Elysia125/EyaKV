@@ -1,62 +1,120 @@
 #include "logger/logger.h"
 #include <spdlog/sinks/rotating_file_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
-#include <spdlog/async.h> // 如果你想开启异步日志，可以包含这个
+#include <spdlog/async.h> // 异步日志（核心性能优化）
 #include <filesystem>
 #include <iostream>
 #include <vector>
 
+// 初始化静态配置
+LoggerConfig Logger::global_config_;
+std::shared_ptr<spdlog::logger> Logger::async_logger_ = nullptr; // 初始化为空
+spdlog::logger *Logger::hot_logger_ptr_ = nullptr;
+
+void Logger::SetConfig(const LoggerConfig &config)
+{
+    global_config_ = config;
+}
+
+spdlog::level::level_enum Logger::ConvertLogLevel(LogLevel level)
+{
+    switch (level)
+    {
+    case LogLevel::DEBUG:
+        return spdlog::level::debug;
+    case LogLevel::INFO:
+        return spdlog::level::info;
+    case LogLevel::WARN:
+        return spdlog::level::warn;
+    case LogLevel::ERROR:
+        return spdlog::level::err;
+    case LogLevel::FATAL:
+        return spdlog::level::critical;
+    default:
+        return spdlog::level::info;
+    }
+}
+
+// 核心：暴露实例获取接口，如果未 Init 则返回自带的安全默认 logger，防止崩溃
+std::shared_ptr<spdlog::logger> &Logger::GetInstance()
+{
+    if (!async_logger_)
+    {
+        // 如果业务层在 Init 之前就调用了宏，给一个默认兜底。
+        async_logger_ = spdlog::default_logger();
+        hot_logger_ptr_ = async_logger_.get();
+    }
+    return async_logger_;
+}
 void Logger::Init(const std::string &log_dir, LogLevel level, uint64_t rotate_size_mb)
 {
     try
     {
-        // 1. 创建日志目录
+        LoggerConfig cfg = global_config_;
+        if (!log_dir.empty())
+            cfg.log_dir = log_dir;
+        if (level != LogLevel::INFO)
+            cfg.level = level;
+        if (rotate_size_mb != 5)
+            cfg.rotate_size_mb = rotate_size_mb;
+
         std::error_code ec;
-        if (!std::filesystem::exists(log_dir, ec))
+        if (!std::filesystem::exists(cfg.log_dir, ec))
         {
-            std::filesystem::create_directories(log_dir, ec);
+            std::filesystem::create_directories(cfg.log_dir, ec);
+        }
+        std::string log_file = (std::filesystem::path(cfg.log_dir) / "server.log").string();
+
+        std::vector<spdlog::sink_ptr> sinks;
+
+        if (cfg.enable_console)
+        {
+            auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
+            sinks.push_back(console_sink);
         }
 
-        std::string log_file_path = (std::filesystem::path(log_dir) / "server.log").string();
-
-        // 2. 创建控制台输出 Sink (带颜色高亮)
-        auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
-
-        // 3. 创建文件滚动 Sink (线程安全)
-        // 参数: 路径, 最大文件大小, 保留的历史文件数量
         auto file_sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
-            log_file_path, rotate_size_mb * 1024 * 1024, 10);
+            log_file,
+            cfg.rotate_size_mb * 1024 * 1024,
+            cfg.max_backup_files);
+        sinks.push_back(file_sink);
 
-        // 4. 将两个 sink 组合成一个 logger
-        std::vector<spdlog::sink_ptr> sinks{console_sink, file_sink};
-        auto logger = std::make_shared<spdlog::logger>("EyakvLogger", sinks.begin(), sinks.end());
+        // 防止多次调用 Init 导致 init_thread_pool 抛出异常
+        if (!spdlog::thread_pool())
+        {
+            spdlog::init_thread_pool(8192, 1);
+        }
 
-        // 5. 设置格式
-        // [%Y-%m-%d %H:%M:%S] 等价于你的时间格式
-        // [%t] 是线程ID
-        // [%^%l%$] 是带颜色的日志级别 (如 INFO, ERROR)
-        // %v 是日志实际内容
-        logger->set_pattern("[%Y-%m-%d %H:%M:%S] [%t] [%^%l%$] %v");
+        async_logger_ = std::make_shared<spdlog::async_logger>(
+            "EyakvLogger",
+            sinks.begin(), sinks.end(),
+            spdlog::thread_pool(),
+            spdlog::async_overflow_policy::overrun_oldest);
 
-        // 6. 设置全局级别和刷新策略
-        logger->set_level(ConvertLogLevel(level));
-        logger->flush_on(spdlog::level::err); // 遇到 ERROR 或更高等级自动立即刷盘
+        async_logger_->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%t] [%^%l%$] %v");
 
-        // 7. 注册为全局默认 Logger
-        spdlog::set_default_logger(logger);
+        async_logger_->set_level(ConvertLogLevel(cfg.level));
+        async_logger_->flush_on(spdlog::level::err);
 
-        // 可选：设置定期自动刷盘（比如每3秒）
-        spdlog::flush_every(std::chrono::seconds(3));
+        spdlog::flush_every(std::chrono::seconds(cfg.flush_interval_sec));
 
-        spdlog::info("Logger initialized successfully in directory: {}", log_dir);
+        // 依然设置为DLL内部的默认Logger，方便DLL内部其他未用宏的地方
+        spdlog::set_default_logger(async_logger_);
+        hot_logger_ptr_ = async_logger_.get(); // 给热路径指针赋值
+        // 这里的 SPDLOG_LOGGER_INFO 保证初始化的这条日志严格按照配置走
+        SPDLOG_LOGGER_INFO(async_logger_, "Logger init success | console: {} | dir: {}",
+                           cfg.enable_console ? "ON" : "OFF", cfg.log_dir);
     }
     catch (const spdlog::spdlog_ex &ex)
     {
-        std::cerr << "Log initialization failed: " << ex.what() << std::endl;
+        std::cerr << "Log init failed: " << ex.what() << std::endl;
     }
 }
 
 void Logger::Flush()
 {
-    spdlog::default_logger()->flush();
+    if (async_logger_)
+    {
+        async_logger_->flush();
+    }
 }

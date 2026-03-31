@@ -63,6 +63,7 @@ inline constexpr const char *DEFAULT_RAFT_TRUST_IP = "127.0.0.1";
 inline constexpr bool DEFAULT_READ_ONLY = false;
 inline constexpr LogLevel DEFAULT_LOG_LEVEL = LogLevel::INFO;
 inline constexpr uint32_t DEFAULT_LOG_ROTATE_SIZE = 1024 * 1024; // KB
+inline constexpr bool DEFAULT_LOG_CONSOLE_ENABLED = true;
 inline constexpr int DEFAULT_SKIPLIST_MAX_LEVEL = 16;
 inline constexpr double DEFAULT_SKIPLIST_PROBABILITY = 0.5;
 inline constexpr uint32_t DEFAULT_SKIPLIST_MAX_NODE_COUNT = 10000000;
@@ -117,6 +118,7 @@ inline constexpr const char *RAFT_TRUST_IP_KEY = "raft_trust_ip";
 inline constexpr const char *READ_ONLY_KEY = "read_only";
 inline constexpr const char *LOG_LEVEL_KEY = "log_level";
 inline constexpr const char *LOG_ROTATE_SIZE_KEY = "log_rotate_size";
+inline constexpr const char *LOG_CONSOLE_ENABLED_KEY = "log_console_enabled";
 inline constexpr const char *SKIPLIST_MAX_LEVEL_KEY = "skiplist_max_level";
 inline constexpr const char *SKIPLIST_PROBABILITY_KEY = "skiplist_probability";
 inline constexpr const char *SKIPLIST_MAX_NODE_COUNT_KEY = "skiplist_max_node_count";
@@ -162,7 +164,6 @@ inline constexpr const char *RAFT_WAL_FILENAME_KEY = "raft_wal_filename";
 inline constexpr const char *RAFT_INDEX_FILENAME_KEY = "raft_index_filename";
 inline constexpr const char *RAFT_NEED_MAJORITY_CONFIRM_KEY = "raft_need_majority_confirm";
 inline constexpr const char *BATCH_TIMEOUT_KEY = "batch_timeout";
-
 /**
  * @class EyaKVConfig
  * @brief 系统全局配置管理器 (单例)
@@ -215,6 +216,7 @@ private:
         {LOG_LEVEL_KEY, "EYAKV_LOG_LEVEL"},
         {LOG_ROTATE_SIZE_KEY, "EYAKV_LOG_ROTATE_SIZE"},
         {LOG_DIR_KEY, "EYAKV_LOG_DIR"},
+        {LOG_CONSOLE_ENABLED_KEY, "EYAKV_LOG_CONSOLE_ENABLED"},
         {READ_ONLY_KEY, "EYAKV_READ_ONLY"},
         {MEMTABLE_SIZE_KEY, "EYAKV_MEMTABLE_SIZE"},
         {DATA_DIR_KEY, "EYAKV_DATA_DIR"},
@@ -271,15 +273,141 @@ private:
         }
         else
         {
-            config_file_ = PathUtils::get_target_file_path("conf/eyakv.conf");
+            config_file_ = PathUtils::combine_path(PathUtils::get_target_file_path("conf"), "eyakv.conf");
         }
 
         load_default_config();
         load_config();
         load_config_from_env();
         check_config();
+
+        // 配置文件不存在时生成默认配置文件
+        if (!std::filesystem::exists(config_file_))
+        {
+            generate_default_config_file();
+        }
     }
 
+    /**
+     * @brief 生成带注释的默认配置文件
+     * @details 自动创建配置文件所在目录，并写入所有默认配置（带中文注释说明）
+     * @throw std::runtime_error 目录创建失败/文件写入失败时抛出
+     */
+    void generate_default_config_file()
+    {
+        // 1. 创建配置文件所在目录（如 conf/）
+        std::filesystem::path config_dir = std::filesystem::path(config_file_).parent_path();
+        if (!std::filesystem::exists(config_dir))
+        {
+            if (!std::filesystem::create_directories(config_dir))
+            {
+                throw std::runtime_error("Failed to create config directory: " + config_dir.string());
+            }
+        }
+
+        // 2. 打开配置文件并写入默认配置（带注释）
+        std::ofstream config_file(config_file_, std::ios::out | std::ios::trunc);
+        if (!config_file.is_open())
+        {
+            throw std::runtime_error("Failed to create default config file: " + config_file_);
+        }
+
+        // 写入配置文件头部说明
+        config_file << "# ===================== EyaKV 配置文件 =====================\n";
+        config_file << "# 配置加载优先级：环境变量 > 配置文件 > 默认配置\n";
+        config_file << "# 环境变量命名规则：配置项KEY大写 + EYAKV_前缀（如 port -> EYAKV_PORT）\n";
+        config_file << "# 所有数值单位未特殊说明时：大小为KB，时间为ms\n\n";
+
+        // 基础网络配置
+        config_file << "# -------------------- 基础网络配置 --------------------\n";
+        config_file << IP_KEY << "=" << DEFAULT_IP << "  # 服务监听IP\n";
+        config_file << PORT_KEY << "=" << DEFAULT_PORT << "  # 服务监听端口\n";
+        config_file << RAFT_PORT_KEY << "=" << DEFAULT_RAFT_PORT << "  # Raft通信端口\n";
+        config_file << RAFT_TRUST_IP_KEY << "=" << DEFAULT_RAFT_TRUST_IP << "  # Raft信任IP\n";
+        config_file << MAX_CONNECTIONS_KEY << "=" << DEFAULT_MAX_CONNECTIONS << "  # 最大并发连接数\n";
+        config_file << READ_ONLY_KEY << "=" << (DEFAULT_READ_ONLY ? "true" : "false") << "  # 是否只读模式\n\n";
+
+        // 日志配置
+        config_file << "# -------------------- 日志配置 --------------------\n";
+        config_file << LOG_LEVEL_KEY << "=" << static_cast<int>(DEFAULT_LOG_LEVEL) << "  # 日志级别(0=DEBUG,1=INFO,2=WARN,3=ERROR,4=FATAL)\n";
+        config_file << LOG_ROTATE_SIZE_KEY << "=" << DEFAULT_LOG_ROTATE_SIZE << "  # 日志文件轮转大小(KB)\n";
+        config_file << LOG_CONSOLE_ENABLED_KEY << "=" << (DEFAULT_LOG_CONSOLE_ENABLED ? "true" : "false") << "  # 是否开启控制台日志\n";
+        config_file << LOG_DIR_KEY << "=" << PathUtils::get_target_file_path("logs") << "  # 日志文件存储目录\n\n";
+
+        // 跳表配置
+        config_file << "# -------------------- 跳表配置 --------------------\n";
+        config_file << SKIPLIST_MAX_LEVEL_KEY << "=" << DEFAULT_SKIPLIST_MAX_LEVEL << "  # 跳表最大层级\n";
+        config_file << SKIPLIST_PROBABILITY_KEY << "=" << DEFAULT_SKIPLIST_PROBABILITY << "  # 跳表层级晋升概率(0-1)\n";
+        config_file << SKIPLIST_MAX_NODE_COUNT_KEY << "=" << DEFAULT_SKIPLIST_MAX_NODE_COUNT << "  # 跳表最大节点数\n\n";
+
+        // 内存表配置
+        config_file << "# -------------------- 内存表配置 --------------------\n";
+        config_file << MEMTABLE_SIZE_KEY << "=" << DEFAULT_MEMTABLE_SIZE << "  # 内存表最大大小(KB)\n\n";
+
+        // WAL 配置
+        config_file << "# -------------------- WAL 预写日志配置 --------------------\n";
+        config_file << WAL_ENABLE_KEY << "=" << (DEFAULT_WAL_ENABLE ? "true" : "false") << "  # 是否开启WAL\n";
+        config_file << WAL_DIR_KEY << "=" << PathUtils::combine_path(PathUtils::get_target_file_path("data"), "wal") << "  # WAL文件存储目录\n";
+        config_file << WAL_FILE_SIZE_KEY << "=" << DEFAULT_WAL_FILE_SIZE << "  # 单个WAL文件大小(KB)\n";
+        config_file << WAL_FILE_MAX_COUNT_KEY << "=" << DEFAULT_WAL_FILE_MAX_COUNT << "  # WAL文件最大保留数量\n";
+        config_file << WAL_FLUSH_INTERVAL_KEY << "=" << DEFAULT_WAL_FLUSH_INTERVAL << "  # WAL后台刷新间隔(ms)\n";
+        config_file << WAL_FLUSH_STRATEGY_KEY << "=" << static_cast<int>(DEFAULT_WAL_FLUSH_STRATEGY) << "  # WAL刷盘策略(0=后台线程,1=立即刷盘,2=系统缓冲)\n\n";
+
+        // SSTable 配置
+        config_file << "# -------------------- SSTable 配置 --------------------\n";
+        config_file << SSTABLE_MERGE_STRATEGY_KEY << "=" << static_cast<int>(DEFAULT_SSTABLE_MERGE_STRATEGY) << "  # 合并策略(0=大小分层,1=层级合并)\n";
+        config_file << SSTABLE_MERGE_THRESHOLD_KEY << "=" << DEFAULT_SSTABLE_MERGE_THRESHOLD << "  # SSTable合并阈值\n";
+        config_file << SSTABLE_ZERO_LEVEL_SIZE_KEY << "=" << DEFAULT_SSTABLE_ZERO_LEVEL_SIZE << "  # 0级SSTable总大小(MB)\n";
+        config_file << SSTABLE_LEVEL_SIZE_RATIO_KEY << "=" << DEFAULT_SSTABLE_LEVEL_SIZE_RATIO << "  # 各级SSTable大小比例\n\n";
+
+        // 线程池与并发配置
+        config_file << "# -------------------- 线程池与并发配置 --------------------\n";
+        config_file << WORKER_THREAD_COUNT_KEY << "=" << DEFAULT_WORKER_THREAD_COUNT << "  # 工作线程数(默认=CPU核心数+1)\n";
+        config_file << WORKER_QUEUE_SIZE_KEY << "=" << DEFAULT_WORKER_QUEUE_SIZE << "  # 工作队列大小\n";
+        config_file << WORKER_WAIT_TIMEOUT_KEY << "=" << DEFAULT_WORKER_WAIT_TIMEOUT << "  # 工作线程等待超时(s)\n";
+        config_file << MEMORY_POOL_SIZE_KEY << "=" << DEFAULT_MEMORY_POOL_SIZE << "  # 内存池大小(KB)\n";
+        config_file << WAITING_QUEUE_SIZE_KEY << "=" << DEFAULT_WAITING_QUEUE_SIZE << "  # 请求等待队列大小\n";
+        config_file << MAX_WAITING_TIME_KEY << "=" << DEFAULT_MAX_WAITING_TIME << "  # 请求最大等待时间(s)\n\n";
+
+        // Raft 配置
+        config_file << "# -------------------- Raft 共识协议配置 --------------------\n";
+        config_file << RAFT_ELECTION_TIMEOUT_MIN_KEY << "=" << DEFAULT_RAFT_ELECTION_TIMEOUT_MIN << "  # 选举超时最小值(ms)\n";
+        config_file << RAFT_ELECTION_TIMEOUT_MAX_KEY << "=" << DEFAULT_RAFT_ELECTION_TIMEOUT_MAX << "  # 选举超时最大值(ms)\n";
+        config_file << RAFT_HEARTBEAT_INTERVAL_KEY << "=" << DEFAULT_RAFT_HEARTBEAT_INTERVAL << "  # 心跳间隔(ms)\n";
+        config_file << RAFT_RPC_TIMEOUT_KEY << "=" << DEFAULT_RAFT_RPC_TIMEOUT << "  # Raft RPC超时(ms)\n";
+        config_file << RAFT_FOLLOWER_IDLE_WAIT_KEY << "=" << DEFAULT_RAFT_FOLLOWER_IDLE_WAIT << "  # Follower空闲等待时间(ms)\n";
+        config_file << RAFT_JOIN_MAX_RETRIES_KEY << "=" << DEFAULT_RAFT_JOIN_MAX_RETRIES << "  # 加入集群最大重试次数\n";
+        config_file << RAFT_REQUEST_VOTE_TIMEOUT_KEY << "=" << DEFAULT_RAFT_REQUEST_VOTE_TIMEOUT << "  # 请求投票超时(ms)\n";
+        config_file << RAFT_SUBMIT_TIMEOUT_KEY << "=" << DEFAULT_RAFT_SUBMIT_TIMEOUT << "  # 日志提交超时(ms)\n";
+        config_file << RAFT_APPEND_BATCH_KEY << "=" << DEFAULT_RAFT_APPEND_BATCH << "  # 追加日志批量大小\n";
+        config_file << RAFT_SNAPSHOT_CHUNK_KEY << "=" << DEFAULT_RAFT_SNAPSHOT_CHUNK << "  # 快照分块大小(Bytes)\n";
+        config_file << RAFT_RESULT_CACHE_CAPACITY_KEY << "=" << DEFAULT_RAFT_RESULT_CACHE_CAPACITY << "  # 结果缓存容量\n";
+        config_file << RAFT_THREADPOOL_WORKERS_KEY << "=" << DEFAULT_RAFT_THREADPOOL_WORKERS << "  # Raft线程池工作线程数\n";
+        config_file << RAFT_THREADPOOL_QUEUE_KEY << "=" << DEFAULT_RAFT_THREADPOOL_QUEUE << "  # Raft线程池队列大小\n";
+        config_file << RAFT_THREADPOOL_WAIT_KEY << "=" << DEFAULT_RAFT_THREADPOOL_WAIT << "  # Raft线程池等待超时(ms)\n";
+        config_file << RAFT_LOG_THRESHOLD_KEY << "=" << DEFAULT_RAFT_LOG_THRESHOLD << "  # Raft日志截断阈值\n";
+        config_file << RAFT_LOG_TRUNCATE_RATIO_KEY << "=" << DEFAULT_RAFT_LOG_TRUNCATE_RATIO << "  # Raft日志截断比例\n";
+        config_file << RAFT_WAL_FILENAME_KEY << "=" << DEFAULT_RAFT_WAL_FILENAME << "  # Raft WAL文件名\n";
+        config_file << RAFT_INDEX_FILENAME_KEY << "=" << DEFAULT_RAFT_INDEX_FILENAME << "  # Raft索引文件名\n";
+        config_file << RAFT_NEED_MAJORITY_CONFIRM_KEY << "=" << (DEFAULT_RAFT_NEED_MAJORITY_CONFIRM ? "true" : "false") << "  # 是否需要多数节点确认\n\n";
+
+        // 批处理配置
+        config_file << "# -------------------- 批处理配置 --------------------\n";
+        config_file << BATCH_TIMEOUT_KEY << "=" << DEFAULT_BATCH_TIMEOUT_MS << "  # 批处理超时时间(ms)\n\n";
+
+        // 安全配置
+        config_file << "# -------------------- 安全配置 --------------------\n";
+        config_file << "#" << PASSWORD_KEY << "=" << "" << "  # 服务访问密码(注释则无密码)\n";
+
+        // 刷新并关闭文件
+        config_file.flush();
+        config_file.close();
+
+        if (config_file.fail())
+        {
+            throw std::runtime_error("Failed to write default config file: " + config_file_);
+        }
+    }
     ~EyaKVConfig() = default;
 
     /**
@@ -345,7 +473,7 @@ private:
         config_map_[LOG_DIR_KEY] = PathUtils::get_target_file_path("logs");
         config_map_[DATA_DIR_KEY] = PathUtils::get_target_file_path("data");
         config_map_[WAL_DIR_KEY] = PathUtils::combine_path(PathUtils::get_target_file_path("data"), "wal");
-
+        config_map_[LOG_CONSOLE_ENABLED_KEY] = DEFAULT_LOG_CONSOLE_ENABLED ? "true" : "false";
         config_map_[LOG_LEVEL_KEY] = std::to_string(static_cast<int>(DEFAULT_LOG_LEVEL));
         config_map_[LOG_ROTATE_SIZE_KEY] = std::to_string(DEFAULT_LOG_ROTATE_SIZE);
         config_map_[IP_KEY] = DEFAULT_IP;

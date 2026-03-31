@@ -156,7 +156,8 @@ void EyaKVStarter::initialize()
 
 void EyaKVStarter::initialize_logger()
 {
-    std::string log_dir = GetRequiredConfig(LOG_DIR_KEY);
+    LoggerConfig logger_config;
+    logger_config.log_dir = GetRequiredConfig(LOG_DIR_KEY);
     int level_int = GetConfigOrDefault<int>(LOG_LEVEL_KEY, static_cast<int>(LogLevel::INFO));
 
     LogLevel log_level = LogLevel::INFO;
@@ -164,19 +165,18 @@ void EyaKVStarter::initialize_logger()
     {
         log_level = static_cast<LogLevel>(level_int);
     }
-
+    logger_config.level = log_level;
     auto rotate_size = GetOptConfig<uint32_t>(LOG_ROTATE_SIZE_KEY);
 
     if (rotate_size.has_value())
     {
-        Logger::Init(log_dir, log_level, rotate_size.value());
+        logger_config.rotate_size_mb = rotate_size.value();
     }
-    else
-    {
-        Logger::Init(log_dir, log_level);
-    }
-
-    std::cout << "Logger initialized. Directory: " << log_dir << ", Level: " << static_cast<int>(log_level) << std::endl;
+    bool enable_console = GetConfigOrDefault<bool>(LOG_CONSOLE_ENABLED_KEY, true);
+    logger_config.enable_console = enable_console;
+    Logger::SetConfig(logger_config);
+    Logger::Init();
+    // std::cout << "Logger initialized. Directory: " << logger_config.log_dir << ", Level: " << static_cast<int>(logger_config.level) << ", Console: " << logger_config.enable_console << std::endl;
 }
 
 void EyaKVStarter::initialize_storage()
@@ -256,7 +256,7 @@ void EyaKVStarter::initialize_raft()
     ApplyConfigIfExists<uint64_t>(RAFT_SNAPSHOT_CHUNK_KEY, [&](uint64_t v)
                                   { raft_cfg.snapshot_chunk_size_bytes = v; });
     ApplyConfigIfExists<bool>(RAFT_NEED_MAJORITY_CONFIRM_KEY, [&](bool v)
-                             { raft_cfg.need_majority_confirm = v; });
+                              { raft_cfg.need_majority_confirm = v; });
     ApplyConfigIfExists<uint64_t>(RAFT_RESULT_CACHE_CAPACITY_KEY, [&](uint64_t v)
                                   { raft_cfg.result_cache_capacity = v; });
     ApplyConfigIfExists<uint32_t>(BATCH_TIMEOUT_KEY, [&](uint32_t v)
