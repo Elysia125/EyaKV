@@ -204,7 +204,7 @@ void EyaServer::handle_accept()
 void EyaServer::send_connection_state(ConnectionState state, socket_t client_sock)
 {
     Response resp = Response::success(std::to_string(static_cast<int>(state)));
-    send(resp, client_sock);
+    TCPBase::send(resp, client_sock);
 }
 
 void EyaServer::close_socket(socket_t sock)
