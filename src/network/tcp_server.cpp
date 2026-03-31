@@ -5,7 +5,7 @@
 #include "common/types/operation_type.h"
 #include <iostream>
 #include <cstring>
-
+#include <signal.h>
 #define HEADER_SIZE_LIMIT 1024 * 1024
 #ifdef __linux__
 #define INITIAL_BUFFER_SIZE 8096
@@ -51,6 +51,9 @@ void EyaServer::stop()
 
 void EyaServer::start()
 {
+#ifdef __linux__
+    signal(SIGPIPE, SIG_IGN); // 忽略 SIGPIPE 信号，防止向已关闭 Socket 写数据时服务端崩溃
+#endif
     // 1. 先初始化所有前置资源（如线程池），不要提前启动底层 Server！
     ThreadPool::Config pool_config{
         worker_thread_count_,       // 工作线程数量

@@ -240,9 +240,10 @@ protected:
     }
     /**
      * @brief 从 Slave 中移除连接并关闭 Socket
-     * 这个方法会先从 all_sessions_ 中找到对应的 session，获取它所属的 slave_index，
+     * 这个方法会先从 all_sessions_ 中找到对应的 session，获取它所属的 slave_index
+     * 如果该socket存在并成功移除就返回true，否则返回false（不会关闭socket）
      */
-    void remove_from_slave(socket_t sock)
+    bool remove_from_slave(socket_t sock)
     {
         TcpSessionPtr session;
         {
@@ -258,7 +259,9 @@ protected:
         {
             LOG_INFO("Removing socket {} from slave loop {}", sock, session->slave_index);
             slave_loops_[session->slave_index]->remove_socket(sock);
+            return true;
         }
+        return false;
         // CLOSE_SOCKET(sock);
     }
 
@@ -309,14 +312,21 @@ protected:
         if (session->send_buffer.empty())
         {
             if (session->close_after_send)
+            {
                 close_socket(session->socket);
+            }
             return;
         }
 
         // 必须循环发送，直到触发 EAGAIN
         while (!session->send_buffer.empty())
         {
+#ifdef __linux__
+            // Linux 下增加 MSG_NOSIGNAL 标志
+            int sent = ::send(session->socket, session->send_buffer.data(), session->send_buffer.size(), MSG_NOSIGNAL);
+#else
             int sent = ::send(session->socket, session->send_buffer.data(), session->send_buffer.size(), 0);
+#endif
             if (sent > 0)
             {
                 LOG_INFO("Sent {} bytes to socket {}, remaining {} bytes", sent, session->socket, session->send_buffer.size() - sent);
@@ -616,12 +626,12 @@ public:
             {
                 if (loop->events[i].events & EPOLLIN)
                 {
-                    //LOG_INFO("Handling read event for client: {}", loop->events[i].data.fd);
+                    // LOG_INFO("Handling read event for client: {}", loop->events[i].data.fd);
                     handle_client_read(loop->events[i].data.fd);
                 }
                 if (loop->events[i].events & EPOLLOUT)
                 {
-                    //LOG_INFO("Handling write event for client: {}", loop->events[i].data.fd);
+                    // LOG_INFO("Handling write event for client: {}", loop->events[i].data.fd);
                     handle_client_write(loop->events[i].data.fd);
                 }
             }
@@ -1109,7 +1119,11 @@ public:
     virtual void close_socket(socket_t sock)
     {
         LOG_INFO("Closing socket {}", sock);
-        remove_from_slave(sock);
+        if (!remove_from_slave(sock))
+        {
+            LOG_WARN("Socket {} not found in any slave loop during close", sock);
+            return;
+        }
         int ret = shutdown(sock, SHUT_WR);
 #ifdef _WIN32
         if (ret == SOCKET_ERROR)

@@ -27,7 +27,7 @@
 #define DEFAULT_CONNECT_WAIT_QUEUE_SIZE 100                                 // 等待队列最大容量
 #define DEFAULT_CONNECT_WAIT_TIMEOUT 30                                     // 连接等待超时时间（秒）
 #define DEFAULT_WORKER_THREAD_COUNT std::thread::hardware_concurrency() + 1 // 工作线程数量
-#define DEFAULT_WORKER_QUEUE_SIZE 1000                                      // 工作线程任务队列大小
+#define DEFAULT_WORKER_QUEUE_SIZE 10000                                     // 工作线程任务队列大小
 #define DEFAULT_WORKER_WAIT_TIMEOUT 30                                      // 任务提交等待超时时间（秒）
 
 class Storage;
