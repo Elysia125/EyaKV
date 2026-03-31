@@ -188,6 +188,11 @@ RaftNode::~RaftNode()
              node_id.c_str(),
              role_to_string(role_.load()),
              persistent_state_.current_term_.load());
+    // 将操作系统内核缓冲强制刷入物理磁盘（保证断电不丢数据）
+    if (FSYNC(meta_fd_) != 0)
+    {
+        LOG_ERROR("Failed to fsync meta file to disk");
+    }
     if (meta_file_)
     {
         fclose(meta_file_);
@@ -277,12 +282,6 @@ void RaftNode::save_persistent_state()
 
     // 4. 将 C 库缓冲刷入操作系统内核
     fflush(meta_file_);
-
-    // 5. 将操作系统内核缓冲强制刷入物理磁盘（保证断电不丢数据）
-    if (FSYNC(meta_fd_) != 0)
-    {
-        LOG_ERROR("Failed to fsync meta file to disk");
-    }
 }
 
 // 客户端线程工作函数
@@ -846,13 +845,13 @@ void RaftNode::election_loop()
                 become_candidate();
             }
         }*/
-        /*std::unique_lock<std::mutex> lock(election_cv_mutex_);
+        std::unique_lock<std::mutex> lock(election_cv_mutex_);
         // 获取当前的心跳时间和超时配置
         auto current_last_hb = last_heartbeat_time_; // 需要原子或锁保护
         auto timeout_duration = std::chrono::milliseconds(election_timeout_);
         auto wake_up_time = current_last_hb + timeout_duration;
 
-        // 【关键修复】：取消条件谓词中对 last_heartbeat_time_ 的持续判断。
+        // 取消条件谓词中对 last_heartbeat_time_ 的持续判断。
         // 只等待两种情况：1. 被显式唤醒（比如程序退出、变成Leader）； 2. 睡到了预期的超时时间。
         // 收心跳时，绝对不要再调用 election_cv_.notify_all() 去打扰它！
         election_cv_.wait_until(lock, wake_up_time, [this]()
@@ -867,9 +866,9 @@ void RaftNode::election_loop()
                 LOG_WARN("[Node={}] Election timeout, starting new election", node_id);
                 become_candidate();
             }
-        }*/
+        }
         // 计算等待时间
-        uint32_t sleep_time = static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::milliseconds>(last_heartbeat_time_.time_since_epoch()).count()) + election_timeout_ - get_current_timestamp();
+        /*uint32_t sleep_time = static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::milliseconds>(last_heartbeat_time_.time_since_epoch()).count()) + election_timeout_ - get_current_timestamp();
 
         if (sleep_time > 0)
         {
@@ -892,7 +891,7 @@ void RaftNode::election_loop()
                      persistent_state_.current_term_.load(),
                      election_timeout_);
             become_candidate();
-        }
+        }*/
     }
     LOG_INFO("[Node={}] Election loop stopped", node_id.c_str());
 }
