@@ -8,7 +8,7 @@
 #include "common/util/ip_utils.h"
 #include "common/util/file_utils.h"
 #include <string>
-#include <string_view>
+// #include <string_view>
 #ifdef _WIN32
 #include <io.h>
 #include <direct.h>
@@ -94,10 +94,6 @@ RaftNode::RaftNode(const std::string root_dir,
     log_array_ = std::make_unique<RaftLogArray>(
         PathUtils::combine_path(root_dir, ".raft"),
         config_.log_config);
-    /*#ifdef _WIN32
-        WSADATA wsaData;
-        WSAStartup(MAKEWORD(2, 2), &wsaData);
-    #endif*/
 
     //  确保目录存在
     std::string raft_dir = PathUtils::combine_path(root_dir_, ".raft");
@@ -827,7 +823,7 @@ void RaftNode::election_loop()
             continue;
         }
 
-        std::unique_lock<std::mutex> lock(election_cv_mutex_);
+        /*std::unique_lock<std::mutex> lock(election_cv_mutex_);
         // 直接计算出准确的唤醒绝对时间点
         auto timeout_duration = std::chrono::milliseconds(election_timeout_);
         auto wake_up_time = last_heartbeat_time_ + timeout_duration;
@@ -836,8 +832,8 @@ void RaftNode::election_loop()
         bool timeout_triggered = !election_cv_.wait_until(lock, wake_up_time, [this, wake_up_time]()
                                                           {
             // 被提前唤醒的条件：线程停止、变回Leader、或者 last_heartbeat_time_ 被更新导致 wake_up_time 改变
-            return !election_thread_running_ || 
-                   role_ == RaftRole::Leader || 
+            return !election_thread_running_ ||
+                   role_ == RaftRole::Leader ||
                    (last_heartbeat_time_ + std::chrono::milliseconds(election_timeout_) > wake_up_time); });
 
         // 检查是否是真的超时（排除被心跳更新唤醒或系统退出）
@@ -849,9 +845,31 @@ void RaftNode::election_loop()
                 LOG_WARN("[Node={}] Election timeout, starting new election", node_id);
                 become_candidate();
             }
-        }
+        }*/
+        /*std::unique_lock<std::mutex> lock(election_cv_mutex_);
+        // 获取当前的心跳时间和超时配置
+        auto current_last_hb = last_heartbeat_time_; // 需要原子或锁保护
+        auto timeout_duration = std::chrono::milliseconds(election_timeout_);
+        auto wake_up_time = current_last_hb + timeout_duration;
+
+        // 【关键修复】：取消条件谓词中对 last_heartbeat_time_ 的持续判断。
+        // 只等待两种情况：1. 被显式唤醒（比如程序退出、变成Leader）； 2. 睡到了预期的超时时间。
+        // 收心跳时，绝对不要再调用 election_cv_.notify_all() 去打扰它！
+        election_cv_.wait_until(lock, wake_up_time, [this]()
+                                { return !election_thread_running_ || role_ == RaftRole::Leader; });
+
+        // 醒来后，再核实一下是不是真的超时了（可能在这期间已经收到了新的心跳，last_heartbeat_time_ 已经变了）
+        if (election_thread_running_ && role_ != RaftRole::Leader)
+        {
+            auto now = std::chrono::steady_clock::now();
+            if (now >= last_heartbeat_time_ + std::chrono::milliseconds(election_timeout_))
+            {
+                LOG_WARN("[Node={}] Election timeout, starting new election", node_id);
+                become_candidate();
+            }
+        }*/
         // 计算等待时间
-        /*uint32_t sleep_time = static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::milliseconds>(last_heartbeat_time_.time_since_epoch()).count()) + election_timeout_ - get_current_timestamp();
+        uint32_t sleep_time = static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::milliseconds>(last_heartbeat_time_.time_since_epoch()).count()) + election_timeout_ - get_current_timestamp();
 
         if (sleep_time > 0)
         {
@@ -874,7 +892,7 @@ void RaftNode::election_loop()
                      persistent_state_.current_term_.load(),
                      election_timeout_);
             become_candidate();
-        }*/
+        }
     }
     LOG_INFO("[Node={}] Election loop stopped", node_id.c_str());
 }
@@ -1260,7 +1278,14 @@ bool RaftNode::handle_append_entries(const RaftMessage &msg)
     // 8. 应用已提交的日志到状态机 (计算密集型/业务锁)
     if (need_apply_logs)
     {
-        apply_committed_entries();
+        bool submitted = thread_pool_->submit([this]()
+                                              { apply_committed_entries(); });
+        if (!submitted)
+        {
+            // 直接当前线程运行
+            LOG_WARN("[Node={}] Failed to submit apply_committed_entries task to thread pool, running in current thread", get_node_id().c_str());
+            apply_committed_entries();
+        }
     }
 
     return success;

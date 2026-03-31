@@ -52,8 +52,8 @@ inline std::string generate_random_string(size_t length)
 inline std::vector<std::string> split(const std::string &str, char delimiter)
 {
     std::vector<std::string> result;
-    result.reserve(str.size() / 2 + 1); // 预估分割后字符串数量，提升效率
-    std::string current_substr;         // 存储当前截取的子串
+    result.reserve(4);          // 预估分割后字符串数量，提升效率
+    std::string current_substr; // 存储当前截取的子串
 
     // 遍历原字符串的每个字符
     for (char c : str)
@@ -80,8 +80,8 @@ inline std::vector<std::string> split(const std::string &str, char delimiter)
 inline std::vector<std::string_view> split(std::string_view str, char delimiter)
 {
     std::vector<std::string_view> result;
-    result.reserve(str.size() / 2 + 1); // 预估分割后字符串数量，提升效率
-    size_t start = 0;                   // 当前子串的起始位置
+    result.reserve(4); // 预估分割后字符串数量，提升效率
+    size_t start = 0;  // 当前子串的起始位置
 
     for (size_t i = 0; i < str.size(); ++i)
     {
@@ -102,7 +102,7 @@ inline std::vector<std::string_view> split(std::string_view str, char delimiter)
 inline std::vector<std::string> split_by_spacer(const std::string &str)
 {
     std::vector<std::string> result;
-    result.reserve(str.size() / 2 + 1); // 预估分割后字符串数量，提升效率
+    result.reserve(4); // 预估分割后字符串数量，提升效率
     std::string current_substr;
     for (char c : str)
     {
@@ -131,8 +131,8 @@ inline std::vector<std::string> split_by_spacer(const std::string &str)
 inline std::vector<std::string_view> split_by_spacer(std::string_view str)
 {
     std::vector<std::string_view> result;
-    result.reserve(str.size() / 2 + 1); // 预估分割后字符串数量，提升效率
-    size_t start = 0;                   // 当前子串的起始位置
+    result.reserve(4); // 预估分割后字符串数量，提升效率
+    size_t start = 0;  // 当前子串的起始位置
 
     for (size_t i = 0; i < str.size(); ++i)
     {
