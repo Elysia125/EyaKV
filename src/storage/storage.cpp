@@ -881,6 +881,158 @@ Response Storage::execute(uint8_t type, std::vector<std::string> &args)
     }
 }
 
+Response Storage::execute(uint8_t type, std::vector<std::string_view> &args)
+{
+    /*size_t total_len = 0;
+    for (const auto &arg : args)
+    {
+        total_len += arg.size() + 1;
+    }
+    std::string args_str;
+    args_str.reserve(total_len);
+    for (const auto &arg : args)
+    {
+        args_str += arg;
+        args_str += ' ';
+    }
+    LOG_DEBUG("Storage::execute: type={}, args=[{}]", type, args_str.c_str());*/
+    if (isWriteOperation(type) && read_only_)
+    {
+        return Response::error("read only");
+    }
+    if (closed_)
+    {
+        return Response::error("error:storage closed");
+    }
+    std::optional<std::shared_lock<std::shared_mutex>> write_lock;
+    if (isWriteOperation(type))
+    {
+        // 直接构造锁对象并放入 optional，无拷贝操作
+        write_lock.emplace(write_mutex_);
+    }
+    try
+    {
+        Response response;
+        if (type == OperationType::kKeys)
+        {
+            if (args.size() > 1)
+            {
+                return Response::error("too many arguments");
+            }
+            if (args.empty())
+            {
+                args.emplace_back("^.*$");
+            }
+
+            auto result = keys(std::string(args[0]));
+            response = Response::success(std::vector<std::string>(result.begin(), result.end()));
+        }
+        else if (type == OperationType::kRemove)
+        {
+            if (args.empty())
+            {
+                return Response::error("missing key");
+            }
+            std::vector<std::string> sargs;
+            for (auto &arg : args)
+            {
+                sargs.emplace_back(arg);
+            }
+            response = Response::success(std::to_string(remove(sargs)));
+        }
+        else if (type == OperationType::kExists)
+        {
+            if (args.empty())
+            {
+                return Response::error("missing key");
+            }
+            else if (args.size() > 1)
+            {
+                return Response::error("too many arguments");
+            }
+            response = Response::success(std::string(contains(std::string(args[0])) ? "1" : "0"));
+        }
+        else if (type == OperationType::kRange)
+        {
+            if (args.size() < 2)
+            {
+                return Response::error("missing key");
+            }
+            if (args.size() > 2)
+            {
+                return Response::error("too many arguments");
+            }
+            response = Response::success(range(std::string(args[0]), std::string(args[1])));
+        }
+        else if (type == OperationType::kExpire)
+        {
+            if (args.size() <= 1)
+            {
+                return Response::error("missing key");
+            }
+            if (args.size() > 2)
+            {
+                return Response::error("too many arguments");
+            }
+            uint64_t expire_time = std::stoull(std::string(args[1]));
+            set_expire(std::string(args[0]), expire_time);
+            response = Response::success(std::string("1"));
+        }
+        else if (type == OperationType::kGet)
+        {
+            if (args.size() == 0)
+            {
+                return Response::error("missing key");
+            }
+            if (args.size() > 1)
+            {
+                return Response::error("too many arguments");
+            }
+            auto value = get(std::string(args[0]));
+            ResponseData data;
+            if (value.has_value())
+            {
+                data = value.value();
+            }
+            response = Response::success(data);
+        }
+        else
+        {
+            auto processor = get_processor(type);
+            if (processor)
+            {
+                try
+                {
+                    response = processor->execute(this, type, args);
+                }
+                catch (const std::exception &e)
+                {
+                    return Response::error(e.what());
+                }
+            }
+            else
+            {
+                return Response::error("unknown command");
+            }
+        }
+        if (isWriteOperation(type) && response.is_success())
+        {
+            snapshot_cache_valid_.store(false);
+            remove_snapshot(snapshot_cache_path_);
+            snapshot_cache_path_.clear();
+        }
+        return response;
+    }
+    catch (const std::runtime_error &e)
+    {
+        return Response::error(e.what());
+    }
+    catch (const std::exception &e)
+    {
+        return Response::error("unknown error");
+    }
+}
+
 bool Storage::create_checkpoint(std::string &output_tar_path, const std::string &extra_meta_data)
 {
     LOG_INFO("Starting checkpoint creation");

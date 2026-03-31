@@ -126,7 +126,13 @@ public:
 
     Response execute(uint8_t type, std::vector<std::string> &args);
 
-    //Response execute(uint8_t type, std::vector<std::string_view> &args);
+    /**
+     * @brief 执行命令。
+     * @param type 命令类型
+     * @param args 命令参数
+     * @return 响应结果
+     */
+    Response execute(uint8_t type, std::vector<std::string_view> &args);
     /**
      * @brief 注册自定义命令处理器
      */

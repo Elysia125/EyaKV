@@ -18,6 +18,11 @@ public:
      */
     virtual Response execute(Storage *storage, const uint8_t type, const std::vector<std::string> &args) = 0;
     /**
+     * @brief 执行操作
+     */
+    virtual Response execute(Storage *storage, const uint8_t type, const std::vector<std::string_view> &args) = 0;
+
+    /**
      * @brief 恢复操作
      */
     virtual bool recover(Storage *storage, const uint8_t type, const std::string &key, const std::string &payload) = 0;

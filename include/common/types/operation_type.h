@@ -150,7 +150,7 @@ inline uint8_t stringToOperationType(const std::string &cmd)
     throw std::runtime_error("unknown operation type: " + cmd);
 }
 
-inline uint8_t stringToOperationType(const std::string_view &cmd)
+inline uint8_t stringToOperationType(std::string_view cmd)
 {
     std::string lower_cmd = std::string(cmd);
     std::transform(lower_cmd.begin(), lower_cmd.end(), lower_cmd.begin(), ::tolower);

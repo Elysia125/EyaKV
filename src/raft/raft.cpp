@@ -2231,8 +2231,8 @@ Response RaftNode::execute_command(const std::string &cmd)
     }
     static Storage *storage_ = Storage::get_instance();
     std::string_view cmd_view(cmd);
-    std::vector<std::string> command_parts = split_by_spacer(cmd);
-    // std::vector<std::string_view> command_parts = split_by_spacer(cmd_view);
+    // std::vector<std::string> command_parts = split_by_spacer(cmd);
+    std::vector<std::string_view> command_parts = split_by_spacer(cmd_view);
     if (command_parts.empty())
     {
         return Response::error("Empty command");
@@ -2259,8 +2259,10 @@ Response RaftNode::submit_command(const std::string &request_id, const std::stri
         return response;
     }
     static Storage *storage_ = Storage::get_instance();
+
     // 解析命令并执行
-    std::vector<std::string> command_parts = split_by_spacer(cmd);
+    // std::vector<std::string> command_parts = split_by_spacer(cmd);
+    std::vector<std::string_view> command_parts = split_by_spacer(std::string_view(cmd));
     if (command_parts.empty())
     {
         response = Response::error(std::string("invalid command"));
@@ -2272,7 +2274,8 @@ Response RaftNode::submit_command(const std::string &request_id, const std::stri
         if (isRaftOperation(operation))
         {
             command_parts.erase(command_parts.begin());
-            response = handle_raft_command(operation, command_parts);
+            std::vector<std::string> cmd_parts_str(command_parts.begin(), command_parts.end());
+            response = handle_raft_command(operation, cmd_parts_str);
             response.request_id_ = request_id;
         }
         else if (isReadOperation(operation))
