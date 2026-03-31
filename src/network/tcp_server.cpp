@@ -238,7 +238,6 @@ void EyaServer::handle_request(ProtocolBody *body, socket_t client_sock, const s
     // 将请求转换为Request对象
     bool is_submitted = thread_pool_->submit([this, safe_body, client_sock]()
                                              {
-        //std::unique_ptr<ProtocolBody> safe_body(body); 
         Request *request = dynamic_cast<Request *>(safe_body.get());
     if (request == nullptr)
     {
@@ -255,9 +254,10 @@ void EyaServer::handle_request(ProtocolBody *body, socket_t client_sock, const s
         if (request->type == RequestType::AUTH)
         {
             // 处理认证请求
-            LOG_DEBUG("Processing AUTH request on fd {}", client_sock);
+            LOG_INFO("Processing AUTH request on fd {}", client_sock);
             if (request->password == password_)
             {
+                LOG_INFO("Authentication successful for fd {}", client_sock);
                 response = Response::success(auth_key_);
                 // 从未认证集合中移除
                 std::lock_guard<std::mutex> auth_lock(auth_mutex_);
@@ -265,6 +265,7 @@ void EyaServer::handle_request(ProtocolBody *body, socket_t client_sock, const s
             }
             else
             {
+                LOG_WARN("Authentication failed for fd {}", client_sock);
                 response = Response::error("Authentication failed");
             }
         }

@@ -202,7 +202,7 @@ bool send_data(socket_t client_socket, const std::string &data)
 
 bool authenticate(SocketGuard &socket_guard, const std::string &password, std::string &auth_key)
 {
-    Request req=Request::auth(generate_random_string(16),password);
+    Request req = Request::auth(generate_random_string(16), password);
     std::string data = req.serialize();
     if (!send_data(socket_guard.get(), data))
         return false;
@@ -771,8 +771,7 @@ int main(int argc, char *argv[])
             run_benchmark(socket_guard.get(), auth_key, "ZSet ZADD", count, [](int i)
                           {
                               // member score
-                              return "zadd big_zset " + std::to_string(i * 1.5) + " m_" + std::to_string(i);
-                          });
+                              return "zadd big_zset " + std::to_string(i * 1.5) + " m_" + std::to_string(i); });
         }
 
         // Hash Test
