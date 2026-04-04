@@ -160,6 +160,14 @@ public:
         std::function<void(const char *, size_t &, SkipList<ZSetKey, std::string> &)> deserialize_skiplist_func,
         std::function<void(const char *, size_t &, std::unordered_map<std::string, double> &)> deserialize_map_func);
 
+    /**
+     * @brief 获取成员数量。
+     */
+    size_t size() const
+    {
+        return skiplist_.size();
+    }
+
 private:
     // 跳表：存储有序关系。K 为复合键，V 为成员标识。
     SkipList<ZSetKey, std::string> skiplist_;

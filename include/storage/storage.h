@@ -123,6 +123,15 @@ public:
      * 3. 查询 SSTable
      */
     std::optional<EyaValue> get(const std::string &key) const;
+    /**
+     * @brief 读取原始数据。
+     *
+     * 流程（按优先级）：
+     * 1. 读取 MemTable
+     * 2. 读取 Immutable MemTables
+     * 3. 读取 SSTable
+     */
+    std::optional<EValue> get_raw(const std::string &key) const;
 
     Response execute(uint8_t type, std::vector<std::string> &args);
 
@@ -339,7 +348,8 @@ private:
      */
     std::vector<std::pair<std::string, EyaValue>> range(
         const std::string &start_key,
-        const std::string &end_key) const;
+        const std::string &end_key,
+        bool is_internal = false) const;
 
     /**
      * @brief 设置key的存活时间（从当前时间戳开始）。

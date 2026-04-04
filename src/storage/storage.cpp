@@ -7,6 +7,7 @@
 #include "storage/storage.h"
 #include "common/types/operation_type.h"
 #include "common/util/file_utils.h"
+#include "common/types/key_encoder.h"
 
 namespace fs = std::filesystem;
 
@@ -268,6 +269,16 @@ std::optional<EyaValue> Storage::get(const std::string &key) const
     return std::nullopt;
 }
 
+std::optional<EValue> Storage::get_raw(const std::string &key) const
+{
+    std::optional<EValue> result;
+    if (get_from_latest(key, result) || get_from_old(key, result))
+    {
+        return result;
+    }
+    return std::nullopt;
+}
+
 bool Storage::get_from_latest(const std::string &key, std::optional<EValue> &value) const
 {
     std::optional<EValue> result;
@@ -347,12 +358,13 @@ std::optional<EValue> Storage::get_from_immutable_memtables(const std::string &k
 
 bool Storage::contains(const std::string &key) const
 {
-    return get(key).has_value();
+    std::optional<EValue> result;
+    return get_from_latest(key, result) || get_from_old(key, result);
 }
 
 std::vector<std::pair<std::string, EyaValue>> Storage::range(
     const std::string &start_key,
-    const std::string &end_key) const
+    const std::string &end_key, bool is_internal) const
 {
     std::map<std::string, EValue> merged_results;
 
@@ -386,7 +398,7 @@ std::vector<std::pair<std::string, EyaValue>> Storage::range(
     result.reserve(merged_results.size());
     for (auto &[k, v] : merged_results)
     {
-        if (v.is_deleted() || v.is_expired())
+        if (v.is_deleted() || v.is_expired() || (!is_internal && starts_with(k, KeyEncoder::FIXED_PREFIX)))
         {
             continue;
         }
@@ -408,7 +420,7 @@ std::set<std::string> Storage::keys(const std::string &pattern) const
                                                     result.erase(key);
                                                     return true;
                                               }
-                                              if (std::regex_match(key, regex)) {
+                                              if (std::regex_match(key, regex)&&!starts_with(key,KeyEncoder::FIXED_PREFIX)) {
                                                     result.insert(key);
                                               }
                                               return true; });
@@ -424,7 +436,7 @@ std::set<std::string> Storage::keys(const std::string &pattern) const
                                             result.erase(key);
                                             return;
                                         }
-                                        if (std::regex_match(key, regex)) {
+                                        if (std::regex_match(key, regex)&&!starts_with(key,KeyEncoder::FIXED_PREFIX)) {
                                             result.insert(key);
                                         } });
         }
@@ -437,7 +449,7 @@ std::set<std::string> Storage::keys(const std::string &pattern) const
                                 result.erase(key);
                                 return;
                             }
-                            if (std::regex_match(key, regex)) {
+                            if (std::regex_match(key, regex)&&!starts_with(key,KeyEncoder::FIXED_PREFIX)) {
                                 result.insert(key);
                             } });
     return std::set<std::string>(result.begin(), result.end());
@@ -674,7 +686,7 @@ void Storage::set_expire(const std::string &key, uint64_t alive_time)
         std::string payload = std::to_string(expire_time);
         wal_->append_log(OperationType::kExpire, key, payload);
     }
-    set_key_expire(key, expire_time);
+    set_key_expire(key, expire_time); // passed internal
 }
 
 void Storage::set_key_expire(const std::string &key, uint64_t expire_time)
@@ -691,8 +703,8 @@ void Storage::set_key_expire(const std::string &key, uint64_t expire_time)
     }
     catch (const std::out_of_range &)
     {
-        auto v = get(key);
-        if (!v.has_value())
+        std::optional<EValue> v;
+        if (!get_from_latest(key, v) && !get_from_old(key, v))
         {
             LOG_ERROR("key not found when set expire.");
             throw std::runtime_error("key not found");
@@ -716,6 +728,13 @@ uint32_t Storage::remove(std::vector<std::string> &keys)
     if (keys.empty())
     {
         throw std::runtime_error("Remove key failed, missing key");
+    }
+    for (auto &key : keys)
+    {
+        if (starts_with(key, KeyEncoder::FIXED_PREFIX))
+        {
+            throw std::runtime_error("Remove key failed, invalid key");
+        }
     }
     uint32_t count = 0;
     for (auto &key : keys)
@@ -798,7 +817,8 @@ Response Storage::execute(uint8_t type, std::vector<std::string> &args)
             {
                 return Response::error("too many arguments");
             }
-            response = Response::success(std::string(contains(args[0]) ? "1" : "0"));
+            bool exists = starts_with(args[0], KeyEncoder::FIXED_PREFIX) ? false : contains(args[0]);
+            response = Response::success(std::string(exists ? "1" : "0"));
         }
         else if (type == OperationType::kRange)
         {
@@ -809,6 +829,10 @@ Response Storage::execute(uint8_t type, std::vector<std::string> &args)
             if (args.size() > 2)
             {
                 return Response::error("too many arguments");
+            }
+            if (starts_with(args[0], KeyEncoder::FIXED_PREFIX) || starts_with(args[1], KeyEncoder::FIXED_PREFIX))
+            {
+                return Response::error("invalid key");
             }
             response = Response::success(range(args[0], args[1]));
         }
@@ -821,6 +845,10 @@ Response Storage::execute(uint8_t type, std::vector<std::string> &args)
             if (args.size() > 2)
             {
                 return Response::error("too many arguments");
+            }
+            if (starts_with(args[0], KeyEncoder::FIXED_PREFIX))
+            {
+                return Response::error("invalid key");
             }
             uint64_t expire_time = std::stoull(args[1]);
             set_expire(args[0], expire_time);
@@ -835,6 +863,10 @@ Response Storage::execute(uint8_t type, std::vector<std::string> &args)
             if (args.size() > 1)
             {
                 return Response::error("too many arguments");
+            }
+            if (starts_with(args[0], KeyEncoder::FIXED_PREFIX))
+            {
+                return Response::error("invalid key");
             }
             auto value = get(args[0]);
             ResponseData data;
@@ -883,19 +915,6 @@ Response Storage::execute(uint8_t type, std::vector<std::string> &args)
 
 Response Storage::execute(uint8_t type, std::vector<std::string_view> &args)
 {
-    /*size_t total_len = 0;
-    for (const auto &arg : args)
-    {
-        total_len += arg.size() + 1;
-    }
-    std::string args_str;
-    args_str.reserve(total_len);
-    for (const auto &arg : args)
-    {
-        args_str += arg;
-        args_str += ' ';
-    }
-    LOG_DEBUG("Storage::execute: type={}, args=[{}]", type, args_str.c_str());*/
     if (isWriteOperation(type) && read_only_)
     {
         return Response::error("read only");
@@ -950,7 +969,8 @@ Response Storage::execute(uint8_t type, std::vector<std::string_view> &args)
             {
                 return Response::error("too many arguments");
             }
-            response = Response::success(std::string(contains(std::string(args[0])) ? "1" : "0"));
+            bool exists = starts_with(std::string(args[0]), KeyEncoder::FIXED_PREFIX) ? false : contains(std::string(args[0]));
+            response = Response::success(std::string(exists ? "1" : "0"));
         }
         else if (type == OperationType::kRange)
         {
@@ -961,6 +981,10 @@ Response Storage::execute(uint8_t type, std::vector<std::string_view> &args)
             if (args.size() > 2)
             {
                 return Response::error("too many arguments");
+            }
+            if (starts_with(std::string(args[0]), KeyEncoder::FIXED_PREFIX) || starts_with(std::string(args[1]), KeyEncoder::FIXED_PREFIX))
+            {
+                return Response::error("invalid key");
             }
             response = Response::success(range(std::string(args[0]), std::string(args[1])));
         }
@@ -973,6 +997,10 @@ Response Storage::execute(uint8_t type, std::vector<std::string_view> &args)
             if (args.size() > 2)
             {
                 return Response::error("too many arguments");
+            }
+            if (starts_with(std::string(args[0]), KeyEncoder::FIXED_PREFIX))
+            {
+                return Response::error("invalid key");
             }
             uint64_t expire_time = std::stoull(std::string(args[1]));
             set_expire(std::string(args[0]), expire_time);
@@ -987,6 +1015,10 @@ Response Storage::execute(uint8_t type, std::vector<std::string_view> &args)
             if (args.size() > 1)
             {
                 return Response::error("too many arguments");
+            }
+            if (starts_with(std::string(args[0]), KeyEncoder::FIXED_PREFIX))
+            {
+                return Response::error("invalid key");
             }
             auto value = get(std::string(args[0]));
             ResponseData data;

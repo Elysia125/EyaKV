@@ -171,4 +171,9 @@ inline std::string trim(const std::string &str)
     return str.substr(start, end - start + 1);
 }
 
+inline bool starts_with(const std::string &str, const std::string &prefix)
+{
+    return str.size() >= prefix.size() && str.compare(0, prefix.size(), prefix) == 0;
+}
+
 #endif // UTILS_H
