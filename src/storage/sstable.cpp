@@ -8,6 +8,7 @@
 #include <iomanip>
 #include <chrono>
 #include <cstdio>
+#include "common/util/compress_utils.h"
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -99,7 +100,7 @@ std::string IndexEntry::serialize() const
     // 写入 block_offset 和 block_size
     result.append(reinterpret_cast<const char *>(&block_offset), sizeof(block_offset));
     result.append(reinterpret_cast<const char *>(&block_size), sizeof(block_size));
-
+    result.append(reinterpret_cast<const char *>(&uncompressed_size), sizeof(uncompressed_size));
     return result;
 }
 
@@ -119,7 +120,8 @@ IndexEntry IndexEntry::deserialize(const char *data, size_t &offset)
     offset += sizeof(entry.block_offset);
     std::memcpy(&entry.block_size, data + offset, sizeof(entry.block_size));
     offset += sizeof(entry.block_size);
-
+    std::memcpy(&entry.uncompressed_size, data + offset, sizeof(entry.uncompressed_size));
+    offset += sizeof(entry.uncompressed_size);
     return entry;
 }
 
@@ -297,8 +299,10 @@ BlockDataPtr SSTable::read_data_block(size_t block_index) const
     }
 
     const auto &idx = index_[block_index];
-    const char *block_ptr = mmap_reader_.data() + idx.block_offset;
-
+    const char *compress_ptr = mmap_reader_.data() + idx.block_offset;
+    CompressContext compress_context;
+    std::string block_data = compress_context.decompress(compress_ptr, idx.uncompressed_size);
+    const char *block_ptr = block_data.data();
     // 3. 反序列化
     size_t offset = 0;
     while (offset < idx.block_size)
@@ -604,17 +608,19 @@ void SSTableBuilder::flush_block()
     {
         return;
     }
-
+    CompressContext compress_context;
+    std::string compressed_block = compress_context.compress(current_block_);
     // 记录索引条目
     IndexEntry entry;
     entry.first_key = first_key_in_block_;
     entry.block_offset = current_offset_;
-    entry.block_size = current_block_.size();
+    entry.uncompressed_size = current_block_.size();
+    entry.block_size = compressed_block.size();
     index_entries_.push_back(entry);
 
     // 写入数据块
-    fwrite(current_block_.data(), 1, current_block_.size(), file_);
-    current_offset_ += current_block_.size();
+    fwrite(compressed_block.data(), 1, compressed_block.size(), file_);
+    current_offset_ += compressed_block.size();
 
     // 清空当前数据块
     current_block_.clear();

@@ -1,5 +1,10 @@
 cmake_minimum_required(VERSION 3.15)
-project(EyaKV VERSION 0.1.0 LANGUAGES CXX)
+project(EyaKV VERSION 0.1.0 LANGUAGES C CXX)
+
+# 消除 CMake 4.x 关于 FetchContent 的警告
+if(POLICY CMP0135)
+    cmake_policy(SET CMP0135 NEW)
+endif()
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -82,9 +87,7 @@ endif()
 # Define include directory variable for subdirectories
 set(EYAKV_INCLUDE_DIR ${PROJECT_SOURCE_DIR}/include)
 
-# ------------------------------------------------------------------------------
 # Dependencies
-# ------------------------------------------------------------------------------
 include(FetchContent)
 enable_testing()
 
@@ -123,6 +126,33 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON CACHE BOOL "Build with -fPIC" FORCE)
 set(SPDLOG_FMT_EXTERNAL OFF CACHE BOOL "Use built-in fmt" FORCE)
 
 FetchContent_MakeAvailable(spdlog)
+
+# LZ4 极速压缩库 (适配 CMake 4.x 极简编译法)
+message(STATUS "Fetching lz4...")
+FetchContent_Declare(
+    lz4
+    URL https://github.com/lz4/lz4/archive/refs/tags/v1.9.4.zip
+)
+FetchContent_MakeAvailable(lz4)
+
+# 绕过 LZ4 过时的 CMake 脚本，直接把它的核心文件编译成静态库
+add_library(lz4_static STATIC 
+    ${lz4_SOURCE_DIR}/lib/lz4.c
+)
+
+# 绑定头文件目录到目标，这样链接它的库能自动拿到 #include <lz4.h> 的路径
+target_include_directories(lz4_static PUBLIC 
+    $<BUILD_INTERFACE:${lz4_SOURCE_DIR}/lib>
+)
+
+# 加上 PIC，并明确指定输出目录，强制对齐全局 CMAKE_ARCHIVE_OUTPUT_DIRECTORY
+set_target_properties(lz4_static PROPERTIES 
+    POSITION_INDEPENDENT_CODE ON
+    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
+)
+
+# 别忘了在这一段代码的最后，加上 ALIAS
+add_library(lz4::lz4_static ALIAS lz4_static)
 
 # 自动查找并链接 gperftools 库
 if(EYAKV_ENABLE_PROFILER)

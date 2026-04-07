@@ -101,7 +101,7 @@ target_include_directories(eyakv_storage PUBLIC
     ${EYAKV_INCLUDE_DIR}
     ${CMAKE_CURRENT_BINARY_DIR}
 )
-target_link_libraries(eyakv_storage PRIVATE eyakv_logger eyakv_common Threads::Threads)
+target_link_libraries(eyakv_storage PRIVATE eyakv_logger eyakv_common Threads::Threads lz4::lz4_static)
 set_target_properties(eyakv_storage PROPERTIES
     CXX_VISIBILITY_PRESET hidden
     VISIBILITY_INLINES_HIDDEN ON

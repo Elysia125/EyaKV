@@ -196,10 +196,10 @@ struct SSTableFooter
  */
 struct IndexEntry
 {
-    std::string first_key; // 数据块的第一个key
-    uint64_t block_offset; // 数据块在文件中的偏移
-    uint64_t block_size;   // 数据块大小
-
+    std::string first_key;      // 数据块的第一个key
+    uint64_t block_offset;      // 数据块在文件中的偏移
+    uint64_t block_size;        // 数据块大小
+    uint32_t uncompressed_size; // 数据块解压后的大小（如果启用压缩）
     // 序列化到字节流
     std::string serialize() const;
     // 从字节流反序列化
