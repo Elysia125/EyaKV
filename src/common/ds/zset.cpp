@@ -143,6 +143,17 @@ std::optional<std::string> ZSet::zscore(const std::string &member) const
     return std::nullopt;
 }
 
+std::optional<std::string> ZSet::zscore(std::string_view member) const
+{
+    std::shared_lock<std::shared_mutex> lock(rw_mutex_);
+    auto it = member_score_map_.find(std::string(member));
+    if (it != member_score_map_.end())
+    {
+        return std::to_string(it->second);
+    }
+    return std::nullopt;
+}
+
 bool ZSet::zrem(const std::string &member)
 {
     std::unique_lock<std::shared_mutex> lock(rw_mutex_);
@@ -173,10 +184,43 @@ std::optional<size_t> ZSet::zrank(const std::string &member) const
     return skiplist_.rank(ZSetKey{it->second, member});
 }
 
+std::optional<size_t> ZSet::zrank(std::string_view member) const
+{
+    std::shared_lock<std::shared_mutex> lock(rw_mutex_);
+    auto it = member_score_map_.find(std::string(member));
+    if (it == member_score_map_.end())
+        return std::nullopt;
+
+    // 直接调用跳表的排名查询
+    return skiplist_.rank(ZSetKey{it->second, std::string(member)});
+}
+
 std::vector<std::pair<std::string, std::string>> ZSet::zrange_by_score(const std::string &min_sc, const std::string &max_sc) const
 {
     double min_score = std::stod(min_sc);
     double max_score = std::stod(max_sc);
+    std::shared_lock<std::shared_mutex> lock(rw_mutex_);
+
+    // 使用范围边界 Key
+    ZSetKey start_key{min_score, ""};
+    ZSetKey end_key{max_score, "\xff"}; // 使用高位字符确保覆盖该分数下的所有成员
+
+    auto raw_res = skiplist_.range_by_key(start_key, end_key);
+
+    std::vector<std::pair<std::string, std::string>> result;
+    result.reserve(raw_res.size());
+    for (const auto &item : raw_res)
+    {
+        // item.first 是 ZSetKey, item.second 是 member string
+        result.emplace_back(item.second, std::to_string(item.first.score));
+    }
+    return result;
+}
+
+std::vector<std::pair<std::string, std::string>> ZSet::zrange_by_score(std::string_view min_sc, std::string_view max_sc) const
+{
+    double min_score = std::stod(std::string(min_sc));
+    double max_score = std::stod(std::string(max_sc));
     std::shared_lock<std::shared_mutex> lock(rw_mutex_);
 
     // 使用范围边界 Key

@@ -79,6 +79,11 @@ public:
     std::optional<std::string> zscore(const std::string &member) const;
 
     /**
+     * @brief 获取指定成员的分数。
+     * @return 存在则返回分值，否则返回 nullopt。
+     */
+    std::optional<std::string> zscore(std::string_view member) const;
+    /**
      * @brief 增加指定成员的分数。
      * @return 更新后的分值，若成员不存在则返回 nullopt。
      */
@@ -101,13 +106,24 @@ public:
     std::optional<size_t> zrank(const std::string &member) const;
 
     /**
+     * @brief 获取指定成员的排名（0-based，按分数从小到大）。
+     */
+    std::optional<size_t> zrank(std::string_view member) const;
+
+    /**
      * @brief 按照分数范围获取成员。
      * @param min_score 最小分
      * @param max_score 最大分
      * @return 成员及其分数的列表。
      */
     std::vector<std::pair<std::string, std::string>> zrange_by_score(const std::string &min_score, const std::string &max_score) const;
-
+    /**
+     * @brief 按照分数范围获取成员。
+     * @param min_score 最小分
+     * @param max_score 最大分
+     * @return 成员及其分数的列表。
+     */
+    std::vector<std::pair<std::string, std::string>> zrange_by_score(std::string_view min_score, std::string_view max_score) const;
     /**
      * @brief 按照排名范围获取成员。
      * @param start 起始排名

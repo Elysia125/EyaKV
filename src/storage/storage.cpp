@@ -555,6 +555,52 @@ std::vector<std::pair<std::string, EyaValue>> Storage::range(
 
     return result;
 }
+
+std::vector<std::pair<std::string, EyaValue>> Storage::range(
+    std::string_view start_key,
+    std::string_view end_key, bool is_internal) const
+{
+    std::map<std::string, EValue> merged_results;
+
+    // 1. 从 SSTable 获取范围数据（最旧的数据）
+    if (sstable_manager_)
+    {
+        merged_results = sstable_manager_->range_query(start_key, end_key);
+    }
+    // 2. 从 Immutable MemTables 获取并覆盖
+    {
+        std::shared_lock<std::shared_mutex> lock(immutable_mutex_);
+        for (auto it = immutable_memtables_.rbegin(); it != immutable_memtables_.rend(); ++it)
+        {
+            it->second->for_each([&](const std::string &k, const EValue &v)
+                                 {
+                if (k >= start_key && k <= end_key) {
+                    merged_results[k] = v;
+                } });
+        }
+    }
+
+    // 3. 从 MemTable 获取并覆盖（最新的数据）
+    memtable_->for_each([&](const std::string &k, const EValue &v)
+                        {
+        if (k >= start_key && k <= end_key) {
+            merged_results[k] = v;
+        } });
+
+    // 转换为 vector
+    std::vector<std::pair<std::string, EyaValue>> result;
+    result.reserve(merged_results.size());
+    for (auto &[k, v] : merged_results)
+    {
+        if (v.is_deleted() || v.is_expired() || (!is_internal && starts_with(k, KeyEncoder::FIXED_PREFIX)))
+        {
+            continue;
+        }
+        result.emplace_back(k, std::move(v.value));
+    }
+
+    return result;
+}
 std::set<std::string> Storage::keys(const std::string &pattern) const
 {
     std::unordered_set<std::string> result;
@@ -602,6 +648,7 @@ std::set<std::string> Storage::keys(const std::string &pattern) const
                             } });
     return std::set<std::string>(result.begin(), result.end());
 }
+
 void Storage::rotate_memtable()
 {
     // 将当前 MemTable 转换为 Immutable
@@ -1131,7 +1178,7 @@ Response Storage::execute(uint8_t type, std::vector<std::string_view> &args)
             {
                 return Response::error("too many arguments");
             }
-            bool exists = starts_with(std::string(args[0]), KeyEncoder::FIXED_PREFIX) ? false : contains(std::string(args[0]));
+            bool exists = starts_with(args[0], KeyEncoder::FIXED_PREFIX) ? false : contains(args[0]);
             response = Response::success(std::string(exists ? "1" : "0"));
         }
         else if (type == OperationType::kRange)
@@ -1144,11 +1191,11 @@ Response Storage::execute(uint8_t type, std::vector<std::string_view> &args)
             {
                 return Response::error("too many arguments");
             }
-            if (starts_with(std::string(args[0]), KeyEncoder::FIXED_PREFIX) || starts_with(std::string(args[1]), KeyEncoder::FIXED_PREFIX))
+            if (starts_with(args[0], KeyEncoder::FIXED_PREFIX) || starts_with(args[1], KeyEncoder::FIXED_PREFIX))
             {
                 return Response::error("invalid key");
             }
-            response = Response::success(range(std::string(args[0]), std::string(args[1])));
+            response = Response::success(range(args[0], args[1]));
         }
         else if (type == OperationType::kExpire)
         {
@@ -1160,7 +1207,7 @@ Response Storage::execute(uint8_t type, std::vector<std::string_view> &args)
             {
                 return Response::error("too many arguments");
             }
-            if (starts_with(std::string(args[0]), KeyEncoder::FIXED_PREFIX))
+            if (starts_with(args[0], KeyEncoder::FIXED_PREFIX))
             {
                 return Response::error("invalid key");
             }
@@ -1178,11 +1225,11 @@ Response Storage::execute(uint8_t type, std::vector<std::string_view> &args)
             {
                 return Response::error("too many arguments");
             }
-            if (starts_with(std::string(args[0]), KeyEncoder::FIXED_PREFIX))
+            if (starts_with(args[0], KeyEncoder::FIXED_PREFIX))
             {
                 return Response::error("invalid key");
             }
-            auto value = get(std::string(args[0]));
+            auto value = get(args[0]);
             ResponseData data;
             if (value.has_value())
             {

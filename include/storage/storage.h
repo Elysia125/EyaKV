@@ -372,7 +372,15 @@ private:
         const std::string &start_key,
         const std::string &end_key,
         bool is_internal = false) const;
-
+    /**
+     * @brief 范围查询 - 获取指定范围内的所有 KV 对。
+     * @param start_key 起始 key（包含）
+     * @param end_key 结束 key（包含）
+     * @return 范围内的 KV 对列表（按 key 排序）
+     */
+    std::vector<std::pair<std::string, EyaValue>> range(
+        std::string_view start_key,
+        std::string_view end_key, bool is_internal = false) const;
     /**
      * @brief 设置key的存活时间（从当前时间戳开始）。
      * @param key 要设置过期时间的key

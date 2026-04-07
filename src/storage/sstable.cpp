@@ -1357,6 +1357,18 @@ std::map<std::string, EValue> SSTableManager::range_query(
     return map;
 }
 
+std::map<std::string, EValue> SSTableManager::range_query(
+    std::string_view start_key,
+    std::string_view end_key) const
+{
+    std::map<std::string, EValue> map;
+    for_each_oldest([&](const std::string &key, const EValue &value)
+                    {
+        if (key >= start_key && key <= end_key) map[key] = value;
+        return true; });
+    return map;
+}
+
 void SSTableManager::for_each_newest(std::function<bool(const std::string &key, const EValue &value)> callback) const
 {
     uint32_t curr_max;

@@ -392,7 +392,9 @@ public:
     std::map<std::string, EValue> range_query(
         const std::string &start_key,
         const std::string &end_key) const;
-
+    std::map<std::string, EValue> range_query(
+        std::string_view start_key,
+        std::string_view end_key) const;
     /**
      * @brief 遍历所有键值对(从最新的开始)
      */

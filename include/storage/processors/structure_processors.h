@@ -117,6 +117,26 @@ private:
     void set_get_or_create_meta(Storage *storage, const std::string &key, Metadata &meta, std::optional<EValue> &meta_val, bool &is_new);
 
     /**
+     * @brief 只读获取 Set 类型的元数据 (Metadata)
+     * @param storage 存储引擎实例
+     * @param key 键名
+     * @param meta 输出参数：解析出的元数据对象
+     * @param meta_val 输出参数：原始包装的 EValue
+     * @return true 成功读取有效元数据，false 键不存在或已过期/删除
+     */
+    bool set_read_meta(Storage *storage, std::string_view key, Metadata &meta, std::optional<EValue> &meta_val);
+
+    /**
+     * @brief 获取或初始化创建 Set 类型的元数据
+     * @param storage 存储引擎实例
+     * @param key 键名
+     * @param meta 输出参数：解析出的或新建的元数据对象
+     * @param meta_val 输出参数：原有的 EValue（若为新创建则无有效数据）
+     * @param is_new 输出参数：指示是否为全新创建的集合
+     */
+    void set_get_or_create_meta(Storage *storage, std::string_view key, Metadata &meta, std::optional<EValue> &meta_val, bool &is_new);
+
+    /**
      * @brief 向无序集合添加一个或多个成员
      * @param storage 存储引擎实例
      * @param key 键名
@@ -215,6 +235,25 @@ private:
      */
     bool zset_read_meta(Storage *storage, const std::string &key, Metadata &meta, std::optional<EValue> &meta_val);
 
+    /**
+     * @brief 获取或初始化创建 ZSet 类型的元数据
+     * @param storage 存储引擎实例
+     * @param key 键名
+     * @param meta 输出参数：解析出的或新建的元数据对象
+     * @param meta_val 输出参数：原有的 EValue（若为新创建则无有效数据）
+     * @param is_new 输出参数：指示是否为全新创建的有序集合
+     */
+    void zset_get_or_create_meta(Storage *storage, std::string_view key, Metadata &meta, std::optional<EValue> &meta_val, bool &is_new);
+
+    /**
+     * @brief 只读获取 ZSet 类型的元数据 (Metadata)
+     * @param storage 存储引擎实例
+     * @param key 键名
+     * @param meta 输出参数：解析出的元数据对象
+     * @param meta_val 输出参数：原始包装的 EValue
+     * @return true 成功读取有效元数据，false 键不存在或已过期/删除
+     */
+    bool zset_read_meta(Storage *storage, std::string_view key, Metadata &meta, std::optional<EValue> &meta_val);
     /**
      * @brief 向有序集合添加一个或多个带有分数的成员
      * @param storage 存储引擎实例
@@ -381,6 +420,26 @@ private:
     void deque_get_or_create_meta(Storage *storage, const std::string &key, Metadata &meta, std::optional<EValue> &meta_val, bool &is_new);
 
     /**
+     * @brief 只读获取 List 类型的元数据 (Metadata)
+     * @param storage 存储引擎实例
+     * @param key 键名
+     * @param meta 输出参数：解析出的元数据对象
+     * @param meta_val 输出参数：原始包装的 EValue
+     * @return true 成功读取有效元数据，false 键不存在或已过期/删除
+     */
+    bool deque_read_meta(Storage *storage, std::string_view key, Metadata &meta, std::optional<EValue> &meta_val);
+
+    /**
+     * @brief 获取或初始化创建 List 类型的元数据
+     * @param storage 存储引擎实例
+     * @param key 键名
+     * @param meta 输出参数：解析出的或新建的元数据对象
+     * @param meta_val 输出参数：原有的 EValue
+     * @param is_new 输出参数：指示是否为全新创建的列表
+     */
+    void deque_get_or_create_meta(Storage *storage, std::string_view key, Metadata &meta, std::optional<EValue> &meta_val, bool &is_new);
+
+    /**
      * @brief 从列表左侧（头部）推入一个或多个元素
      * @param storage 存储引擎实例
      * @param key 键名
@@ -529,6 +588,26 @@ private:
      * @param is_new 输出参数：指示是否为全新创建的哈希表
      */
     void hash_get_or_create_meta(Storage *storage, const std::string &key, Metadata &meta, std::optional<EValue> &meta_val, bool &is_new);
+
+    /**
+     * @brief 只读获取 Hash 类型的元数据 (Metadata)
+     * @param storage 存储引擎实例
+     * @param key 键名
+     * @param meta 输出参数：解析出的元数据对象
+     * @param meta_val 输出参数：原始包装的 EValue
+     * @return true 成功读取有效元数据，false 键不存在或已过期/删除
+     */
+    bool hash_read_meta(Storage *storage, std::string_view key, Metadata &meta, std::optional<EValue> &meta_val);
+
+    /**
+     * @brief 获取或初始化创建 Hash 类型的元数据
+     * @param storage 存储引擎实例
+     * @param key 键名
+     * @param meta 输出参数：解析出的或新建的元数据对象
+     * @param meta_val 输出参数：原有的 EValue
+     * @param is_new 输出参数：指示是否为全新创建的哈希表
+     */
+    void hash_get_or_create_meta(Storage *storage, std::string_view key, Metadata &meta, std::optional<EValue> &meta_val, bool &is_new);
 
     /**
      * @brief 在哈希表中设置一个或多个字段的值

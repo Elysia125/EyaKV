@@ -176,4 +176,9 @@ inline bool starts_with(const std::string &str, const std::string &prefix)
     return str.size() >= prefix.size() && str.compare(0, prefix.size(), prefix) == 0;
 }
 
+inline bool starts_with(std::string_view str, std::string_view prefix)
+{
+    return str.size() >= prefix.size() && str.compare(0, prefix.size(), prefix) == 0;
+}
+
 #endif // UTILS_H

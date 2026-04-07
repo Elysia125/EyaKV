@@ -198,6 +198,43 @@ void SetProcessor::set_get_or_create_meta(Storage *storage, const std::string &k
     }
 }
 
+bool SetProcessor::set_read_meta(Storage *storage, std::string_view key, Metadata &meta, std::optional<EValue> &meta_val)
+{
+    meta_val = storage->get_raw(key);
+    if (!meta_val.has_value() || meta_val->is_deleted() || meta_val->is_expired())
+        return false;
+    if (!std::holds_alternative<Metadata>(meta_val->value))
+        return false;
+    meta = std::get<Metadata>(meta_val->value);
+    return meta.type == static_cast<uint8_t>(EyaType::kSet);
+}
+
+void SetProcessor::set_get_or_create_meta(Storage *storage, std::string_view key, Metadata &meta, std::optional<EValue> &meta_val, bool &is_new)
+{
+    is_new = false;
+    meta_val = storage->get_raw(key);
+    if (!meta_val.has_value() || meta_val->is_deleted() || meta_val->is_expired())
+    {
+        is_new = true;
+    }
+    else if (!std::holds_alternative<Metadata>(meta_val->value))
+    {
+        throw std::runtime_error("value is not a set");
+    }
+    else
+    {
+        meta = std::get<Metadata>(meta_val->value);
+        if (meta.type != static_cast<uint8_t>(EyaType::kSet))
+            throw std::runtime_error("value is not a set");
+    }
+    if (is_new)
+    {
+        meta.type = static_cast<uint8_t>(EyaType::kSet);
+        meta.version = Metadata::generate_version();
+        meta.size = 0;
+        meta.embeded_data = std::vector<std::string>(); // 初始使用 embeded_data 存储小集合
+    }
+}
 size_t SetProcessor::s_add(Storage *storage, const std::string &key, const std::vector<std::string> &members, const bool is_recover)
 {
     if (starts_with(key, KeyEncoder::FIXED_PREFIX))
@@ -356,11 +393,6 @@ size_t SetProcessor::s_rem(Storage *storage, const std::string_view key, const s
 
 std::vector<std::string> SetProcessor::s_members(Storage *storage, const std::string_view key)
 {
-    return s_members(storage, std::string(key));
-}
-
-std::vector<std::string> SetProcessor::s_members(Storage *storage, const std::string &key)
-{
     Metadata meta;
     std::optional<EValue> meta_val;
     if (!set_read_meta(storage, key, meta, meta_val))
@@ -388,8 +420,12 @@ std::vector<std::string> SetProcessor::s_members(Storage *storage, const std::st
     return result;
 }
 
-// ZSetProcessor
+std::vector<std::string> SetProcessor::s_members(Storage *storage, const std::string &key)
+{
+    return s_members(storage, std::string_view(key));
+}
 
+// ZSetProcessor
 std::vector<uint8_t> ZSetProcessor::get_supported_types() const
 {
     return {OperationType::kZAdd, OperationType::kZRem, OperationType::kZScore, OperationType::kZRank, OperationType::kZCard, OperationType::kZIncrBy, OperationType::kZRangeByRank, OperationType::kZRangeByScore, OperationType::kZRemByRank, OperationType::kZRemByScore};
@@ -622,6 +658,44 @@ bool ZSetProcessor::zset_read_meta(Storage *storage, const std::string &key, Met
     return meta.type == static_cast<uint8_t>(EyaType::kZSet);
 }
 
+void ZSetProcessor::zset_get_or_create_meta(Storage *storage, std::string_view key, Metadata &meta, std::optional<EValue> &meta_val, bool &is_new)
+{
+    is_new = false;
+    meta_val = storage->get_raw(key);
+    if (!meta_val.has_value() || meta_val->is_deleted() || meta_val->is_expired())
+    {
+        is_new = true;
+    }
+    else if (!std::holds_alternative<Metadata>(meta_val->value))
+    {
+        throw std::runtime_error("value is not a zset");
+    }
+    else
+    {
+        meta = std::get<Metadata>(meta_val->value);
+        if (meta.type != static_cast<uint8_t>(EyaType::kZSet))
+            throw std::runtime_error("value is not a zset");
+    }
+    if (is_new)
+    {
+        meta.type = static_cast<uint8_t>(EyaType::kZSet);
+        meta.version = Metadata::generate_version();
+        meta.size = 0;
+        meta.embeded_data = ZSet();
+    }
+}
+
+bool ZSetProcessor::zset_read_meta(Storage *storage, std::string_view key, Metadata &meta, std::optional<EValue> &meta_val)
+{
+    meta_val = storage->get_raw(key);
+    if (!meta_val.has_value() || meta_val->is_deleted() || meta_val->is_expired())
+        return false;
+    if (!std::holds_alternative<Metadata>(meta_val->value))
+        return false;
+    meta = std::get<Metadata>(meta_val->value);
+    return meta.type == static_cast<uint8_t>(EyaType::kZSet);
+}
+
 size_t ZSetProcessor::z_add(Storage *storage, const std::string &key, const std::vector<std::pair<std::string, std::string>> &score_members, const bool is_recover)
 {
     if (starts_with(key, KeyEncoder::FIXED_PREFIX))
@@ -781,74 +855,17 @@ size_t ZSetProcessor::z_rem(Storage *storage, const std::string &key, const std:
 
 std::optional<std::string> ZSetProcessor::z_score(Storage *storage, const std::string &key, const std::string &member)
 {
-    if (starts_with(key, KeyEncoder::FIXED_PREFIX))
-        throw std::runtime_error("invalid key");
-    Metadata meta;
-    std::optional<EValue> meta_val;
-    if (!zset_read_meta(storage, key, meta, meta_val))
-        return std::nullopt;
-
-    if (std::holds_alternative<std::monostate>(meta.embeded_data))
-    {
-        std::string lookup_key = KeyEncoder::encode_zset_lookup_key(key, meta.version, member);
-        std::optional<EValue> val = storage->get_raw(lookup_key);
-        if (val.has_value() && !val->is_deleted() && std::holds_alternative<std::string>(val->value))
-            return std::get<std::string>(val->value);
-    }
-    else
-    {
-        auto &zset = std::get<ZSet>(meta.embeded_data);
-        auto score = zset.zscore(member);
-        if (score.has_value())
-            return score.value();
-    }
-    return std::nullopt;
+    return z_score(storage, std::string_view(key), std::string_view(member));
 }
 
 std::optional<size_t> ZSetProcessor::z_rank(Storage *storage, const std::string &key, const std::string &member)
 {
-    Metadata meta;
-    std::optional<EValue> meta_val;
-    if (!zset_read_meta(storage, key, meta, meta_val))
-        return std::nullopt;
-
-    if (std::holds_alternative<std::monostate>(meta.embeded_data))
-    {
-        std::string lookup_key = KeyEncoder::encode_zset_lookup_key(key, meta.version, member);
-        std::optional<EValue> score_val = storage->get_raw(lookup_key);
-        if (!score_val.has_value() || score_val->is_deleted() || !std::holds_alternative<std::string>(score_val->value))
-            return std::nullopt;
-
-        std::string prefix = KeyEncoder::get_complex_prefix(ColumnFamily::kZSetRank, key, meta.version);
-        std::string end_prefix = KeyEncoder::get_prefix_end(prefix);
-        auto kv_pairs = storage->range(prefix, end_prefix);
-
-        size_t rank = 0;
-        for (const auto &pair : kv_pairs)
-        {
-            auto [score, m] = KeyEncoder::decode_zset_sort_key(pair.first);
-            if (m == member)
-                return rank;
-            rank++;
-        }
-    }
-    else
-    {
-        auto &zset = std::get<ZSet>(meta.embeded_data);
-        auto rank = zset.zrank(member);
-        if (rank >= 0)
-            return rank;
-    }
-    return std::nullopt;
+    return z_rank(storage, std::string_view(key), std::string_view(member));
 }
 
 size_t ZSetProcessor::z_card(Storage *storage, const std::string &key)
 {
-    Metadata meta;
-    std::optional<EValue> meta_val;
-    if (!zset_read_meta(storage, key, meta, meta_val))
-        return 0;
-    return meta.size;
+    return z_card(storage, std::string_view(key));
 }
 
 std::string ZSetProcessor::z_incr_by(Storage *storage, const std::string &key, const std::string &increment, const std::string &member, const bool is_recover)
@@ -918,91 +935,12 @@ std::string ZSetProcessor::z_incr_by(Storage *storage, const std::string &key, c
 
 std::vector<std::pair<std::string, EyaValue>> ZSetProcessor::z_range_by_rank(Storage *storage, const std::string &key, long long start, long long end)
 {
-    if (starts_with(key, KeyEncoder::FIXED_PREFIX))
-        throw std::runtime_error("invalid key");
-    Metadata meta;
-    std::optional<EValue> meta_val;
-    if (!zset_read_meta(storage, key, meta, meta_val))
-        return {};
-
-    long long sz = static_cast<long long>(meta.size);
-    if (start < 0)
-        start += sz;
-    if (end < 0)
-        end += sz;
-    if (start < 0)
-        start = 0;
-    if (end >= sz)
-        end = sz - 1;
-    if (start > end)
-        return {};
-
-    std::vector<std::pair<std::string, EyaValue>> result;
-    if (std::holds_alternative<std::monostate>(meta.embeded_data))
-    {
-        std::string prefix = KeyEncoder::get_complex_prefix(ColumnFamily::kZSetRank, key, meta.version);
-        std::string end_prefix = KeyEncoder::get_prefix_end(prefix);
-        auto kv_pairs = storage->range(prefix, end_prefix);
-
-        long long rank = 0;
-        for (const auto &pair : kv_pairs)
-        {
-            if (rank > end)
-                break;
-            if (rank >= start)
-            {
-                auto [score, member] = KeyEncoder::decode_zset_sort_key(pair.first);
-                result.push_back({member, std::to_string(score)});
-            }
-            rank++;
-        }
-    }
-    else
-    {
-        ZSet &zset = std::get<ZSet>(meta.embeded_data);
-        std::vector<std::pair<std::string, std::string>> zset_result = zset.zrange_by_rank(start, end);
-        for (const auto &pair : zset_result)
-            result.push_back({pair.first, pair.second});
-    }
-    return result;
+    return z_range_by_rank(storage, std::string_view(key), start, end);
 }
 
 std::vector<std::pair<std::string, EyaValue>> ZSetProcessor::z_range_by_score(Storage *storage, const std::string &key, const std::string &min, const std::string &max)
 {
-    if (starts_with(key, KeyEncoder::FIXED_PREFIX))
-        throw std::runtime_error("invalid key");
-    Metadata meta;
-    std::optional<EValue> meta_val;
-    if (!zset_read_meta(storage, key, meta, meta_val))
-        return {};
-
-    std::vector<std::pair<std::string, EyaValue>> result;
-    if (std::holds_alternative<std::monostate>(meta.embeded_data))
-    {
-        double min_score = std::stod(min);
-        double max_score = std::stod(max);
-
-        std::string prefix = KeyEncoder::get_complex_prefix(ColumnFamily::kZSetRank, key, meta.version);
-        std::string end_prefix = KeyEncoder::get_prefix_end(prefix);
-        auto kv_pairs = storage->range(prefix, end_prefix);
-
-        for (const auto &pair : kv_pairs)
-        {
-            auto [score, member] = KeyEncoder::decode_zset_sort_key(pair.first);
-            if (score > max_score)
-                break;
-            if (score >= min_score)
-                result.push_back({member, std::to_string(score)});
-        }
-    }
-    else
-    {
-        ZSet &zset = std::get<ZSet>(meta.embeded_data);
-        std::vector<std::pair<std::string, std::string>> zset_result = zset.zrange_by_score(min, max);
-        for (const auto &pair : zset_result)
-            result.push_back({pair.first, pair.second});
-    }
-    return result;
+    return z_range_by_score(storage, std::string_view(key), std::string_view(min), std::string_view(max));
 }
 
 size_t ZSetProcessor::z_rem_by_rank(Storage *storage, const std::string &key, long long start, long long end, const bool is_recover)
@@ -1160,17 +1098,74 @@ size_t ZSetProcessor::z_rem(Storage *storage, const std::string_view key, const 
 
 std::optional<std::string> ZSetProcessor::z_score(Storage *storage, const std::string_view key, const std::string_view member)
 {
-    return z_score(storage, std::string(key), std::string(member));
+    if (starts_with(key, KeyEncoder::FIXED_PREFIX))
+        throw std::runtime_error("invalid key");
+    Metadata meta;
+    std::optional<EValue> meta_val;
+    if (!zset_read_meta(storage, key, meta, meta_val))
+        return std::nullopt;
+
+    if (std::holds_alternative<std::monostate>(meta.embeded_data))
+    {
+        std::string lookup_key = KeyEncoder::encode_zset_lookup_key(key, meta.version, member);
+        std::optional<EValue> val = storage->get_raw(lookup_key);
+        if (val.has_value() && !val->is_deleted() && std::holds_alternative<std::string>(val->value))
+            return std::get<std::string>(val->value);
+    }
+    else
+    {
+        auto &zset = std::get<ZSet>(meta.embeded_data);
+        auto score = zset.zscore(member);
+        if (score.has_value())
+            return score.value();
+    }
+    return std::nullopt;
 }
 
 std::optional<size_t> ZSetProcessor::z_rank(Storage *storage, const std::string_view key, const std::string_view member)
 {
-    return z_rank(storage, std::string(key), std::string(member));
+    Metadata meta;
+    std::optional<EValue> meta_val;
+    if (!zset_read_meta(storage, key, meta, meta_val))
+        return std::nullopt;
+
+    if (std::holds_alternative<std::monostate>(meta.embeded_data))
+    {
+        std::string lookup_key = KeyEncoder::encode_zset_lookup_key(key, meta.version, member);
+        std::optional<EValue> score_val = storage->get_raw(lookup_key);
+        if (!score_val.has_value() || score_val->is_deleted() || !std::holds_alternative<std::string>(score_val->value))
+            return std::nullopt;
+
+        std::string prefix = KeyEncoder::get_complex_prefix(ColumnFamily::kZSetRank, key, meta.version);
+        std::string end_prefix = KeyEncoder::get_prefix_end(prefix);
+        auto kv_pairs = storage->range(prefix, end_prefix);
+
+        size_t rank = 0;
+        for (const auto &pair : kv_pairs)
+        {
+            auto [score, m] = KeyEncoder::decode_zset_sort_key(pair.first);
+            if (m == member)
+                return rank;
+            rank++;
+        }
+    }
+    else
+    {
+        auto &zset = std::get<ZSet>(meta.embeded_data);
+        auto rank = zset.zrank(member);
+        if (rank >= 0)
+            return rank;
+    }
+    return std::nullopt;
 }
 
 size_t ZSetProcessor::z_card(Storage *storage, const std::string_view key)
 {
-    return z_card(storage, std::string(key));
+    Metadata meta;
+    std::optional<EValue> meta_val;
+    if (!zset_read_meta(storage, key, meta, meta_val))
+        return 0;
+    return meta.size;
 }
 
 std::string ZSetProcessor::z_incr_by(Storage *storage, const std::string_view key, const std::string_view increment, const std::string_view member, const bool is_recover)
@@ -1180,12 +1175,91 @@ std::string ZSetProcessor::z_incr_by(Storage *storage, const std::string_view ke
 
 std::vector<std::pair<std::string, EyaValue>> ZSetProcessor::z_range_by_rank(Storage *storage, const std::string_view key, long long start, long long end)
 {
-    return z_range_by_rank(storage, std::string(key), start, end);
+    if (starts_with(key, KeyEncoder::FIXED_PREFIX))
+        throw std::runtime_error("invalid key");
+    Metadata meta;
+    std::optional<EValue> meta_val;
+    if (!zset_read_meta(storage, key, meta, meta_val))
+        return {};
+
+    long long sz = static_cast<long long>(meta.size);
+    if (start < 0)
+        start += sz;
+    if (end < 0)
+        end += sz;
+    if (start < 0)
+        start = 0;
+    if (end >= sz)
+        end = sz - 1;
+    if (start > end)
+        return {};
+
+    std::vector<std::pair<std::string, EyaValue>> result;
+    if (std::holds_alternative<std::monostate>(meta.embeded_data))
+    {
+        std::string prefix = KeyEncoder::get_complex_prefix(ColumnFamily::kZSetRank, key, meta.version);
+        std::string end_prefix = KeyEncoder::get_prefix_end(prefix);
+        auto kv_pairs = storage->range(prefix, end_prefix);
+
+        long long rank = 0;
+        for (const auto &pair : kv_pairs)
+        {
+            if (rank > end)
+                break;
+            if (rank >= start)
+            {
+                auto [score, member] = KeyEncoder::decode_zset_sort_key(pair.first);
+                result.push_back({member, std::to_string(score)});
+            }
+            rank++;
+        }
+    }
+    else
+    {
+        ZSet &zset = std::get<ZSet>(meta.embeded_data);
+        std::vector<std::pair<std::string, std::string>> zset_result = zset.zrange_by_rank(start, end);
+        for (const auto &pair : zset_result)
+            result.push_back({pair.first, pair.second});
+    }
+    return result;
 }
 
 std::vector<std::pair<std::string, EyaValue>> ZSetProcessor::z_range_by_score(Storage *storage, const std::string_view key, const std::string_view min, const std::string_view max)
 {
-    return z_range_by_score(storage, std::string(key), std::string(min), std::string(max));
+    if (starts_with(key, KeyEncoder::FIXED_PREFIX))
+        throw std::runtime_error("invalid key");
+    Metadata meta;
+    std::optional<EValue> meta_val;
+    if (!zset_read_meta(storage, key, meta, meta_val))
+        return {};
+
+    std::vector<std::pair<std::string, EyaValue>> result;
+    if (std::holds_alternative<std::monostate>(meta.embeded_data))
+    {
+        double min_score = std::stod(std::string(min));
+        double max_score = std::stod(std::string(max));
+
+        std::string prefix = KeyEncoder::get_complex_prefix(ColumnFamily::kZSetRank, key, meta.version);
+        std::string end_prefix = KeyEncoder::get_prefix_end(prefix);
+        auto kv_pairs = storage->range(prefix, end_prefix);
+
+        for (const auto &pair : kv_pairs)
+        {
+            auto [score, member] = KeyEncoder::decode_zset_sort_key(pair.first);
+            if (score > max_score)
+                break;
+            if (score >= min_score)
+                result.push_back({member, std::to_string(score)});
+        }
+    }
+    else
+    {
+        ZSet &zset = std::get<ZSet>(meta.embeded_data);
+        std::vector<std::pair<std::string, std::string>> zset_result = zset.zrange_by_score(min, max);
+        for (const auto &pair : zset_result)
+            result.push_back({pair.first, pair.second});
+    }
+    return result;
 }
 
 size_t ZSetProcessor::z_rem_by_rank(Storage *storage, const std::string_view key, long long start, long long end, const bool is_recover)
@@ -1312,6 +1386,47 @@ bool DequeProcessor::deque_read_meta(Storage *storage, const std::string &key, M
 }
 
 void DequeProcessor::deque_get_or_create_meta(Storage *storage, const std::string &key, Metadata &meta, std::optional<EValue> &meta_val, bool &is_new)
+{
+    is_new = false;
+    meta_val = storage->get_raw(key);
+    if (!meta_val.has_value() || meta_val->is_deleted() || meta_val->is_expired())
+    {
+        is_new = true;
+    }
+    else if (!std::holds_alternative<Metadata>(meta_val->value))
+    {
+        throw std::runtime_error("value is not a list");
+    }
+    else
+    {
+        meta = std::get<Metadata>(meta_val->value);
+        if (meta.type != static_cast<uint8_t>(EyaType::kList))
+            throw std::runtime_error("value is not a list");
+    }
+
+    if (is_new)
+    {
+        meta.type = static_cast<uint8_t>(EyaType::kList);
+        meta.version = Metadata::generate_version();
+        meta.size = 0;
+        meta.head_seq = (uint64_t)1ULL << 32;
+        meta.tail_seq = meta.head_seq;
+        meta.embeded_data = std::deque<std::string>();
+    }
+}
+
+bool DequeProcessor::deque_read_meta(Storage *storage, std::string_view key, Metadata &meta, std::optional<EValue> &meta_val)
+{
+    meta_val = storage->get_raw(key);
+    if (!meta_val.has_value() || meta_val->is_deleted() || meta_val->is_expired())
+        return false;
+    if (!std::holds_alternative<Metadata>(meta_val->value))
+        return false;
+    meta = std::get<Metadata>(meta_val->value);
+    return meta.type == static_cast<uint8_t>(EyaType::kList);
+}
+
+void DequeProcessor::deque_get_or_create_meta(Storage *storage, std::string_view key, Metadata &meta, std::optional<EValue> &meta_val, bool &is_new)
 {
     is_new = false;
     meta_val = storage->get_raw(key);
@@ -1609,168 +1724,17 @@ std::optional<std::string> DequeProcessor::r_pop(Storage *storage, const std::st
 
 std::vector<std::string> DequeProcessor::l_range(Storage *storage, const std::string &key, long long start, long long end)
 {
-    Metadata meta;
-    std::optional<EValue> meta_val;
-    if (!deque_read_meta(storage, key, meta, meta_val))
-        return {};
-
-    long long sz = static_cast<long long>(meta.size);
-    if (start < 0)
-        start += sz;
-    if (end < 0)
-        end += sz;
-    if (start < 0)
-        start = 0;
-    if (end >= sz)
-        end = sz - 1;
-    if (start > end)
-        return {};
-
-    std::vector<std::string> result;
-    if (std::holds_alternative<std::deque<std::string>>(meta.embeded_data))
-    {
-        auto &dq = std::get<std::deque<std::string>>(meta.embeded_data);
-        for (long long i = start; i <= end; ++i)
-            result.push_back(dq[i]);
-    }
-    else
-    {
-        // 1. 获取首块大小作为基准点
-        std::string head_key = KeyEncoder::encode_list_sub_key(key, meta.version, meta.head_seq);
-        std::optional<EValue> head_val = storage->get_raw(head_key);
-        if (!head_val.has_value() || head_val->is_deleted())
-            return result;
-
-        ListElement head_chunk = std::get<ListElement>(head_val->value);
-        long long S_h = head_chunk.values.size();
-
-        uint64_t start_seq, end_seq;
-        long long start_idx, end_idx;
-
-        // 2. 计算 start 所在的块 (start_seq) 和 块内偏移 (start_idx)
-        if (start < S_h)
-        {
-            start_seq = meta.head_seq;
-            start_idx = start;
-        }
-        else
-        {
-            long long rem = start - S_h;
-            start_seq = meta.head_seq + 1 + (rem / FIXED_DEQUE_CHUNK_SIZE);
-            start_idx = rem % FIXED_DEQUE_CHUNK_SIZE;
-        }
-
-        // 3. 计算 end 所在的块 (end_seq) 和 块内偏移 (end_idx)
-        if (end < S_h)
-        {
-            end_seq = meta.head_seq;
-            end_idx = end;
-        }
-        else
-        {
-            long long rem = end - S_h;
-            end_seq = meta.head_seq + 1 + (rem / FIXED_DEQUE_CHUNK_SIZE);
-            end_idx = rem % FIXED_DEQUE_CHUNK_SIZE;
-        }
-
-        // 4. 只遍历需要的这几个块，精准提取
-        for (uint64_t seq = start_seq; seq <= end_seq; ++seq)
-        {
-            ListElement current_chunk;
-            if (seq == meta.head_seq)
-            {
-                current_chunk = head_chunk; // 复用刚才读出来的首块
-            }
-            else
-            {
-                std::string target_key = KeyEncoder::encode_list_sub_key(key, meta.version, seq);
-                std::optional<EValue> target_val = storage->get_raw(target_key);
-                if (target_val.has_value() && !target_val->is_deleted())
-                {
-                    current_chunk = std::get<ListElement>(target_val->value);
-                }
-                else
-                {
-                    continue; // 数据异常/缺失，安全跳过
-                }
-            }
-
-            // 确定在本块中提取的边界
-            long long s = (seq == start_seq) ? start_idx : 0;
-            long long e = (seq == end_seq) ? end_idx : current_chunk.values.size() - 1;
-
-            // 存入结果
-            for (long long i = s; i <= e && i < current_chunk.values.size(); ++i)
-            {
-                result.push_back(current_chunk.values[i]);
-            }
-        }
-    }
-    return result;
+    return l_range(storage, std::string_view(key), start, end);
 }
 
 std::optional<std::string> DequeProcessor::l_get(Storage *storage, const std::string &key, long long index)
 {
-    Metadata meta;
-    std::optional<EValue> meta_val;
-    if (!deque_read_meta(storage, key, meta, meta_val))
-        return std::nullopt;
-
-    long long sz = static_cast<long long>(meta.size);
-    if (index < 0)
-        index += sz;
-    if (index < 0 || index >= sz)
-        return std::nullopt;
-
-    if (std::holds_alternative<std::deque<std::string>>(meta.embeded_data))
-    {
-        auto &dq = std::get<std::deque<std::string>>(meta.embeded_data);
-        return dq[index];
-    }
-    else
-    {
-        // 1. 获取首块，获取其实际大小
-        std::string head_key = KeyEncoder::encode_list_sub_key(key, meta.version, meta.head_seq);
-        std::optional<EValue> head_val = storage->get_raw(head_key);
-        if (!head_val.has_value() || head_val->is_deleted())
-            return std::nullopt;
-
-        ListElement head_chunk = std::get<ListElement>(head_val->value);
-        long long S_h = head_chunk.values.size();
-
-        // 2. 如果整个队列只有一个块，或者索引命中在首块内，直接返回
-        if (meta.head_seq == meta.tail_seq || index < S_h)
-        {
-            return head_chunk.values[index];
-        }
-
-        // 3. O(1) 核心跳跃公式：减去首块大小后，进行除法和取模定位
-        long long rem = index - S_h;
-        uint64_t target_seq = meta.head_seq + 1 + (rem / FIXED_DEQUE_CHUNK_SIZE);
-        long long target_idx = rem % FIXED_DEQUE_CHUNK_SIZE;
-
-        // 4. 精准点查目标块！
-        std::string target_key = KeyEncoder::encode_list_sub_key(key, meta.version, target_seq);
-        std::optional<EValue> target_val = storage->get_raw(target_key);
-        if (target_val.has_value() && !target_val->is_deleted())
-        {
-            ListElement target_chunk = std::get<ListElement>(target_val->value);
-            if (target_idx < target_chunk.values.size())
-            {
-                return target_chunk.values[target_idx];
-            }
-        }
-    }
-    return std::nullopt;
+    return l_get(storage, std::string_view(key), index);
 }
 
 size_t DequeProcessor::l_size(Storage *storage, const std::string &key)
 {
-    Metadata meta;
-    std::optional<EValue> meta_val;
-    if (!deque_read_meta(storage, key, meta, meta_val))
-        return 0;
-    return meta.size;
+    return l_size(storage, std::string_view(key));
 }
 
 std::vector<std::string> DequeProcessor::l_pop_n(Storage *storage, const std::string &key, size_t n, const bool is_recover)
@@ -1938,16 +1902,187 @@ size_t DequeProcessor::r_push(Storage *storage, const std::string_view key, cons
     return r_push(storage, std::string(key), str_values, is_recover);
 }
 
-std::optional<std::string> DequeProcessor::l_pop(Storage *storage, const std::string_view key, const bool is_recover) { return l_pop(storage, std::string(key), is_recover); }
-std::optional<std::string> DequeProcessor::r_pop(Storage *storage, const std::string_view key, const bool is_recover) { return r_pop(storage, std::string(key), is_recover); }
-std::vector<std::string> DequeProcessor::l_range(Storage *storage, const std::string_view key, long long start, long long end) { return l_range(storage, std::string(key), start, end); }
-std::optional<std::string> DequeProcessor::l_get(Storage *storage, const std::string_view key, long long index) { return l_get(storage, std::string(key), index); }
-size_t DequeProcessor::l_size(Storage *storage, const std::string_view key) { return l_size(storage, std::string(key)); }
-std::vector<std::string> DequeProcessor::l_pop_n(Storage *storage, const std::string_view key, size_t n, const bool is_recover) { return l_pop_n(storage, std::string(key), n, is_recover); }
-std::vector<std::string> DequeProcessor::r_pop_n(Storage *storage, const std::string_view key, size_t n, const bool is_recover) { return r_pop_n(storage, std::string(key), n, is_recover); }
+std::optional<std::string> DequeProcessor::l_pop(Storage *storage, const std::string_view key, const bool is_recover)
+{
+    return l_pop(storage, std::string(key), is_recover);
+}
+std::optional<std::string> DequeProcessor::r_pop(Storage *storage, const std::string_view key, const bool is_recover)
+{
+    return r_pop(storage, std::string(key), is_recover);
+}
+std::vector<std::string> DequeProcessor::l_range(Storage *storage, const std::string_view key, long long start, long long end)
+{
+    Metadata meta;
+    std::optional<EValue> meta_val;
+    if (!deque_read_meta(storage, key, meta, meta_val))
+        return {};
+
+    long long sz = static_cast<long long>(meta.size);
+    if (start < 0)
+        start += sz;
+    if (end < 0)
+        end += sz;
+    if (start < 0)
+        start = 0;
+    if (end >= sz)
+        end = sz - 1;
+    if (start > end)
+        return {};
+
+    std::vector<std::string> result;
+    if (std::holds_alternative<std::deque<std::string>>(meta.embeded_data))
+    {
+        auto &dq = std::get<std::deque<std::string>>(meta.embeded_data);
+        for (long long i = start; i <= end; ++i)
+            result.push_back(dq[i]);
+    }
+    else
+    {
+        // 1. 获取首块大小作为基准点
+        std::string head_key = KeyEncoder::encode_list_sub_key(key, meta.version, meta.head_seq);
+        std::optional<EValue> head_val = storage->get_raw(head_key);
+        if (!head_val.has_value() || head_val->is_deleted())
+            return result;
+
+        ListElement head_chunk = std::get<ListElement>(head_val->value);
+        long long S_h = head_chunk.values.size();
+
+        uint64_t start_seq, end_seq;
+        long long start_idx, end_idx;
+
+        // 2. 计算 start 所在的块 (start_seq) 和 块内偏移 (start_idx)
+        if (start < S_h)
+        {
+            start_seq = meta.head_seq;
+            start_idx = start;
+        }
+        else
+        {
+            long long rem = start - S_h;
+            start_seq = meta.head_seq + 1 + (rem / FIXED_DEQUE_CHUNK_SIZE);
+            start_idx = rem % FIXED_DEQUE_CHUNK_SIZE;
+        }
+
+        // 3. 计算 end 所在的块 (end_seq) 和 块内偏移 (end_idx)
+        if (end < S_h)
+        {
+            end_seq = meta.head_seq;
+            end_idx = end;
+        }
+        else
+        {
+            long long rem = end - S_h;
+            end_seq = meta.head_seq + 1 + (rem / FIXED_DEQUE_CHUNK_SIZE);
+            end_idx = rem % FIXED_DEQUE_CHUNK_SIZE;
+        }
+
+        // 4. 只遍历需要的这几个块，精准提取
+        for (uint64_t seq = start_seq; seq <= end_seq; ++seq)
+        {
+            ListElement current_chunk;
+            if (seq == meta.head_seq)
+            {
+                current_chunk = head_chunk; // 复用刚才读出来的首块
+            }
+            else
+            {
+                std::string target_key = KeyEncoder::encode_list_sub_key(key, meta.version, seq);
+                std::optional<EValue> target_val = storage->get_raw(target_key);
+                if (target_val.has_value() && !target_val->is_deleted())
+                {
+                    current_chunk = std::get<ListElement>(target_val->value);
+                }
+                else
+                {
+                    continue; // 数据异常/缺失，安全跳过
+                }
+            }
+
+            // 确定在本块中提取的边界
+            long long s = (seq == start_seq) ? start_idx : 0;
+            long long e = (seq == end_seq) ? end_idx : current_chunk.values.size() - 1;
+
+            // 存入结果
+            for (long long i = s; i <= e && i < current_chunk.values.size(); ++i)
+            {
+                result.push_back(current_chunk.values[i]);
+            }
+        }
+    }
+    return result;
+}
+std::optional<std::string> DequeProcessor::l_get(Storage *storage, const std::string_view key, long long index)
+{
+    Metadata meta;
+    std::optional<EValue> meta_val;
+    if (!deque_read_meta(storage, key, meta, meta_val))
+        return std::nullopt;
+
+    long long sz = static_cast<long long>(meta.size);
+    if (index < 0)
+        index += sz;
+    if (index < 0 || index >= sz)
+        return std::nullopt;
+
+    if (std::holds_alternative<std::deque<std::string>>(meta.embeded_data))
+    {
+        auto &dq = std::get<std::deque<std::string>>(meta.embeded_data);
+        return dq[index];
+    }
+    else
+    {
+        // 1. 获取首块，获取其实际大小
+        std::string head_key = KeyEncoder::encode_list_sub_key(key, meta.version, meta.head_seq);
+        std::optional<EValue> head_val = storage->get_raw(head_key);
+        if (!head_val.has_value() || head_val->is_deleted())
+            return std::nullopt;
+
+        ListElement head_chunk = std::get<ListElement>(head_val->value);
+        long long S_h = head_chunk.values.size();
+
+        // 2. 如果整个队列只有一个块，或者索引命中在首块内，直接返回
+        if (meta.head_seq == meta.tail_seq || index < S_h)
+        {
+            return head_chunk.values[index];
+        }
+
+        // 3. O(1) 核心跳跃公式：减去首块大小后，进行除法和取模定位
+        long long rem = index - S_h;
+        uint64_t target_seq = meta.head_seq + 1 + (rem / FIXED_DEQUE_CHUNK_SIZE);
+        long long target_idx = rem % FIXED_DEQUE_CHUNK_SIZE;
+
+        // 4. 精准点查目标块！
+        std::string target_key = KeyEncoder::encode_list_sub_key(key, meta.version, target_seq);
+        std::optional<EValue> target_val = storage->get_raw(target_key);
+        if (target_val.has_value() && !target_val->is_deleted())
+        {
+            ListElement target_chunk = std::get<ListElement>(target_val->value);
+            if (target_idx < target_chunk.values.size())
+            {
+                return target_chunk.values[target_idx];
+            }
+        }
+    }
+    return std::nullopt;
+}
+size_t DequeProcessor::l_size(Storage *storage, const std::string_view key)
+{
+    Metadata meta;
+    std::optional<EValue> meta_val;
+    if (!deque_read_meta(storage, key, meta, meta_val))
+        return 0;
+    return meta.size;
+}
+std::vector<std::string> DequeProcessor::l_pop_n(Storage *storage, const std::string_view key, size_t n, const bool is_recover)
+{
+    return l_pop_n(storage, std::string(key), n, is_recover);
+}
+std::vector<std::string> DequeProcessor::r_pop_n(Storage *storage, const std::string_view key, size_t n, const bool is_recover)
+{
+    return r_pop_n(storage, std::string(key), n, is_recover);
+}
 
 // HashProcessor
-
 std::vector<uint8_t> HashProcessor::get_supported_types() const
 {
     return {OperationType::kHSet, OperationType::kHGet, OperationType::kHDel, OperationType::kHKeys, OperationType::kHValues, OperationType::kHEntries};
@@ -2076,6 +2211,45 @@ void HashProcessor::hash_get_or_create_meta(Storage *storage, const std::string 
     }
 }
 
+bool HashProcessor::hash_read_meta(Storage *storage, std::string_view key, Metadata &meta, std::optional<EValue> &meta_val)
+{
+    meta_val = storage->get_raw(key);
+    if (!meta_val.has_value() || meta_val->is_deleted() || meta_val->is_expired())
+        return false;
+    if (!std::holds_alternative<Metadata>(meta_val->value))
+        return false;
+    meta = std::get<Metadata>(meta_val->value);
+    return meta.type == static_cast<uint8_t>(EyaType::kHash);
+}
+
+void HashProcessor::hash_get_or_create_meta(Storage *storage, std::string_view key, Metadata &meta, std::optional<EValue> &meta_val, bool &is_new)
+{
+    is_new = false;
+    meta_val = storage->get_raw(key);
+    if (!meta_val.has_value() || meta_val->is_deleted() || meta_val->is_expired())
+    {
+        is_new = true;
+    }
+    else if (!std::holds_alternative<Metadata>(meta_val->value))
+    {
+        throw std::runtime_error("value is not a hash");
+    }
+    else
+    {
+        meta = std::get<Metadata>(meta_val->value);
+        if (meta.type != static_cast<uint8_t>(EyaType::kHash))
+            throw std::runtime_error("value is not a hash");
+    }
+
+    if (is_new)
+    {
+        meta.type = static_cast<uint8_t>(EyaType::kHash);
+        meta.version = Metadata::generate_version();
+        meta.size = 0;
+        meta.embeded_data = std::vector<std::pair<std::string, std::string>>(); // 初始使用 embeded_data 存储小哈希
+    }
+}
+
 size_t HashProcessor::h_set(Storage *storage, const std::string &key, const std::vector<std::pair<std::string, std::string>> &field_values, const bool is_recover)
 {
     if (storage->enable_wal_ && storage->wal_ && !is_recover)
@@ -2154,27 +2328,7 @@ size_t HashProcessor::h_set(Storage *storage, const std::string &key, const std:
 
 std::optional<std::string> HashProcessor::h_get(Storage *storage, const std::string &key, const std::string &field)
 {
-    Metadata meta;
-    std::optional<EValue> meta_val;
-    if (!hash_read_meta(storage, key, meta, meta_val))
-        return std::nullopt;
-
-    if (std::holds_alternative<std::vector<std::pair<std::string, std::string>>>(meta.embeded_data))
-    {
-        auto &vec = std::get<std::vector<std::pair<std::string, std::string>>>(meta.embeded_data);
-        auto it = std::find_if(vec.begin(), vec.end(), [&](const auto &p)
-                               { return p.first == field; });
-        if (it != vec.end())
-            return it->second;
-    }
-    else
-    {
-        std::string sub_key = KeyEncoder::encode_hash_sub_key(key, meta.version, field);
-        std::optional<EValue> sub_val_opt = storage->get_raw(sub_key);
-        if (sub_val_opt.has_value() && !sub_val_opt->is_deleted() && std::holds_alternative<std::string>(sub_val_opt->value))
-            return std::get<std::string>(sub_val_opt->value);
-    }
-    return std::nullopt;
+    return h_get(storage, std::string_view(key), std::string_view(field));
 }
 
 size_t HashProcessor::h_del(Storage *storage, const std::string &key, const std::vector<std::string> &fields, const bool is_recover)
@@ -2241,6 +2395,63 @@ size_t HashProcessor::h_del(Storage *storage, const std::string &key, const std:
 
 std::vector<std::string> HashProcessor::h_keys(Storage *storage, const std::string &key)
 {
+    return h_keys(storage, std::string_view(key));
+}
+
+std::vector<std::string> HashProcessor::h_values(Storage *storage, const std::string &key)
+{
+    return h_values(storage, std::string_view(key));
+}
+
+std::vector<std::pair<std::string, std::string>> HashProcessor::h_entries(Storage *storage, const std::string &key)
+{
+    return h_entries(storage, std::string_view(key));
+}
+
+// string_view delegate methods
+size_t HashProcessor::h_set(Storage *storage, const std::string_view key, const std::vector<std::pair<std::string_view, std::string_view>> &field_values, const bool is_recover)
+{
+    std::vector<std::pair<std::string, std::string>> str_fv;
+    for (auto &kv : field_values)
+        str_fv.emplace_back(std::string(kv.first), std::string(kv.second));
+    return h_set(storage, std::string(key), str_fv, is_recover);
+}
+
+std::optional<std::string> HashProcessor::h_get(Storage *storage, const std::string_view key, const std::string_view field)
+{
+    Metadata meta;
+    std::optional<EValue> meta_val;
+    if (!hash_read_meta(storage, key, meta, meta_val))
+        return std::nullopt;
+
+    if (std::holds_alternative<std::vector<std::pair<std::string, std::string>>>(meta.embeded_data))
+    {
+        auto &vec = std::get<std::vector<std::pair<std::string, std::string>>>(meta.embeded_data);
+        auto it = std::find_if(vec.begin(), vec.end(), [&](const auto &p)
+                               { return p.first == field; });
+        if (it != vec.end())
+            return it->second;
+    }
+    else
+    {
+        std::string sub_key = KeyEncoder::encode_hash_sub_key(key, meta.version, field);
+        std::optional<EValue> sub_val_opt = storage->get_raw(sub_key);
+        if (sub_val_opt.has_value() && !sub_val_opt->is_deleted() && std::holds_alternative<std::string>(sub_val_opt->value))
+            return std::get<std::string>(sub_val_opt->value);
+    }
+    return std::nullopt;
+}
+
+size_t HashProcessor::h_del(Storage *storage, const std::string_view key, const std::vector<std::string_view> &fields, const bool is_recover)
+{
+    std::vector<std::string> str_fields;
+    for (auto &f : fields)
+        str_fields.emplace_back(f);
+    return h_del(storage, std::string(key), str_fields, is_recover);
+}
+
+std::vector<std::string> HashProcessor::h_keys(Storage *storage, const std::string_view key)
+{
     Metadata meta;
     std::optional<EValue> meta_val;
     if (!hash_read_meta(storage, key, meta, meta_val))
@@ -2263,8 +2474,7 @@ std::vector<std::string> HashProcessor::h_keys(Storage *storage, const std::stri
     }
     return result;
 }
-
-std::vector<std::string> HashProcessor::h_values(Storage *storage, const std::string &key)
+std::vector<std::string> HashProcessor::h_values(Storage *storage, const std::string_view key)
 {
     Metadata meta;
     std::optional<EValue> meta_val;
@@ -2291,8 +2501,7 @@ std::vector<std::string> HashProcessor::h_values(Storage *storage, const std::st
     }
     return result;
 }
-
-std::vector<std::pair<std::string, std::string>> HashProcessor::h_entries(Storage *storage, const std::string &key)
+std::vector<std::pair<std::string, std::string>> HashProcessor::h_entries(Storage *storage, const std::string_view key)
 {
     Metadata meta;
     std::optional<EValue> meta_val;
@@ -2318,26 +2527,3 @@ std::vector<std::pair<std::string, std::string>> HashProcessor::h_entries(Storag
         return result;
     }
 }
-
-// string_view delegate methods
-size_t HashProcessor::h_set(Storage *storage, const std::string_view key, const std::vector<std::pair<std::string_view, std::string_view>> &field_values, const bool is_recover)
-{
-    std::vector<std::pair<std::string, std::string>> str_fv;
-    for (auto &kv : field_values)
-        str_fv.emplace_back(std::string(kv.first), std::string(kv.second));
-    return h_set(storage, std::string(key), str_fv, is_recover);
-}
-
-std::optional<std::string> HashProcessor::h_get(Storage *storage, const std::string_view key, const std::string_view field) { return h_get(storage, std::string(key), std::string(field)); }
-
-size_t HashProcessor::h_del(Storage *storage, const std::string_view key, const std::vector<std::string_view> &fields, const bool is_recover)
-{
-    std::vector<std::string> str_fields;
-    for (auto &f : fields)
-        str_fields.emplace_back(f);
-    return h_del(storage, std::string(key), str_fields, is_recover);
-}
-
-std::vector<std::string> HashProcessor::h_keys(Storage *storage, const std::string_view key) { return h_keys(storage, std::string(key)); }
-std::vector<std::string> HashProcessor::h_values(Storage *storage, const std::string_view key) { return h_values(storage, std::string(key)); }
-std::vector<std::pair<std::string, std::string>> HashProcessor::h_entries(Storage *storage, const std::string_view key) { return h_entries(storage, std::string(key)); }
