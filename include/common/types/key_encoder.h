@@ -242,6 +242,36 @@ public:
         std::memcpy(&v, &u, sizeof(u));
         return v;
     }
+    /**
+     * @brief 极速解析内部子键，提取 UserKey 和 Version (零分配)
+     * @return 解析成功返回 true
+     */
+    static bool parse_sub_key(std::string_view sub_key, std::string_view &user_key, uint64_t &version)
+    {
+        if (sub_key.size() <= FIXED_PREFIX.size() || !starts_with(sub_key, FIXED_PREFIX))
+            return false;
+
+        size_t offset = FIXED_PREFIX.size() + 1; // 跳过前缀和 1字节的 CF
+        if (sub_key.size() < offset + 4)
+            return false;
+
+        uint32_t kl;
+        std::memcpy(&kl, sub_key.data() + offset, 4);
+        kl = ntohl(kl);
+        offset += 4;
+
+        if (sub_key.size() < offset + kl + 8)
+            return false;
+
+        user_key = sub_key.substr(offset, kl);
+        offset += kl;
+
+        uint64_t ver_be;
+        std::memcpy(&ver_be, sub_key.data() + offset, 8);
+        version = EncodeUtil::decode_u64_be(ver_be);
+
+        return true;
+    }
 
 private:
     static std::string_view extract_suffix(std::string_view sub_key)

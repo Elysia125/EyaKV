@@ -60,7 +60,7 @@ Storage::Storage(const std::string &data_dir,
     }
 
     // 初始化 SSTable 管理器
-    sstable_manager_ = std::make_unique<SSTableManager>(sstable_dir_,
+    sstable_manager_ = std::make_unique<SSTableManager>(this, sstable_dir_,
                                                         sstable_merge_strategy,
                                                         sstable_merge_threshold,
                                                         sstable_zero_level_size,
@@ -1438,7 +1438,7 @@ bool Storage::restore_from_checkpoint(const std::string &snapshot_tar_path, std:
         Archiver archiver;
         archiver.extractTo(snapshot_tar_path, sstable_dir_);
         // 6. 重新初始化sstable_manager
-        sstable_manager_ = std::make_unique<SSTableManager>(sstable_dir_,
+        sstable_manager_ = std::make_unique<SSTableManager>(this, sstable_dir_,
                                                             sstable_merge_strategy_,
                                                             sstable_merge_threshold_,
                                                             sstable_zero_level_size_,
@@ -1468,7 +1468,7 @@ bool Storage::restore_from_checkpoint(const std::string &snapshot_tar_path, std:
         LOG_ERROR("Failed to restore from checkpoint: {}", e.what());
         if (!sstable_manager_)
         {
-            sstable_manager_ = std::make_unique<SSTableManager>(sstable_dir_,
+            sstable_manager_ = std::make_unique<SSTableManager>(this, sstable_dir_,
                                                                 sstable_merge_strategy_,
                                                                 sstable_merge_threshold_,
                                                                 sstable_zero_level_size_,
@@ -1604,7 +1604,7 @@ bool Storage::clear_and_backup_data()
         }
         fs::create_directories(data_dir_);
         // 6. 重新初始化sstable_manager
-        sstable_manager_ = std::make_unique<SSTableManager>(sstable_dir_,
+        sstable_manager_ = std::make_unique<SSTableManager>(this, sstable_dir_,
                                                             sstable_merge_strategy_,
                                                             sstable_merge_threshold_,
                                                             sstable_zero_level_size_,
@@ -1627,7 +1627,7 @@ bool Storage::clear_and_backup_data()
         LOG_ERROR("Failed to clear and backup data: {}", e.what());
         if (!sstable_manager_)
         {
-            sstable_manager_ = std::make_unique<SSTableManager>(sstable_dir_,
+            sstable_manager_ = std::make_unique<SSTableManager>(this, sstable_dir_,
                                                                 sstable_merge_strategy_,
                                                                 sstable_merge_threshold_,
                                                                 sstable_zero_level_size_,

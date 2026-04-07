@@ -1,4 +1,5 @@
 #include "storage/sstable.h"
+#include "storage/storage.h"
 #include "logger/logger.h"
 #include <filesystem>
 #include <algorithm>
@@ -830,12 +831,12 @@ void SSTableBuilder::abort()
 }
 
 // SSTableManager 实现
-SSTableManager::SSTableManager(const std::string &data_dir,
+SSTableManager::SSTableManager(Storage *storage, const std::string &data_dir,
                                const SSTableMergeStrategy &merge_strategy,
                                const uint32_t &sstable_merge_threshold,
                                const uint64_t &sstable_zero_level_size,
                                const double &sstable_level_size_ratio)
-    : data_dir_(data_dir), merge_strategy_(merge_strategy), sstable_merge_threshold_(sstable_merge_threshold),
+    : storage_(storage), data_dir_(data_dir), merge_strategy_(merge_strategy), sstable_merge_threshold_(sstable_merge_threshold),
       sstable_zero_level_size_(sstable_zero_level_size * 1024 * 1024), sstable_level_size_ratio_(sstable_level_size_ratio),
       next_sequence_number_(1), sstable_count_(0), max_level_(0)
 {
@@ -933,6 +934,10 @@ bool SSTableManager::load_all()
 
 void SSTableManager::normalize_sstables()
 {
+    auto meta_fetcher = [this](std::string_view k) -> std::optional<EValue>
+    {
+        return storage_->get_raw(k);
+    };
     // 读取数据目录下面的.smeta文件
     std::string smeta_file = PathUtils::combine_path(data_dir_, ".smeta");
     if (!std::filesystem::exists(smeta_file))
@@ -940,7 +945,7 @@ void SSTableManager::normalize_sstables()
         LOG_INFO("SSTableManager: .smeta file not found, merge all sstables to max level");
         for (int i = 0; i < max_level_; i++)
         {
-            merge_sstables_by_strategy_0(i);
+            merge_sstables_by_strategy_0(i, meta_fetcher);
         }
         FILE *file = fopen(smeta_file.c_str(), "wb");
         if (file == nullptr)
@@ -960,7 +965,7 @@ void SSTableManager::normalize_sstables()
             LOG_ERROR("Failed to open .smeta file: {}, merge all sstables to max level", smeta_file.c_str());
             for (int i = 0; i < max_level_; i++)
             {
-                merge_sstables_by_strategy_0(i);
+                merge_sstables_by_strategy_0(i, meta_fetcher);
             }
             return;
         }
@@ -975,7 +980,7 @@ void SSTableManager::normalize_sstables()
             fclose(file);
             for (int i = 0; i < max_level_; i++)
             {
-                merge_sstables_by_strategy_0(i);
+                merge_sstables_by_strategy_0(i, meta_fetcher);
             }
             return;
         }
@@ -990,7 +995,7 @@ void SSTableManager::normalize_sstables()
             LOG_ERROR("Failed to parse .smeta file: {}, merge all sstables to max level", smeta_file.c_str());
             for (int i = 0; i < max_level_; i++)
             {
-                merge_sstables_by_strategy_0(i);
+                merge_sstables_by_strategy_0(i, meta_fetcher);
             }
         }
         if (last_strategy != merge_strategy_)
@@ -998,7 +1003,7 @@ void SSTableManager::normalize_sstables()
             LOG_INFO("SSTableManager: merge strategy changed, merge all sstables to max level");
             for (int i = 0; i < max_level_; i++)
             {
-                merge_sstables_by_strategy_0(i);
+                merge_sstables_by_strategy_0(i, meta_fetcher);
             }
             file = fopen(smeta_file.c_str(), "wb");
             if (file == nullptr)
@@ -1013,7 +1018,7 @@ void SSTableManager::normalize_sstables()
     }
 }
 
-bool SSTableManager::merge_sstables(const uint32_t level)
+bool SSTableManager::merge_sstables(const uint32_t level, const std::function<std::optional<EValue>(std::string_view)> &meta_fetcher)
 {
     // 获取全局状态时轻量锁
     uint32_t curr_max_level;
@@ -1030,7 +1035,7 @@ bool SSTableManager::merge_sstables(const uint32_t level)
             std::shared_lock<std::shared_mutex> lock(*level_mutex_[level]);
             should_merge = level_sstables_[level].size() >= sstable_merge_threshold_;
         }
-        return should_merge ? merge_sstables_by_strategy_0(level) : true;
+        return should_merge ? merge_sstables_by_strategy_0(level, meta_fetcher) : true;
     }
     else if (merge_strategy_ == SSTableMergeStrategy::LEVEL_COMPACTION)
     {
@@ -1039,7 +1044,7 @@ bool SSTableManager::merge_sstables(const uint32_t level)
             std::shared_lock<std::shared_mutex> lock(*level_mutex_[level]);
             should_merge = level_sstable_size_[level] >= sstable_zero_level_size_ * pow(sstable_level_size_ratio_, level);
         }
-        return should_merge ? merge_sstables_by_strategy_1(level) : true;
+        return should_merge ? merge_sstables_by_strategy_1(level, meta_fetcher) : true;
     }
     else
     {
@@ -1047,7 +1052,7 @@ bool SSTableManager::merge_sstables(const uint32_t level)
     }
 }
 
-bool SSTableManager::merge_sstables_by_strategy_0(const uint32_t level)
+bool SSTableManager::merge_sstables_by_strategy_0(const uint32_t level, const std::function<std::optional<EValue>(std::string_view)> &meta_fetcher)
 {
     // [性能优化] 无锁合并核心：先抓取文件指针的 shared_ptr 副本，立即释放该层的锁
     std::vector<std::shared_ptr<SSTable>> sstables_to_merge;
@@ -1059,11 +1064,43 @@ bool SSTableManager::merge_sstables_by_strategy_0(const uint32_t level)
     }
 
     std::map<std::string, EValue> map;
+
+    // 局部元数据缓存：Key=UserKey, Value=有效的Version (若为 std::nullopt 则表示主键已被删/过期)
+    std::unordered_map<std::string, std::optional<uint64_t>> meta_cache;
+
     for (auto it = sstables_to_merge.rbegin(); it != sstables_to_merge.rend(); ++it)
     {
-        (*it)->for_each([&map](const std::string &key, const EValue &value)
+        (*it)->for_each([&](const std::string &key, const EValue &value)
                         {
-            map[key] = value;
+            // 如果是复杂数据结构的内部子键，进行生命周期检验
+            if (starts_with(key,KeyEncoder::FIXED_PREFIX)) 
+            {
+                std::string_view user_key;
+                uint64_t sub_version;
+                
+                if (KeyEncoder::parse_sub_key(key, user_key, sub_version)) 
+                {
+                    std::string u_key_str(user_key); // 用于查询缓存
+                    
+                    // 1. 缓存未命中，向顶层发起一次无锁查询
+                    if (meta_cache.find(u_key_str) == meta_cache.end()) {
+                        auto meta_val = meta_fetcher(user_key);
+                        if (meta_val.has_value() && !meta_val->is_deleted() && !meta_val->is_expired() && std::holds_alternative<Metadata>(meta_val->value)) {
+                            meta_cache[u_key_str] = std::get<Metadata>(meta_val->value).version;
+                        } else {
+                            meta_cache[u_key_str] = std::nullopt; // 主键已亡
+                        }
+                    }
+                    
+                    // 2. 校验版本号
+                    // 如果主键已亡，或者子键属于旧版本（被全量覆盖过），这就是个孤儿子键，直接丢弃！
+                    if (!meta_cache[u_key_str].has_value() || meta_cache[u_key_str].value() != sub_version) {
+                        return true; // 相当于 continue，不放入最终 map，实现物理垃圾回收
+                    }
+                }
+            }
+            
+            map[key] = value; // 正常的 KV 或者校验存活的子键，予以保留
             return true; });
     }
 
@@ -1103,11 +1140,11 @@ bool SSTableManager::merge_sstables_by_strategy_0(const uint32_t level)
         std::filesystem::remove(sst->get_meta().filepath);
     }
 
-    merge_sstables(level + 1);
+    merge_sstables(level + 1, meta_fetcher);
     return true;
 }
 
-bool SSTableManager::merge_sstables_by_strategy_1(const uint32_t level)
+bool SSTableManager::merge_sstables_by_strategy_1(const uint32_t level, const std::function<std::optional<EValue>(std::string_view)> &meta_fetcher)
 {
     uint32_t curr_max_level;
     {
@@ -1116,7 +1153,7 @@ bool SSTableManager::merge_sstables_by_strategy_1(const uint32_t level)
     }
 
     if (level == curr_max_level)
-        return merge_sstables_by_strategy_0(level);
+        return merge_sstables_by_strategy_0(level, meta_fetcher);
 
     std::shared_ptr<SSTable> sst_to_merge;
     std::vector<std::shared_ptr<SSTable>> next_sstables_to_merge;
@@ -1143,15 +1180,77 @@ bool SSTableManager::merge_sstables_by_strategy_1(const uint32_t level)
 
     // 无锁进行内存归并和物理写入
     std::map<std::string, EValue> map;
+
+    // 局部元数据缓存：Key=UserKey, Value=有效的Version (若为 std::nullopt 则表示主键已被删/过期)
+    std::unordered_map<std::string, std::optional<uint64_t>> meta_cache;
+
     for (auto it = next_sstables_to_merge.rbegin(); it != next_sstables_to_merge.rend(); ++it)
     {
-        (*it)->for_each([&map](const std::string &key, const EValue &value)
+        (*it)->for_each([&](const std::string &key, const EValue &value)
                         {
-            map[key] = value; return true; });
+            // 如果是复杂数据结构的内部子键，进行生命周期检验
+            if (starts_with(key, KeyEncoder::FIXED_PREFIX)) 
+            {
+                std::string_view user_key;
+                uint64_t sub_version;
+                
+                if (KeyEncoder::parse_sub_key(key, user_key, sub_version)) 
+                {
+                    std::string u_key_str(user_key); // 用于查询缓存
+                    
+                    // 1. 缓存未命中，向顶层发起一次无锁查询
+                    if (meta_cache.find(u_key_str) == meta_cache.end()) {
+                        auto meta_val = meta_fetcher(user_key);
+                        if (meta_val.has_value() && !meta_val->is_deleted() && !meta_val->is_expired() && std::holds_alternative<Metadata>(meta_val->value)) {
+                            meta_cache[u_key_str] = std::get<Metadata>(meta_val->value).version;
+                        } else {
+                            meta_cache[u_key_str] = std::nullopt; // 主键已亡
+                        }
+                    }
+                    
+                    // 2. 校验版本号
+                    // 如果主键已亡，或者子键属于旧版本（被全量覆盖过），这就是个孤儿子键，直接丢弃！
+                    if (!meta_cache[u_key_str].has_value() || meta_cache[u_key_str].value() != sub_version) {
+                        return true; // 相当于 continue，不放入最终 map，实现物理垃圾回收
+                    }
+                }
+            }
+            
+            map[key] = value; // 正常的 KV 或者校验存活的子键，予以保留
+            return true; });
     }
-    sst_to_merge->for_each([&map](const std::string &key, const EValue &value)
+    sst_to_merge->for_each([&](const std::string &key, const EValue &value)
                            {
-        map[key] = value; return true; });
+            // 如果是复杂数据结构的内部子键，进行生命周期检验
+            if (starts_with(key, KeyEncoder::FIXED_PREFIX)) 
+            {
+                std::string_view user_key;
+                uint64_t sub_version;
+                
+                if (KeyEncoder::parse_sub_key(key, user_key, sub_version)) 
+                {
+                    std::string u_key_str(user_key); // 用于查询缓存
+                    
+                    // 1. 缓存未命中，向顶层发起一次无锁查询
+                    if (meta_cache.find(u_key_str) == meta_cache.end()) {
+                        auto meta_val = meta_fetcher(user_key);
+                        if (meta_val.has_value() && !meta_val->is_deleted() && !meta_val->is_expired() && std::holds_alternative<Metadata>(meta_val->value)) {
+                            meta_cache[u_key_str] = std::get<Metadata>(meta_val->value).version;
+                        } else {
+                            meta_cache[u_key_str] = std::nullopt; // 主键已亡
+                        }
+                    }
+                    
+                    // 2. 校验版本号
+                    // 如果主键已亡，或者子键属于旧版本（被全量覆盖过），这就是个孤儿子键，直接丢弃！
+                    if (!meta_cache[u_key_str].has_value() || meta_cache[u_key_str].value() != sub_version) {
+                        return true; // 相当于 continue，不放入最终 map，实现物理垃圾回收
+                    }
+                }
+            }
+            
+            map[key] = value; // 正常的 KV 或者校验存活的子键，予以保留
+            return true; });
 
     std::vector<std::pair<std::string, EValue>> entries;
     for (const auto &[key, value] : map)
@@ -1196,8 +1295,8 @@ bool SSTableManager::merge_sstables_by_strategy_1(const uint32_t level)
         std::filesystem::remove(sst->get_meta().filepath);
     }
 
-    merge_sstables(level);
-    merge_sstables(level + 1);
+    merge_sstables(level, meta_fetcher);
+    merge_sstables(level + 1, meta_fetcher);
     return true;
 }
 
@@ -1340,7 +1439,8 @@ std::optional<SSTableMeta> SSTableManager::create_new_sstable(const std::vector<
     std::optional<SSTableMeta> meta = create_from_entries(entries, 0);
     if (meta.has_value())
     {
-        merge_sstables(0);
+        merge_sstables(0, [this](std::string_view k) -> std::optional<EValue>
+                       { return storage_->get_raw(k); });
     }
     return meta;
 }

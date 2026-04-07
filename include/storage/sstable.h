@@ -22,6 +22,8 @@ using BlockData = std::vector<std::pair<std::string, EValue>>;
 using BlockDataPtr = std::shared_ptr<BlockData>;
 using BlockCache = LRUCache<std::string, BlockDataPtr>;
 
+class Storage;
+
 /**
  * @brief SSTable 文件格式:
  *
@@ -355,7 +357,7 @@ private:
 class SSTableManager
 {
 public:
-    explicit SSTableManager(const std::string &data_dir,
+    explicit SSTableManager(Storage *storage, const std::string &data_dir,
                             const SSTableMergeStrategy &merge_strategy,
                             const uint32_t &sstable_merge_threshold,
                             const uint64_t &sstable_zero_level_size,
@@ -425,7 +427,7 @@ private:
     uint64_t next_sequence_number_;
     uint32_t sstable_merge_threshold_;
     std::shared_ptr<BlockCache> block_cache_; // 全局 SSTable 块缓存
-
+    Storage *storage_;
     /**
      * @brief 生成唯一的 SSTable 文件名。
      * 格式：[sequence_number].sst
@@ -444,20 +446,36 @@ private:
      * @param level 要进行合并的层级
      * @return 合并成功返回 true
      */
-    bool merge_sstables(const uint32_t level);
+    // bool merge_sstables(const uint32_t level);
 
     /**
      * @brief 使用策略0 (Size-Tiered) 合并指定层级。
      * 当某层 SSTable 数量超过阈值时触发。
      */
-    bool merge_sstables_by_strategy_0(const uint32_t level);
+    // bool merge_sstables_by_strategy_0(const uint32_t level);
 
     /**
      * @brief 使用策略1 (Leveled) 合并指定层级。
      * 当某层总大小超过限制时触发。
      */
-    bool merge_sstables_by_strategy_1(const uint32_t level);
-
+    // bool merge_sstables_by_strategy_1(const uint32_t level);
+    /**
+     * @brief 触发指定层级的合并操作（通用入口）。
+     * 根据当前的合并策略分发到具体的实现函数。
+     * @param level 要进行合并的层级
+     * @return 合并成功返回 true
+     */
+    bool merge_sstables(const uint32_t level, const std::function<std::optional<EValue>(std::string_view)> &meta_fetcher);
+    /**
+     * @brief 使用策略0 (Size-Tiered) 合并指定层级。
+     * 当某层 SSTable 数量超过阈值时触发。
+     */
+    bool merge_sstables_by_strategy_0(const uint32_t level, const std::function<std::optional<EValue>(std::string_view)> &meta_fetcher);
+    /**
+     * @brief 使用策略1 (Leveled) 合并指定层级。
+     * 当某层总大小超过限制时触发。
+     */
+    bool merge_sstables_by_strategy_1(const uint32_t level, const std::function<std::optional<EValue>(std::string_view)> &meta_fetcher);
     /**
      * @brief 从内存中的 entries 创建新的 SSTable。
      * 同时也负责更新内存中的 SSTable 列表。
