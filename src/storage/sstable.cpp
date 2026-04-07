@@ -288,7 +288,43 @@ bool SSTable::may_contain(const std::string &key) const
     return bloom_filter_.may_contain(key);
 }
 
+bool SSTable::may_contain(std::string_view key) const
+{
+    // 先检查范围
+    if (!meta_.may_contain_key(key))
+    {
+        return false;
+    }
+    // 再检查布隆过滤器
+    return bloom_filter_.may_contain(key);
+}
+
 size_t SSTable::find_block_index(const std::string &key) const
+{
+    if (index_.empty())
+        return 0;
+
+    // 二分查找找到最后一个 first_key <= key 的数据块
+    size_t left = 0;
+    size_t right = index_.size();
+
+    while (left < right)
+    {
+        size_t mid = left + (right - left) / 2;
+        if (index_[mid].first_key <= key)
+        {
+            left = mid + 1;
+        }
+        else
+        {
+            right = mid;
+        }
+    }
+
+    return left > 0 ? left - 1 : 0;
+}
+
+size_t SSTable::find_block_index(std::string_view key) const
 {
     if (index_.empty())
         return 0;
@@ -397,7 +433,43 @@ std::optional<EValue> SSTable::search_in_block(
     return std::nullopt;
 }
 
+std::optional<EValue> SSTable::search_in_block(
+    const std::vector<std::pair<std::string, EValue>> &block,
+    std::string_view key) const
+{
+
+    // 二分查找
+    auto it = std::lower_bound(block.begin(), block.end(), key,
+                               [](const auto &pair, const auto &k)
+                               {
+                                   return pair.first < k;
+                               });
+
+    if (it != block.end() && it->first == key)
+    {
+        return it->second;
+    }
+    return std::nullopt;
+}
 std::optional<EValue> SSTable::get(const std::string &key) const
+{
+    // 使用布隆过滤器快速排除
+    if (!may_contain(key))
+    {
+        return std::nullopt;
+    }
+
+    // 找到可能包含 key 的数据块
+    size_t block_index = find_block_index(key);
+
+    // 读取并搜索数据块
+    auto block = read_data_block(block_index);
+    auto result = search_in_block(*block, key);
+
+    return result;
+}
+
+std::optional<EValue> SSTable::get(std::string_view key) const
 {
     // 使用布隆过滤器快速排除
     if (!may_contain(key))
@@ -1221,7 +1293,36 @@ bool SSTableManager::get(const std::string &key, EValue *value) const
     }
     return false;
 }
-
+bool SSTableManager::get(std::string_view key, EValue *value) const
+{
+    uint32_t curr_max;
+    {
+        std::shared_lock<std::shared_mutex> global_lock(manager_mutex_);
+        curr_max = max_level_;
+    }
+    // 按顺序查询（最新的在前）
+    LOG_INFO("SSTableManager::get key={},level_sstables_.size()={}", key, level_sstables_.size());
+    for (uint32_t i = 0; i <= curr_max; ++i)
+    {
+        std::shared_lock<std::shared_mutex> lock(*level_mutex_[i]);
+        LOG_INFO("SSTableManager::get level={}, sstables.size()={}", i, level_sstables_[i].size());
+        for (const auto &sstable : level_sstables_[i])
+        {
+            // TODO 优化
+            auto result = sstable->get(key);
+            if (result.has_value())
+            {
+                if (value)
+                {
+                    *value = result.value();
+                    LOG_INFO("SSTableManager::get found key={}, value={}", key, to_string(value->value).c_str());
+                }
+                return true;
+            }
+        }
+    }
+    return false;
+}
 size_t SSTableManager::get_total_size() const
 {
     size_t total = 0;

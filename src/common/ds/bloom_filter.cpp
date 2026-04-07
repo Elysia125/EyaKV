@@ -36,7 +36,29 @@ std::vector<uint32_t> BloomFilter::get_hashes(const std::string &key) const
 
     return hashes;
 }
+std::vector<uint32_t> BloomFilter::get_hashes(std::string_view key) const
+{
+    std::vector<uint32_t> hashes;
+    hashes.reserve(num_hash_functions_);
 
+    // 使用 MurmurHash3 的简化版本计算两个基础哈希
+    uint32_t h1 = 0;
+    uint32_t h2 = 0;
+
+    for (size_t i = 0; i < key.size(); ++i)
+    {
+        h1 = h1 * 31 + static_cast<uint8_t>(key[i]);
+        h2 = h2 * 37 + static_cast<uint8_t>(key[i]);
+    }
+
+    // 使用双哈希技术生成多个哈希值
+    for (size_t i = 0; i < num_hash_functions_; ++i)
+    {
+        hashes.push_back(h1 + i * h2);
+    }
+
+    return hashes;
+}
 void BloomFilter::add(const std::string &key)
 {
     if (bits_.empty())
@@ -53,6 +75,25 @@ void BloomFilter::add(const std::string &key)
 }
 
 bool BloomFilter::may_contain(const std::string &key) const
+{
+    if (bits_.empty())
+        return true;
+
+    size_t num_bits = bits_.size() * 8;
+    auto hashes = get_hashes(key);
+
+    for (uint32_t hash : hashes)
+    {
+        size_t bit_pos = hash % num_bits;
+        if (!(bits_[bit_pos / 8] & (1 << (bit_pos % 8))))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool BloomFilter::may_contain(std::string_view key) const
 {
     if (bits_.empty())
         return true;

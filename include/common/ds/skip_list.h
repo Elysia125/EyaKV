@@ -466,6 +466,41 @@ public:
         }
         throw std::out_of_range("Key not found");
     }
+    /**
+     * @brief 模板化的无锁获取方法，支持兼容不同类型的查询键（例如字符串视图）。
+     * @param key 要查询的键
+     * @return V 查询到的值拷贝
+     * @throw std::out_of_range 如果键不存在
+     */
+    template <typename SearchKey>
+    V get(const SearchKey &key) const
+    {
+        // 编译期断言：必须能比较 == 和 <
+        static_assert(
+            // 检查两个类型是否支持相等、小于比较
+            std::is_convertible_v<decltype(std::declval<K>() == std::declval<SearchKey>()), bool> &&
+                std::is_convertible_v<decltype(std::declval<K>() < std::declval<SearchKey>()), bool>,
+            // 自定义清晰报错！
+            "Key type must support == and < operators");
+        SkipListNode<K, V> *current = head_;
+        int curr_lvl = current_level_.load(std::memory_order_acquire);
+        for (int i = curr_lvl - 1; i >= 0; i--)
+        {
+            SkipListNode<K, V> *next_node = current->next[i].load(std::memory_order_acquire);
+            while (next_node != nullptr && next_node->key < key)
+            {
+                current = next_node;
+                next_node = current->next[i].load(std::memory_order_acquire);
+            }
+        }
+        current = current->next[0].load(std::memory_order_acquire);
+
+        if (current != nullptr && current->key == key)
+        {
+            return current->get_value(); // 使用 SeqLock 解码
+        }
+        throw std::out_of_range("Key not found");
+    }
 
     /**
      * @brief 针对已有节点提供定制化修改（例如逻辑标记删除 Tombstone）。

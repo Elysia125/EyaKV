@@ -25,7 +25,11 @@ enum class EyaType : uint8_t
     kList = 4
 };
 
-using EmbeddedValue = std::variant<std::monostate, std::unordered_map<std::string, std::string>, std::unordered_set<std::string>, std::deque<std::string>, ZSet>;
+using EmbeddedValue = std::variant<std::monostate,
+                                   std::vector<std::pair<std::string, std::string>>, // Hash: 扁平数组替代 unordered_map
+                                   std::vector<std::string>,                         // Set: 扁平数组替代 unordered_set
+                                   std::deque<std::string>,
+                                   ZSet>;
 
 inline std::string serialize(const EmbeddedValue &value)
 {
@@ -37,10 +41,10 @@ inline std::string serialize(const EmbeddedValue &value)
     case 0:
         break;
     case 1:
-        res = Serializer::serialize(std::get<std::unordered_map<std::string, std::string>>(value));
+        res = Serializer::serialize(std::get<std::vector<std::pair<std::string, std::string>>>(value));
         break;
     case 2:
-        res = Serializer::serialize(std::get<std::unordered_set<std::string>>(value));
+        res = Serializer::serialize(std::get<std::vector<std::string>>(value));
         break;
     case 3:
         res = Serializer::serialize(std::get<std::deque<std::string>>(value));
@@ -65,14 +69,14 @@ inline EmbeddedValue deserialize_embedded(const char *data, size_t &offset)
         return EmbeddedValue(std::monostate{});
     case 1:
     {
-        std::unordered_map<std::string, std::string> map;
-        Serializer::deserializeMap(data, offset, map);
+        std::vector<std::pair<std::string, std::string>> map;
+        Serializer::deserializeVector(data, offset, map);
         return EmbeddedValue(std::move(map));
     }
     case 2:
     {
-        std::unordered_set<std::string> set;
-        Serializer::deserializeSet(data, offset, set);
+        std::vector<std::string> set;
+        Serializer::deserializeVector(data, offset, set);
         return EmbeddedValue(std::move(set));
     }
     case 3:
@@ -128,7 +132,7 @@ struct Metadata
         res.append(::serialize(embeded_data));
         return res;
     }
-    
+
     /**
      * @brief 反序列化给定数据流填充回元数据结构
      */
@@ -257,10 +261,6 @@ struct ListElement
 // 保留 EyaValue 作为命令解析器组装/格式化向外的统一返回封装。
 // 底层持久化不再直接序列化整个 variant 对象。
 using EyaValue = std::variant<std::string,
-                              std::deque<std::string>,
-                              std::unordered_set<std::string>,
-                              std::unordered_map<std::string, std::string>,
-                              ZSet,
                               Metadata,
                               ListElement>;
 
@@ -297,35 +297,11 @@ inline EyaValue deserialize_eya_value(const char *data, size_t &offset)
     }
     case 1:
     {
-        std::deque<std::string> dq;
-        Serializer::deserializeDeque(data, offset, dq);
-        return dq;
-    }
-    case 2:
-    {
-        std::unordered_set<std::string> set;
-        Serializer::deserializeSet(data, offset, set);
-        return set;
-    }
-    case 3:
-    {
-        std::unordered_map<std::string, std::string> map;
-        Serializer::deserializeMap(data, offset, map);
-        return map;
-    }
-    case 4:
-    {
-        ZSet zset;
-        Serializer::deserializeZSet(data, offset, zset);
-        return zset;
-    }
-    case 5:
-    {
         Metadata meta;
         meta.deserialize(data, offset);
         return meta;
     }
-    case 6:
+    case 2:
     {
         ListElement elem;
         elem.deserialize(data, offset);
@@ -346,27 +322,7 @@ inline size_t estimateEyaValueSize(const EyaValue &value)
         using T = std::decay_t<decltype(arg)>;
         if constexpr (std::is_same_v<T, std::string>) {
             return arg.size() + sizeof(std::string);
-        } else if constexpr (std::is_same_v<T, std::deque<std::string>>) {
-            size_t total = sizeof(std::deque<std::string>);
-            for (const auto& s : arg) {
-                total += s.size() + sizeof(std::string);
-            }
-            return total;
-        } else if constexpr (std::is_same_v<T, std::unordered_set<std::string>>) {
-            size_t total = sizeof(std::unordered_set<std::string>);
-            for (const auto& s : arg) {
-                total += s.size() + sizeof(std::string) + HASH_COST; // 哈希表节点开销
-            }
-            return total;
-        } else if constexpr (std::is_same_v<T, std::unordered_map<std::string, std::string>>) {
-            size_t total = sizeof(std::unordered_map<std::string, std::string>);
-            for (const auto& [k, v] : arg) {
-                total += k.size() + v.size() + sizeof(std::string) * 2 + HASH_COST;
-            }
-            return total;
-        } else if constexpr (std::is_same_v<T, ZSet>) {
-            return arg.memory_usage();
-        } else if constexpr (std::is_same_v<T, Metadata>) {
+        }else if constexpr (std::is_same_v<T, Metadata>) {
             return sizeof(Metadata);
         } else if constexpr (std::is_same_v<T, ListElement>) {
             size_t total = sizeof(ListElement);
@@ -388,59 +344,6 @@ inline std::string to_string(const EyaValue &value)
         if constexpr (std::is_same_v<T, std::string>)
         {
             return arg;
-        }
-        else if constexpr (std::is_same_v<T, std::deque<std::string>>)
-        {
-            std::stringstream ss;
-            ss<<"[";
-            for (const auto &str : arg)
-            {
-                ss<<str << ",";
-            }
-            std::string s=ss.str();
-            if(s.back()==',') { s.pop_back();}
-            s+="]";
-            return s;
-        }
-        else if constexpr (std::is_same_v<T, std::unordered_set<std::string>>)
-        {
-            std::stringstream ss;
-            ss<<"(";
-            for (const auto &str : arg)
-            {
-                ss<<str << ",";
-            }
-            std::string s=ss.str();
-            if(s.back()==',') { s.pop_back();}
-            s+=")";
-            return s;
-        }
-        else if constexpr (std::is_same_v<T, std::unordered_map<std::string, std::string>>)
-        {
-            std::stringstream ss;
-            ss<<"{";
-            for (const auto &[key, value] : arg)
-            {
-                ss<<key <<": " << value << ", ";
-            }
-            std::string s=ss.str();
-            if(s.back()==',') { s.pop_back();}
-            s+="}";
-            return s;
-        }
-        else if constexpr (std::is_same_v<T, ZSet>)
-        {
-            std::stringstream ss;
-            ss<<"zset(";
-            arg.for_each([&ss](const std::string&member,const double score){
-                ss << member << "=" << score << ", ";
-            });
-            std::string s = ss.str();
-            if (s.back() == ',') {
-                s.pop_back();
-            }
-            s+=")";
-            return s;
         }
         else if constexpr (std::is_same_v<T, Metadata>)
         {
@@ -466,5 +369,4 @@ inline std::string to_string(const EyaValue &value)
             return "unknown type";
         } }, value);
 }
-
 #endif

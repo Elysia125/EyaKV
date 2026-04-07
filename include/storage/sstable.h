@@ -105,6 +105,11 @@ struct SSTableMeta
     {
         return key >= min_key && key <= max_key;
     }
+
+    bool may_contain_key(std::string_view key) const
+    {
+        return key >= min_key && key <= max_key;
+    }
 };
 
 /**
@@ -138,14 +143,24 @@ public:
      * @return 如果找到返回对应的value，否则返回空
      */
     std::optional<EValue> get(const std::string &key) const;
-
+    /**
+     * @brief 从 SSTable 中查找 Key。(支持 string_view 版本，避免不必要的字符串复制)
+     * @param key 要查找的key
+     * @return 如果找到返回对应的value，否则返回空
+     */
+    std::optional<EValue> get(std::string_view key) const;
     /**
      * @brief 检查key是否可能存在（使用布隆过滤器）
      * @param key 要检查的key
      * @return 如果可能存在返回true（可能有假阳性）
      */
     bool may_contain(const std::string &key) const;
-
+    /**
+     * @brief 检查key是否可能存在（使用布隆过滤器，支持 string_view 版本）
+     * @param key 要检查的key
+     * @return 如果可能存在返回true（可能有假阳性）
+     */
+    bool may_contain(std::string_view key) const;
     /**
      * @brief 获取SSTable的元数据
      */
@@ -206,7 +221,15 @@ private:
     std::optional<EValue> search_in_block(
         const std::vector<std::pair<std::string, EValue>> &block,
         const std::string &key) const;
-
+    /**
+     * @brief 在内存中的数据块内进行二分查找。(支持 string_view 版本)
+     * @param block 已加载到内存的数据块 KV 对列表
+     * @param key 要查找的 key
+     * @return 如果找到返回对应的 value，否则返回 std::nullopt
+     */
+    std::optional<EValue> search_in_block(
+        const std::vector<std::pair<std::string, EValue>> &block,
+        std::string_view key) const;
     /**
      * @brief 通过索引查找可能包含 key 的数据块索引。
      * 使用二分查找在 IndexBlock 中定位。
@@ -214,7 +237,12 @@ private:
      * @return 可能包含该 key 的数据块索引
      */
     size_t find_block_index(const std::string &key) const;
-
+    /**
+     * @brief 通过索引查找可能包含 key 的数据块索引。(支持 string_view 版本)
+     * 使用二分查找在 IndexBlock 中定位。
+     * @param key 要查找的 key
+     */
+    size_t find_block_index(std::string_view key) const;
     /**
      * @brief 加载 SSTable 的索引、BloomFilter 和元数据。
      * 在构造时调用，只读取元数据部分，不加载实际数据块。
@@ -347,7 +375,7 @@ public:
      * @return 如果找到返回true
      */
     bool get(const std::string &key, EValue *value) const;
-
+    bool get(std::string_view key, EValue *value) const;
     /**
      * @brief 获取所有SSTable的数量
      */

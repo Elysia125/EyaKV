@@ -5,10 +5,9 @@
 #include "common/types/operation_type.h"
 #include "common/types/key_encoder.h"
 #include <limits>
-#define MAX_INLINE_SIZE 64 // 元素小于64时直接内嵌在Metadata中，避免额外的内存分配和指针间接访问
-
-// ================= StringProcessor =================
-
+#define MAX_INLINE_SIZE 64        // 元素小于64时直接内嵌在Metadata中，避免额外的内存分配和指针间接访问
+#define FIXED_DEQUE_CHUNK_SIZE 64 // List元素超过64个时，分块存储，每块64个元素，形成链表结构
+// StringProcessor
 std::vector<uint8_t> StringProcessor::get_supported_types() const
 {
     return {OperationType::kSet};
@@ -67,8 +66,7 @@ bool StringProcessor::recover(Storage *storage, const uint8_t type, const std::s
     return false;
 }
 
-// ================= SetProcessor =================
-
+// SetProcessor
 std::vector<uint8_t> SetProcessor::get_supported_types() const
 {
     return {OperationType::kSAdd, OperationType::kSRem, OperationType::kSMembers};
@@ -196,7 +194,7 @@ void SetProcessor::set_get_or_create_meta(Storage *storage, const std::string &k
         meta.type = static_cast<uint8_t>(EyaType::kSet);
         meta.version = Metadata::generate_version();
         meta.size = 0;
-        meta.embeded_data = std::unordered_set<std::string>();
+        meta.embeded_data = std::vector<std::string>(); // 初始使用 embeded_data 存储小集合
     }
 }
 
@@ -217,27 +215,32 @@ size_t SetProcessor::s_add(Storage *storage, const std::string &key, const std::
     std::optional<EValue> meta_val;
     bool is_new = false;
     set_get_or_create_meta(storage, key, meta, meta_val, is_new);
-
+    std::vector<std::pair<std::string, EValue>> batch;
     size_t added = 0;
-    if (std::holds_alternative<std::unordered_set<std::string>>(meta.embeded_data))
+    if (std::holds_alternative<std::vector<std::string>>(meta.embeded_data))
     {
-        auto &add_members = std::get<std::unordered_set<std::string>>(meta.embeded_data);
+        auto &vec = std::get<std::vector<std::string>>(meta.embeded_data);
         for (const auto &m : members)
         {
-            if (add_members.insert(m).second)
+            auto it = std::find(vec.begin(), vec.end(), m);
+            if (it == vec.end())
+            {
+                vec.push_back(m);
                 added++;
+            }
         }
-        meta.size = add_members.size();
+        meta.size = vec.size();
 
-        if (add_members.size() >= MAX_INLINE_SIZE)
+        if (vec.size() >= MAX_INLINE_SIZE)
         {
             // Migrating to external
-            for (const auto &m : add_members)
+            for (const auto &m : vec)
             {
                 std::string sub_key = KeyEncoder::encode_set_sub_key(key, meta.version, m);
                 EValue sub_val;
                 sub_val.value = "";
-                storage->write_memtable(sub_key, sub_val);
+                // storage->write_memtable(sub_key, sub_val);
+                batch.emplace_back(sub_key, sub_val);
             }
             meta.embeded_data = std::monostate();
         }
@@ -253,7 +256,8 @@ size_t SetProcessor::s_add(Storage *storage, const std::string &key, const std::
             {
                 EValue sub_val;
                 sub_val.value = "";
-                storage->write_memtable(sub_key, sub_val);
+                // storage->write_memtable(sub_key, sub_val);
+                batch.emplace_back(sub_key, sub_val);
                 added++;
             }
         }
@@ -266,7 +270,9 @@ size_t SetProcessor::s_add(Storage *storage, const std::string &key, const std::
         updated_meta.value = meta;
         if (!is_new && meta_val.has_value())
             updated_meta.expire_time = meta_val->expire_time;
-        storage->write_memtable(key, updated_meta);
+        // storage->write_memtable(key, updated_meta);
+        batch.emplace_back(key, updated_meta);
+        storage->write_batch(batch);
     }
     return added;
 }
@@ -296,7 +302,7 @@ size_t SetProcessor::s_rem(Storage *storage, const std::string &key, const std::
     std::optional<EValue> meta_val;
     if (!set_read_meta(storage, key, meta, meta_val))
         return 0;
-
+    std::vector<std::pair<std::string, EValue>> batch;
     size_t removed = 0;
     if (std::holds_alternative<std::monostate>(meta.embeded_data))
     {
@@ -307,18 +313,23 @@ size_t SetProcessor::s_rem(Storage *storage, const std::string &key, const std::
             if (existing_val.has_value() && !existing_val->is_deleted())
             {
                 EValue sub_ev("", true);
-                storage->write_memtable(sub_key, sub_ev);
+                // storage->write_memtable(sub_key, sub_ev);
+                batch.emplace_back(sub_key, sub_ev);
                 removed++;
             }
         }
     }
     else
     {
-        auto &existing_members = std::get<std::unordered_set<std::string>>(meta.embeded_data);
+        auto &existing_members = std::get<std::vector<std::string>>(meta.embeded_data);
         for (const auto &m : members)
         {
-            if (existing_members.erase(m) > 0)
+            auto it = std::find(existing_members.begin(), existing_members.end(), m);
+            if (it != existing_members.end())
+            {
+                existing_members.erase(it);
                 removed++;
+            }
         }
         meta.size = existing_members.size();
     }
@@ -328,7 +339,9 @@ size_t SetProcessor::s_rem(Storage *storage, const std::string &key, const std::
         EValue updated_meta;
         updated_meta.value = meta;
         updated_meta.expire_time = meta_val->expire_time;
-        storage->write_memtable(key, updated_meta);
+        // storage->write_memtable(key, updated_meta);
+        batch.emplace_back(key, updated_meta);
+        storage->write_batch(batch);
     }
     return removed;
 }
@@ -368,14 +381,14 @@ std::vector<std::string> SetProcessor::s_members(Storage *storage, const std::st
     }
     else
     {
-        auto &existing_members = std::get<std::unordered_set<std::string>>(meta.embeded_data);
+        auto &existing_members = std::get<std::vector<std::string>>(meta.embeded_data);
         result.insert(result.end(), existing_members.begin(), existing_members.end());
     }
 
     return result;
 }
 
-// ================= ZSetProcessor =================
+// ZSetProcessor
 
 std::vector<uint8_t> ZSetProcessor::get_supported_types() const
 {
@@ -626,6 +639,7 @@ size_t ZSetProcessor::z_add(Storage *storage, const std::string &key, const std:
     std::optional<EValue> meta_val;
     bool is_new = false;
     zset_get_or_create_meta(storage, key, meta, meta_val, is_new);
+    std::vector<std::pair<std::string, EValue>> batch;
     size_t added_count = 0;
 
     if (std::holds_alternative<std::monostate>(meta.embeded_data))
@@ -643,7 +657,8 @@ size_t ZSetProcessor::z_add(Storage *storage, const std::string &key, const std:
                 std::string old_sort_key = KeyEncoder::encode_zset_sort_key(key, meta.version, old_score, member);
                 EValue del_val;
                 del_val.deleted = true;
-                storage->write_memtable(old_sort_key, del_val);
+                // storage->write_memtable(old_sort_key, del_val);
+                batch.emplace_back(old_sort_key, del_val);
             }
             else
             {
@@ -652,12 +667,13 @@ size_t ZSetProcessor::z_add(Storage *storage, const std::string &key, const std:
 
             EValue score_val;
             score_val.value = p.first;
-            storage->write_memtable(lookup_key, score_val);
-
+            // storage->write_memtable(lookup_key, score_val);
+            batch.emplace_back(lookup_key, score_val);
             std::string sort_key = KeyEncoder::encode_zset_sort_key(key, meta.version, score, member);
             EValue sort_val;
             sort_val.value = std::string("");
-            storage->write_memtable(sort_key, sort_val);
+            // storage->write_memtable(sort_key, sort_val);
+            batch.emplace_back(sort_key, sort_val);
         }
     }
     else
@@ -677,11 +693,12 @@ size_t ZSetProcessor::z_add(Storage *storage, const std::string &key, const std:
                           {
                 std::string lookup_key = KeyEncoder::encode_zset_lookup_key(key, meta.version, member);
                 EValue score_val; score_val.value = std::to_string(score);
-                storage->write_memtable(lookup_key, score_val);
-
+                //storage->write_memtable(lookup_key, score_val);
+                batch.emplace_back(lookup_key, score_val);
                 std::string sort_key = KeyEncoder::encode_zset_sort_key(key, meta.version, score, member);
                 EValue sort_val; sort_val.value = std::string("");
-                storage->write_memtable(sort_key, sort_val); });
+                //storage->write_memtable(sort_key, sort_val); 
+                batch.emplace_back(sort_key, sort_val); });
             meta.embeded_data = std::monostate();
         }
     }
@@ -693,7 +710,9 @@ size_t ZSetProcessor::z_add(Storage *storage, const std::string &key, const std:
         updated_meta.value = meta;
         if (!is_new && meta_val.has_value())
             updated_meta.expire_time = meta_val->expire_time;
-        storage->write_memtable(key, updated_meta);
+        // storage->write_memtable(key, updated_meta);
+        batch.emplace_back(key, updated_meta);
+        storage->write_batch(batch);
     }
     return added_count;
 }
@@ -715,7 +734,7 @@ size_t ZSetProcessor::z_rem(Storage *storage, const std::string &key, const std:
     std::optional<EValue> meta_val;
     if (!zset_read_meta(storage, key, meta, meta_val))
         return 0;
-
+    std::vector<std::pair<std::string, EValue>> batch;
     size_t rem_count = 0;
     if (std::holds_alternative<std::monostate>(meta.embeded_data))
     {
@@ -728,10 +747,11 @@ size_t ZSetProcessor::z_rem(Storage *storage, const std::string &key, const std:
                 double score = std::stod(std::get<std::string>(existing_val->value));
                 EValue del_val;
                 del_val.deleted = true;
-                storage->write_memtable(lookup_key, del_val);
-
+                // storage->write_memtable(lookup_key, del_val);
+                batch.emplace_back(lookup_key, del_val);
                 std::string sort_key = KeyEncoder::encode_zset_sort_key(key, meta.version, score, member);
-                storage->write_memtable(sort_key, del_val);
+                // storage->write_memtable(sort_key, del_val);
+                batch.emplace_back(sort_key, del_val);
                 rem_count++;
             }
         }
@@ -752,7 +772,9 @@ size_t ZSetProcessor::z_rem(Storage *storage, const std::string &key, const std:
         EValue updated_meta;
         updated_meta.value = meta;
         updated_meta.expire_time = meta_val->expire_time;
-        storage->write_memtable(key, updated_meta);
+        // storage->write_memtable(key, updated_meta);
+        batch.emplace_back(key, updated_meta);
+        storage->write_batch(batch);
     }
     return rem_count;
 }
@@ -844,7 +866,7 @@ std::string ZSetProcessor::z_incr_by(Storage *storage, const std::string &key, c
     bool is_new = false;
     zset_get_or_create_meta(storage, key, meta, meta_val, is_new);
     std::optional<std::string> new_score_str;
-
+    std::vector<std::pair<std::string, EValue>> batch;
     if (std::holds_alternative<std::monostate>(meta.embeded_data))
     {
         double incr = std::stod(increment);
@@ -859,7 +881,8 @@ std::string ZSetProcessor::z_incr_by(Storage *storage, const std::string &key, c
             std::string old_sort_key = KeyEncoder::encode_zset_sort_key(key, meta.version, old_score, member);
             EValue del_val;
             del_val.deleted = true;
-            storage->write_memtable(old_sort_key, del_val);
+            // storage->write_memtable(old_sort_key, del_val);
+            batch.emplace_back(old_sort_key, del_val);
         }
         else
         {
@@ -869,12 +892,13 @@ std::string ZSetProcessor::z_incr_by(Storage *storage, const std::string &key, c
         new_score_str = std::to_string(new_score);
         EValue score_val;
         score_val.value = new_score_str.value();
-        storage->write_memtable(lookup_key, score_val);
-
+        // storage->write_memtable(lookup_key, score_val);
+        batch.emplace_back(lookup_key, score_val);
         std::string new_sort_key = KeyEncoder::encode_zset_sort_key(key, meta.version, new_score, member);
         EValue sort_val;
         sort_val.value = std::string("");
-        storage->write_memtable(new_sort_key, sort_val);
+        // storage->write_memtable(new_sort_key, sort_val);
+        batch.emplace_back(new_sort_key, sort_val);
     }
     else
     {
@@ -886,7 +910,9 @@ std::string ZSetProcessor::z_incr_by(Storage *storage, const std::string &key, c
     updated_meta.value = meta;
     if (!is_new && meta_val.has_value())
         updated_meta.expire_time = meta_val->expire_time;
-    storage->write_memtable(key, updated_meta);
+    // storage->write_memtable(key, updated_meta);
+    batch.emplace_back(key, updated_meta);
+    storage->write_batch(batch);
     return new_score_str.has_value() ? new_score_str.value() : "0";
 }
 
@@ -1005,7 +1031,7 @@ size_t ZSetProcessor::z_rem_by_rank(Storage *storage, const std::string &key, lo
         end = sz - 1;
     if (start > end)
         return 0;
-
+    std::vector<std::pair<std::string, EValue>> batch;
     size_t count = 0;
     if (std::holds_alternative<std::monostate>(meta.embeded_data))
     {
@@ -1023,10 +1049,11 @@ size_t ZSetProcessor::z_rem_by_rank(Storage *storage, const std::string &key, lo
                 auto [score, member] = KeyEncoder::decode_zset_sort_key(pair.first);
                 EValue del_val;
                 del_val.deleted = true;
-                storage->write_memtable(std::string(pair.first), del_val);
-
+                // storage->write_memtable(std::string(pair.first), del_val);
+                batch.emplace_back(std::string(pair.first), del_val);
                 std::string lookup_key = KeyEncoder::encode_zset_lookup_key(key, meta.version, member);
-                storage->write_memtable(lookup_key, del_val);
+                // storage->write_memtable(lookup_key, del_val);
+                batch.emplace_back(lookup_key, del_val);
                 count++;
             }
             rank++;
@@ -1044,7 +1071,9 @@ size_t ZSetProcessor::z_rem_by_rank(Storage *storage, const std::string &key, lo
         EValue updated_meta;
         updated_meta.value = meta;
         updated_meta.expire_time = meta_val->expire_time;
-        storage->write_memtable(key, updated_meta);
+        // storage->write_memtable(key, updated_meta);
+        batch.emplace_back(key, updated_meta);
+        storage->write_batch(batch);
     }
     return count;
 }
@@ -1063,6 +1092,7 @@ size_t ZSetProcessor::z_rem_by_score(Storage *storage, const std::string &key, c
     std::optional<EValue> meta_val;
     if (!zset_read_meta(storage, key, meta, meta_val))
         return 0;
+    std::vector<std::pair<std::string, EValue>> batch;
     size_t count = 0;
 
     if (std::holds_alternative<std::monostate>(meta.embeded_data))
@@ -1083,10 +1113,11 @@ size_t ZSetProcessor::z_rem_by_score(Storage *storage, const std::string &key, c
             {
                 EValue del_val;
                 del_val.deleted = true;
-                storage->write_memtable(std::string(pair.first), del_val);
-
+                // storage->write_memtable(std::string(pair.first), del_val);
+                batch.emplace_back(std::string(pair.first), del_val);
                 std::string lookup_key = KeyEncoder::encode_zset_lookup_key(key, meta.version, member);
-                storage->write_memtable(lookup_key, del_val);
+                // storage->write_memtable(lookup_key, del_val);
+                batch.emplace_back(lookup_key, del_val);
                 count++;
             }
         }
@@ -1103,7 +1134,9 @@ size_t ZSetProcessor::z_rem_by_score(Storage *storage, const std::string &key, c
         EValue updated_meta;
         updated_meta.value = meta;
         updated_meta.expire_time = meta_val->expire_time;
-        storage->write_memtable(key, updated_meta);
+        // storage->write_memtable(key, updated_meta);
+        batch.emplace_back(key, updated_meta);
+        storage->write_batch(batch);
     }
     return count;
 }
@@ -1165,7 +1198,7 @@ size_t ZSetProcessor::z_rem_by_score(Storage *storage, const std::string_view ke
     return z_rem_by_score(storage, std::string(key), std::string(min), std::string(max), is_recover);
 }
 
-// ================= DequeProcessor (List) =================
+// DequeProcessor (List)
 
 std::vector<uint8_t> DequeProcessor::get_supported_types() const
 {
@@ -1317,7 +1350,7 @@ size_t DequeProcessor::l_push(Storage *storage, const std::string &key, const st
     std::optional<EValue> meta_val;
     bool is_new = false;
     deque_get_or_create_meta(storage, key, meta, meta_val, is_new);
-
+    std::vector<std::pair<std::string, EValue>> batch;
     if (std::holds_alternative<std::deque<std::string>>(meta.embeded_data))
     {
         auto &dq = std::get<std::deque<std::string>>(meta.embeded_data);
@@ -1332,7 +1365,8 @@ size_t DequeProcessor::l_push(Storage *storage, const std::string &key, const st
             chunk.values = std::move(dq);
             EValue save_val;
             save_val.value = chunk;
-            storage->write_memtable(KeyEncoder::encode_list_sub_key(key, meta.version, meta.head_seq), save_val);
+            // storage->write_memtable(KeyEncoder::encode_list_sub_key(key, meta.version, meta.head_seq), save_val);
+            batch.emplace_back(KeyEncoder::encode_list_sub_key(key, meta.version, meta.head_seq), save_val);
             meta.embeded_data = std::monostate();
         }
     }
@@ -1348,11 +1382,12 @@ size_t DequeProcessor::l_push(Storage *storage, const std::string &key, const st
 
         for (const auto &v : values)
         {
-            if (chunk.values.size() >= MAX_INLINE_SIZE)
+            if (chunk.values.size() >= FIXED_DEQUE_CHUNK_SIZE)
             {
                 EValue save_val;
                 save_val.value = chunk;
-                storage->write_memtable(KeyEncoder::encode_list_sub_key(key, meta.version, meta.head_seq), save_val);
+                // storage->write_memtable(KeyEncoder::encode_list_sub_key(key, meta.version, meta.head_seq), save_val);
+                batch.emplace_back(KeyEncoder::encode_list_sub_key(key, meta.version, meta.head_seq), save_val);
                 meta.head_seq--;
                 chunk.seq = meta.head_seq;
                 chunk.values.clear();
@@ -1362,14 +1397,17 @@ size_t DequeProcessor::l_push(Storage *storage, const std::string &key, const st
         }
         EValue save_val;
         save_val.value = chunk;
-        storage->write_memtable(KeyEncoder::encode_list_sub_key(key, meta.version, meta.head_seq), save_val);
+        // storage->write_memtable(KeyEncoder::encode_list_sub_key(key, meta.version, meta.head_seq), save_val);
+        batch.emplace_back(KeyEncoder::encode_list_sub_key(key, meta.version, meta.head_seq), save_val);
     }
 
     EValue updated_meta;
     updated_meta.value = meta;
     if (!is_new && meta_val.has_value())
         updated_meta.expire_time = meta_val->expire_time;
-    storage->write_memtable(key, updated_meta);
+    // storage->write_memtable(key, updated_meta);
+    batch.emplace_back(key, updated_meta);
+    storage->write_batch(batch);
     return meta.size;
 }
 
@@ -1382,7 +1420,7 @@ size_t DequeProcessor::r_push(Storage *storage, const std::string &key, const st
     std::optional<EValue> meta_val;
     bool is_new = false;
     deque_get_or_create_meta(storage, key, meta, meta_val, is_new);
-
+    std::vector<std::pair<std::string, EValue>> batch;
     if (std::holds_alternative<std::deque<std::string>>(meta.embeded_data))
     {
         auto &dq = std::get<std::deque<std::string>>(meta.embeded_data);
@@ -1397,7 +1435,8 @@ size_t DequeProcessor::r_push(Storage *storage, const std::string &key, const st
             chunk.values = std::move(dq);
             EValue save_val;
             save_val.value = chunk;
-            storage->write_memtable(KeyEncoder::encode_list_sub_key(key, meta.version, meta.tail_seq), save_val);
+            // storage->write_memtable(KeyEncoder::encode_list_sub_key(key, meta.version, meta.tail_seq), save_val);
+            batch.emplace_back(KeyEncoder::encode_list_sub_key(key, meta.version, meta.tail_seq), save_val);
             meta.embeded_data = std::monostate();
         }
     }
@@ -1413,11 +1452,12 @@ size_t DequeProcessor::r_push(Storage *storage, const std::string &key, const st
 
         for (const auto &v : values)
         {
-            if (chunk.values.size() >= MAX_INLINE_SIZE)
+            if (chunk.values.size() >= FIXED_DEQUE_CHUNK_SIZE)
             {
                 EValue save_val;
                 save_val.value = chunk;
-                storage->write_memtable(KeyEncoder::encode_list_sub_key(key, meta.version, meta.tail_seq), save_val);
+                // storage->write_memtable(KeyEncoder::encode_list_sub_key(key, meta.version, meta.tail_seq), save_val);
+                batch.emplace_back(KeyEncoder::encode_list_sub_key(key, meta.version, meta.tail_seq), save_val);
                 meta.tail_seq++;
                 chunk.seq = meta.tail_seq;
                 chunk.values.clear();
@@ -1427,14 +1467,17 @@ size_t DequeProcessor::r_push(Storage *storage, const std::string &key, const st
         }
         EValue save_val;
         save_val.value = chunk;
-        storage->write_memtable(KeyEncoder::encode_list_sub_key(key, meta.version, meta.tail_seq), save_val);
+        // storage->write_memtable(KeyEncoder::encode_list_sub_key(key, meta.version, meta.tail_seq), save_val);
+        batch.emplace_back(KeyEncoder::encode_list_sub_key(key, meta.version, meta.tail_seq), save_val);
     }
 
     EValue updated_meta;
     updated_meta.value = meta;
     if (!is_new && meta_val.has_value())
         updated_meta.expire_time = meta_val->expire_time;
-    storage->write_memtable(key, updated_meta);
+    // storage->write_memtable(key, updated_meta);
+    batch.emplace_back(key, updated_meta);
+    storage->write_batch(batch);
     return meta.size;
 }
 
@@ -1447,7 +1490,7 @@ std::optional<std::string> DequeProcessor::l_pop(Storage *storage, const std::st
     std::optional<EValue> meta_val;
     if (!deque_read_meta(storage, key, meta, meta_val))
         return std::nullopt;
-
+    std::vector<std::pair<std::string, EValue>> batch;
     std::optional<std::string> result = std::nullopt;
     if (std::holds_alternative<std::deque<std::string>>(meta.embeded_data))
     {
@@ -1474,7 +1517,8 @@ std::optional<std::string> DequeProcessor::l_pop(Storage *storage, const std::st
             {
                 EValue del_val;
                 del_val.deleted = true;
-                storage->write_memtable(sub_key, del_val);
+                // storage->write_memtable(sub_key, del_val);
+                batch.emplace_back(sub_key, del_val);
                 if (meta.head_seq < meta.tail_seq)
                     meta.head_seq++;
             }
@@ -1482,7 +1526,8 @@ std::optional<std::string> DequeProcessor::l_pop(Storage *storage, const std::st
             {
                 EValue save_val;
                 save_val.value = chunk;
-                storage->write_memtable(sub_key, save_val);
+                // storage->write_memtable(sub_key, save_val);
+                batch.emplace_back(sub_key, save_val);
             }
         }
     }
@@ -1492,7 +1537,9 @@ std::optional<std::string> DequeProcessor::l_pop(Storage *storage, const std::st
         EValue updated_meta;
         updated_meta.value = meta;
         updated_meta.expire_time = meta_val->expire_time;
-        storage->write_memtable(key, updated_meta);
+        // storage->write_memtable(key, updated_meta);
+        batch.emplace_back(key, updated_meta);
+        storage->write_batch(batch);
     }
     return result;
 }
@@ -1506,7 +1553,7 @@ std::optional<std::string> DequeProcessor::r_pop(Storage *storage, const std::st
     std::optional<EValue> meta_val;
     if (!deque_read_meta(storage, key, meta, meta_val))
         return std::nullopt;
-
+    std::vector<std::pair<std::string, EValue>> batch;
     std::optional<std::string> result = std::nullopt;
     if (std::holds_alternative<std::deque<std::string>>(meta.embeded_data))
     {
@@ -1533,7 +1580,8 @@ std::optional<std::string> DequeProcessor::r_pop(Storage *storage, const std::st
             {
                 EValue del_val;
                 del_val.deleted = true;
-                storage->write_memtable(sub_key, del_val);
+                // storage->write_memtable(sub_key, del_val);
+                batch.emplace_back(sub_key, del_val);
                 if (meta.tail_seq > meta.head_seq)
                     meta.tail_seq--;
             }
@@ -1541,7 +1589,8 @@ std::optional<std::string> DequeProcessor::r_pop(Storage *storage, const std::st
             {
                 EValue save_val;
                 save_val.value = chunk;
-                storage->write_memtable(sub_key, save_val);
+                // storage->write_memtable(sub_key, save_val);
+                batch.emplace_back(sub_key, save_val);
             }
         }
     }
@@ -1551,7 +1600,9 @@ std::optional<std::string> DequeProcessor::r_pop(Storage *storage, const std::st
         EValue updated_meta;
         updated_meta.value = meta;
         updated_meta.expire_time = meta_val->expire_time;
-        storage->write_memtable(key, updated_meta);
+        // storage->write_memtable(key, updated_meta);
+        batch.emplace_back(key, updated_meta);
+        storage->write_batch(batch);
     }
     return result;
 }
@@ -1584,30 +1635,75 @@ std::vector<std::string> DequeProcessor::l_range(Storage *storage, const std::st
     }
     else
     {
-        uint64_t current_seq = meta.head_seq;
-        long long current_idx = 0;
+        // 1. 获取首块大小作为基准点
+        std::string head_key = KeyEncoder::encode_list_sub_key(key, meta.version, meta.head_seq);
+        std::optional<EValue> head_val = storage->get_raw(head_key);
+        if (!head_val.has_value() || head_val->is_deleted())
+            return result;
 
-        while (current_idx <= end && current_seq <= meta.tail_seq)
+        ListElement head_chunk = std::get<ListElement>(head_val->value);
+        long long S_h = head_chunk.values.size();
+
+        uint64_t start_seq, end_seq;
+        long long start_idx, end_idx;
+
+        // 2. 计算 start 所在的块 (start_seq) 和 块内偏移 (start_idx)
+        if (start < S_h)
         {
-            std::string sub_key = KeyEncoder::encode_list_sub_key(key, meta.version, current_seq);
-            std::optional<EValue> chunk_val = storage->get_raw(sub_key);
-            if (chunk_val.has_value() && !chunk_val->is_deleted())
-            {
-                ListElement chunk = std::get<ListElement>(chunk_val->value);
-                long long chunk_sz = chunk.values.size();
+            start_seq = meta.head_seq;
+            start_idx = start;
+        }
+        else
+        {
+            long long rem = start - S_h;
+            start_seq = meta.head_seq + 1 + (rem / FIXED_DEQUE_CHUNK_SIZE);
+            start_idx = rem % FIXED_DEQUE_CHUNK_SIZE;
+        }
 
-                if (current_idx + chunk_sz > start)
-                {
-                    long long chunk_start = std::max(0LL, start - current_idx);
-                    long long chunk_end = std::min(chunk_sz - 1, end - current_idx);
-                    for (long long i = chunk_start; i <= chunk_end; ++i)
-                    {
-                        result.push_back(chunk.values[i]);
-                    }
-                }
-                current_idx += chunk_sz;
+        // 3. 计算 end 所在的块 (end_seq) 和 块内偏移 (end_idx)
+        if (end < S_h)
+        {
+            end_seq = meta.head_seq;
+            end_idx = end;
+        }
+        else
+        {
+            long long rem = end - S_h;
+            end_seq = meta.head_seq + 1 + (rem / FIXED_DEQUE_CHUNK_SIZE);
+            end_idx = rem % FIXED_DEQUE_CHUNK_SIZE;
+        }
+
+        // 4. 只遍历需要的这几个块，精准提取
+        for (uint64_t seq = start_seq; seq <= end_seq; ++seq)
+        {
+            ListElement current_chunk;
+            if (seq == meta.head_seq)
+            {
+                current_chunk = head_chunk; // 复用刚才读出来的首块
             }
-            current_seq++;
+            else
+            {
+                std::string target_key = KeyEncoder::encode_list_sub_key(key, meta.version, seq);
+                std::optional<EValue> target_val = storage->get_raw(target_key);
+                if (target_val.has_value() && !target_val->is_deleted())
+                {
+                    current_chunk = std::get<ListElement>(target_val->value);
+                }
+                else
+                {
+                    continue; // 数据异常/缺失，安全跳过
+                }
+            }
+
+            // 确定在本块中提取的边界
+            long long s = (seq == start_seq) ? start_idx : 0;
+            long long e = (seq == end_seq) ? end_idx : current_chunk.values.size() - 1;
+
+            // 存入结果
+            for (long long i = s; i <= e && i < current_chunk.values.size(); ++i)
+            {
+                result.push_back(current_chunk.values[i]);
+            }
         }
     }
     return result;
@@ -1633,25 +1729,36 @@ std::optional<std::string> DequeProcessor::l_get(Storage *storage, const std::st
     }
     else
     {
-        uint64_t current_seq = meta.head_seq;
-        long long current_idx = 0;
+        // 1. 获取首块，获取其实际大小
+        std::string head_key = KeyEncoder::encode_list_sub_key(key, meta.version, meta.head_seq);
+        std::optional<EValue> head_val = storage->get_raw(head_key);
+        if (!head_val.has_value() || head_val->is_deleted())
+            return std::nullopt;
 
-        while (current_seq <= meta.tail_seq)
+        ListElement head_chunk = std::get<ListElement>(head_val->value);
+        long long S_h = head_chunk.values.size();
+
+        // 2. 如果整个队列只有一个块，或者索引命中在首块内，直接返回
+        if (meta.head_seq == meta.tail_seq || index < S_h)
         {
-            std::string sub_key = KeyEncoder::encode_list_sub_key(key, meta.version, current_seq);
-            std::optional<EValue> chunk_val = storage->get_raw(sub_key);
-            if (chunk_val.has_value() && !chunk_val->is_deleted())
-            {
-                ListElement chunk = std::get<ListElement>(chunk_val->value);
-                long long chunk_sz = chunk.values.size();
+            return head_chunk.values[index];
+        }
 
-                if (index >= current_idx && index < current_idx + chunk_sz)
-                {
-                    return chunk.values[index - current_idx];
-                }
-                current_idx += chunk_sz;
+        // 3. O(1) 核心跳跃公式：减去首块大小后，进行除法和取模定位
+        long long rem = index - S_h;
+        uint64_t target_seq = meta.head_seq + 1 + (rem / FIXED_DEQUE_CHUNK_SIZE);
+        long long target_idx = rem % FIXED_DEQUE_CHUNK_SIZE;
+
+        // 4. 精准点查目标块！
+        std::string target_key = KeyEncoder::encode_list_sub_key(key, meta.version, target_seq);
+        std::optional<EValue> target_val = storage->get_raw(target_key);
+        if (target_val.has_value() && !target_val->is_deleted())
+        {
+            ListElement target_chunk = std::get<ListElement>(target_val->value);
+            if (target_idx < target_chunk.values.size())
+            {
+                return target_chunk.values[target_idx];
             }
-            current_seq++;
         }
     }
     return std::nullopt;
@@ -1680,7 +1787,7 @@ std::vector<std::string> DequeProcessor::l_pop_n(Storage *storage, const std::st
     size_t actual_n = std::min(n, static_cast<size_t>(meta.size));
     if (actual_n == 0)
         return {};
-
+    std::vector<std::pair<std::string, EValue>> batch;
     if (std::holds_alternative<std::deque<std::string>>(meta.embeded_data))
     {
         auto &dq = std::get<std::deque<std::string>>(meta.embeded_data);
@@ -1715,7 +1822,8 @@ std::vector<std::string> DequeProcessor::l_pop_n(Storage *storage, const std::st
             {
                 EValue del_val;
                 del_val.deleted = true;
-                storage->write_memtable(sub_key, del_val);
+                // storage->write_memtable(sub_key, del_val);
+                batch.emplace_back(sub_key, del_val);
                 if (meta.head_seq < meta.tail_seq)
                     meta.head_seq++;
             }
@@ -1723,7 +1831,8 @@ std::vector<std::string> DequeProcessor::l_pop_n(Storage *storage, const std::st
             {
                 EValue save_val;
                 save_val.value = chunk;
-                storage->write_memtable(sub_key, save_val);
+                // storage->write_memtable(sub_key, save_val);
+                batch.emplace_back(sub_key, save_val);
             }
         }
         meta.size -= popped.size();
@@ -1732,7 +1841,9 @@ std::vector<std::string> DequeProcessor::l_pop_n(Storage *storage, const std::st
     EValue updated_meta;
     updated_meta.value = meta;
     updated_meta.expire_time = meta_val->expire_time;
-    storage->write_memtable(key, updated_meta);
+    // storage->write_memtable(key, updated_meta);
+    batch.emplace_back(key, updated_meta);
+    storage->write_batch(batch);
     return popped;
 }
 
@@ -1750,7 +1861,7 @@ std::vector<std::string> DequeProcessor::r_pop_n(Storage *storage, const std::st
     size_t actual_n = std::min(n, static_cast<size_t>(meta.size));
     if (actual_n == 0)
         return {};
-
+    std::vector<std::pair<std::string, EValue>> batch;
     if (std::holds_alternative<std::deque<std::string>>(meta.embeded_data))
     {
         auto &dq = std::get<std::deque<std::string>>(meta.embeded_data);
@@ -1785,7 +1896,8 @@ std::vector<std::string> DequeProcessor::r_pop_n(Storage *storage, const std::st
             {
                 EValue del_val;
                 del_val.deleted = true;
-                storage->write_memtable(sub_key, del_val);
+                // storage->write_memtable(sub_key, del_val);
+                batch.emplace_back(sub_key, del_val);
                 if (meta.tail_seq > meta.head_seq)
                     meta.tail_seq--;
             }
@@ -1793,7 +1905,8 @@ std::vector<std::string> DequeProcessor::r_pop_n(Storage *storage, const std::st
             {
                 EValue save_val;
                 save_val.value = chunk;
-                storage->write_memtable(sub_key, save_val);
+                // storage->write_memtable(sub_key, save_val);
+                batch.emplace_back(sub_key, save_val);
             }
         }
         meta.size -= popped.size();
@@ -1802,7 +1915,9 @@ std::vector<std::string> DequeProcessor::r_pop_n(Storage *storage, const std::st
     EValue updated_meta;
     updated_meta.value = meta;
     updated_meta.expire_time = meta_val->expire_time;
-    storage->write_memtable(key, updated_meta);
+    // storage->write_memtable(key, updated_meta);
+    batch.emplace_back(key, updated_meta);
+    storage->write_batch(batch);
     return popped;
 }
 
@@ -1831,7 +1946,7 @@ size_t DequeProcessor::l_size(Storage *storage, const std::string_view key) { re
 std::vector<std::string> DequeProcessor::l_pop_n(Storage *storage, const std::string_view key, size_t n, const bool is_recover) { return l_pop_n(storage, std::string(key), n, is_recover); }
 std::vector<std::string> DequeProcessor::r_pop_n(Storage *storage, const std::string_view key, size_t n, const bool is_recover) { return r_pop_n(storage, std::string(key), n, is_recover); }
 
-// ================= HashProcessor =================
+// HashProcessor
 
 std::vector<uint8_t> HashProcessor::get_supported_types() const
 {
@@ -1957,7 +2072,7 @@ void HashProcessor::hash_get_or_create_meta(Storage *storage, const std::string 
         meta.type = static_cast<uint8_t>(EyaType::kHash);
         meta.version = Metadata::generate_version();
         meta.size = 0;
-        meta.embeded_data = std::unordered_map<std::string, std::string>();
+        meta.embeded_data = std::vector<std::pair<std::string, std::string>>(); // 初始使用 embeded_data 存储小哈希
     }
 }
 
@@ -1975,28 +2090,37 @@ size_t HashProcessor::h_set(Storage *storage, const std::string &key, const std:
     std::optional<EValue> meta_val;
     bool is_new = false;
     hash_get_or_create_meta(storage, key, meta, meta_val, is_new);
-
+    std::vector<std::pair<std::string, EValue>> batch;
     size_t new_fields = 0;
 
-    if (std::holds_alternative<std::unordered_map<std::string, std::string>>(meta.embeded_data))
+    if (std::holds_alternative<std::vector<std::pair<std::string, std::string>>>(meta.embeded_data))
     {
-        auto &map = std::get<std::unordered_map<std::string, std::string>>(meta.embeded_data);
+        auto &vec = std::get<std::vector<std::pair<std::string, std::string>>>(meta.embeded_data);
         for (const auto &kv : field_values)
         {
-            if (map.find(kv.first) == map.end())
+            auto it = std::find_if(vec.begin(), vec.end(), [&](const auto &p)
+                                   { return p.first == kv.first; });
+            if (it != vec.end())
+            {
+                it->second = kv.second; // 覆盖旧值
+            }
+            else
+            {
+                vec.emplace_back(kv.first, kv.second); // 插入新值
                 new_fields++;
-            map[kv.first] = kv.second;
+            }
         }
-        meta.size = map.size();
+        meta.size = vec.size();
 
-        if (map.size() >= MAX_INLINE_SIZE)
+        if (vec.size() >= MAX_INLINE_SIZE)
         {
-            for (const auto &kv : map)
+            for (const auto &kv : vec)
             {
                 std::string sub_key = KeyEncoder::encode_hash_sub_key(key, meta.version, kv.first);
                 EValue sub_val;
                 sub_val.value = kv.second;
-                storage->write_memtable(sub_key, sub_val);
+                // storage->write_memtable(sub_key, sub_val);
+                batch.emplace_back(sub_key, sub_val);
             }
             meta.embeded_data = std::monostate();
         }
@@ -2012,7 +2136,8 @@ size_t HashProcessor::h_set(Storage *storage, const std::string &key, const std:
 
             EValue sub_val;
             sub_val.value = kv.second;
-            storage->write_memtable(sub_key, sub_val);
+            // storage->write_memtable(sub_key, sub_val);
+            batch.emplace_back(sub_key, sub_val);
         }
         meta.size += new_fields;
     }
@@ -2021,7 +2146,9 @@ size_t HashProcessor::h_set(Storage *storage, const std::string &key, const std:
     updated_meta.value = meta;
     if (!is_new && meta_val.has_value())
         updated_meta.expire_time = meta_val->expire_time;
-    storage->write_memtable(key, updated_meta);
+    // storage->write_memtable(key, updated_meta);
+    batch.emplace_back(key, updated_meta);
+    storage->write_batch(batch);
     return new_fields;
 }
 
@@ -2032,11 +2159,12 @@ std::optional<std::string> HashProcessor::h_get(Storage *storage, const std::str
     if (!hash_read_meta(storage, key, meta, meta_val))
         return std::nullopt;
 
-    if (std::holds_alternative<std::unordered_map<std::string, std::string>>(meta.embeded_data))
+    if (std::holds_alternative<std::vector<std::pair<std::string, std::string>>>(meta.embeded_data))
     {
-        auto &map = std::get<std::unordered_map<std::string, std::string>>(meta.embeded_data);
-        auto it = map.find(field);
-        if (it != map.end())
+        auto &vec = std::get<std::vector<std::pair<std::string, std::string>>>(meta.embeded_data);
+        auto it = std::find_if(vec.begin(), vec.end(), [&](const auto &p)
+                               { return p.first == field; });
+        if (it != vec.end())
             return it->second;
     }
     else
@@ -2063,18 +2191,23 @@ size_t HashProcessor::h_del(Storage *storage, const std::string &key, const std:
     std::optional<EValue> meta_val;
     if (!hash_read_meta(storage, key, meta, meta_val))
         return 0;
-
+    std::vector<std::pair<std::string, EValue>> batch;
     size_t deleted_count = 0;
 
-    if (std::holds_alternative<std::unordered_map<std::string, std::string>>(meta.embeded_data))
+    if (std::holds_alternative<std::vector<std::pair<std::string, std::string>>>(meta.embeded_data))
     {
-        auto &map = std::get<std::unordered_map<std::string, std::string>>(meta.embeded_data);
+        auto &vec = std::get<std::vector<std::pair<std::string, std::string>>>(meta.embeded_data);
         for (const auto &f : fields)
         {
-            if (map.erase(f) > 0)
+            auto it = std::find_if(vec.begin(), vec.end(), [&](const auto &p)
+                                   { return p.first == f; });
+            if (it != vec.end())
+            {
+                vec.erase(it);
                 deleted_count++;
+            }
         }
-        meta.size = map.size();
+        meta.size = vec.size();
     }
     else
     {
@@ -2086,7 +2219,8 @@ size_t HashProcessor::h_del(Storage *storage, const std::string &key, const std:
             {
                 EValue del_val;
                 del_val.deleted = true;
-                storage->write_memtable(sub_key, del_val);
+                // storage->write_memtable(sub_key, del_val);
+                batch.emplace_back(sub_key, del_val);
                 deleted_count++;
             }
         }
@@ -2098,7 +2232,9 @@ size_t HashProcessor::h_del(Storage *storage, const std::string &key, const std:
         EValue updated_meta;
         updated_meta.value = meta;
         updated_meta.expire_time = meta_val->expire_time;
-        storage->write_memtable(key, updated_meta);
+        // storage->write_memtable(key, updated_meta);
+        batch.emplace_back(key, updated_meta);
+        storage->write_batch(batch);
     }
     return deleted_count;
 }
@@ -2111,10 +2247,10 @@ std::vector<std::string> HashProcessor::h_keys(Storage *storage, const std::stri
         return {};
 
     std::vector<std::string> result;
-    if (std::holds_alternative<std::unordered_map<std::string, std::string>>(meta.embeded_data))
+    if (std::holds_alternative<std::vector<std::pair<std::string, std::string>>>(meta.embeded_data))
     {
-        auto &map = std::get<std::unordered_map<std::string, std::string>>(meta.embeded_data);
-        for (const auto &kv : map)
+        auto &vec = std::get<std::vector<std::pair<std::string, std::string>>>(meta.embeded_data);
+        for (const auto &kv : vec)
             result.push_back(kv.first);
     }
     else
@@ -2136,10 +2272,10 @@ std::vector<std::string> HashProcessor::h_values(Storage *storage, const std::st
         return {};
 
     std::vector<std::string> result;
-    if (std::holds_alternative<std::unordered_map<std::string, std::string>>(meta.embeded_data))
+    if (std::holds_alternative<std::vector<std::pair<std::string, std::string>>>(meta.embeded_data))
     {
-        auto &map = std::get<std::unordered_map<std::string, std::string>>(meta.embeded_data);
-        for (const auto &kv : map)
+        auto &vec = std::get<std::vector<std::pair<std::string, std::string>>>(meta.embeded_data);
+        for (const auto &kv : vec)
             result.push_back(kv.second);
     }
     else
@@ -2156,20 +2292,20 @@ std::vector<std::string> HashProcessor::h_values(Storage *storage, const std::st
     return result;
 }
 
-std::unordered_map<std::string, std::string> HashProcessor::h_entries(Storage *storage, const std::string &key)
+std::vector<std::pair<std::string, std::string>> HashProcessor::h_entries(Storage *storage, const std::string &key)
 {
     Metadata meta;
     std::optional<EValue> meta_val;
     if (!hash_read_meta(storage, key, meta, meta_val))
         return {};
 
-    if (std::holds_alternative<std::unordered_map<std::string, std::string>>(meta.embeded_data))
+    if (std::holds_alternative<std::vector<std::pair<std::string, std::string>>>(meta.embeded_data))
     {
-        return std::get<std::unordered_map<std::string, std::string>>(meta.embeded_data);
+        return std::get<std::vector<std::pair<std::string, std::string>>>(meta.embeded_data);
     }
     else
     {
-        std::unordered_map<std::string, std::string> result;
+        std::vector<std::pair<std::string, std::string>> result;
         std::string prefix = KeyEncoder::get_complex_prefix(ColumnFamily::kHash, key, meta.version);
         std::string end_prefix = KeyEncoder::get_prefix_end(prefix);
         auto kv_pairs = storage->range(prefix, end_prefix);
@@ -2177,7 +2313,7 @@ std::unordered_map<std::string, std::string> HashProcessor::h_entries(Storage *s
         {
             std::string field(KeyEncoder::decode_hash_field(pair.first));
             if (std::holds_alternative<std::string>(pair.second))
-                result[field] = std::get<std::string>(pair.second);
+                result.emplace_back(field, std::get<std::string>(pair.second));
         }
         return result;
     }
@@ -2204,4 +2340,4 @@ size_t HashProcessor::h_del(Storage *storage, const std::string_view key, const 
 
 std::vector<std::string> HashProcessor::h_keys(Storage *storage, const std::string_view key) { return h_keys(storage, std::string(key)); }
 std::vector<std::string> HashProcessor::h_values(Storage *storage, const std::string_view key) { return h_values(storage, std::string(key)); }
-std::unordered_map<std::string, std::string> HashProcessor::h_entries(Storage *storage, const std::string_view key) { return h_entries(storage, std::string(key)); }
+std::vector<std::pair<std::string, std::string>> HashProcessor::h_entries(Storage *storage, const std::string_view key) { return h_entries(storage, std::string(key)); }

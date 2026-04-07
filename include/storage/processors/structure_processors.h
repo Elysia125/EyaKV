@@ -586,8 +586,8 @@ private:
      * @param key 键名
      * @return 包含所有 <字段, 值> 映射关系的 unordered_map
      */
-    std::unordered_map<std::string, std::string> h_entries(Storage *storage, const std::string &key);
-    std::unordered_map<std::string, std::string> h_entries(Storage *storage, const std::string_view key);
+    std::vector<std::pair<std::string, std::string>> h_entries(Storage *storage, const std::string &key);
+    std::vector<std::pair<std::string, std::string>> h_entries(Storage *storage, const std::string_view key);
 };
 
 #endif // TINYKV_STORAGE_STRUCTURE_PROCESSORS_H_

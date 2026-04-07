@@ -76,7 +76,13 @@ public:
      * @return std::optional<EValue> 如果 Key 存在，返回对应的 Value；否则返回 std::nullopt
      */
     std::optional<EValue> get(const std::string &key) const;
-
+    /**
+     * @brief 获取指定 Key 对应的值（重载版本）。
+     *
+     * @param key 要查询的键
+     * @return std::optional<EValue> 如果 Key 存在，返回对应的 Value；否则返回 std::nullopt
+     */
+    std::optional<EValue> get(std::string_view key) const;
     /**
      * @brief 标记删除指定的 Key。
      *
@@ -176,22 +182,22 @@ public:
      * @param size 限制的内存大小（字节数）
      */
     void set_size_limit(size_t size);
-    
+
 private:
     size_t memtable_size_; /// MemTable 大小限制（字节数）
 
-    static constexpr size_t k_num_shards_ = 16;  /// 分片数量（推荐2的幂次，需<=256以适配前缀划分）
+    static constexpr size_t k_num_shards_ = 16;                          /// 分片数量（推荐2的幂次，需<=256以适配前缀划分）
     std::vector<std::unique_ptr<SkipList<std::string, EValue>>> tables_; /// 分片存储的跳表数组
-    
-    /// 基于 Range 计算 Key 对应的分片索引
-    size_t get_shard_index(const std::string &key) const; 
 
-    std::atomic<size_t> size_{0};  /// 当前存储的元素总数（原子变量，线程安全）
+    /// 基于 Range 计算 Key 对应的分片索引
+    size_t get_shard_index(const std::string &key) const;
+    size_t get_shard_index(std::string_view key) const;
+    std::atomic<size_t> size_{0}; /// 当前存储的元素总数（原子变量，线程安全）
 
     /// 分片写锁（保护SkipList的并发写入）
     mutable std::vector<std::unique_ptr<std::shared_mutex>> shard_locks_;
 
-    std::vector<std::unique_ptr<BloomFilter>> bloom_filters_; /// 分片布隆过滤器
+    std::vector<std::unique_ptr<BloomFilter>> bloom_filters_;             /// 分片布隆过滤器
     mutable std::vector<std::unique_ptr<std::shared_mutex>> bloom_locks_; /// 分片布隆过滤器锁
 };
 #endif

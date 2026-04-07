@@ -21,6 +21,7 @@ public:
 
     // 检查key是否可能存在（可能有假阳性，但无假阴性）
     bool may_contain(const std::string &key) const;
+    bool may_contain(std::string_view key) const;
 
     // 序列化到字节流
     std::string serialize() const;
@@ -37,6 +38,7 @@ private:
 
     // 计算多个hash值
     std::vector<uint32_t> get_hashes(const std::string &key) const;
+    std::vector<uint32_t> get_hashes(std::string_view key) const;
 };
 
 #endif // EYAKV_COMMON_BLOOM_FILTER_H_

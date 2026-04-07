@@ -50,6 +50,27 @@ size_t MemTable::get_shard_index(const std::string &key) const
     return std::min(idx, k_num_shards_ - 1);
 }
 
+size_t MemTable::get_shard_index(std::string_view key) const
+{
+    // Range(范围) 分片策略
+    // 按照字符串第一个字节 (0x00 ~ 0xFF) 平均划分到各个分片中。
+    // 这样能保证: 分片 0 里的所有 Key 必然小于 分片 1 里的所有 Key。
+
+    if (key.empty())
+    {
+        return 0;
+    }
+
+    // 获取第一个字符对应的无符号数值 (0 - 255)
+    unsigned char first_byte = static_cast<unsigned char>(key[0]);
+
+    // 计算分配的分片: 256 / 16 = 16，每个分片负责 16 个前缀
+    size_t idx = first_byte / (256 / k_num_shards_);
+
+    // 防止边界异常，严格限制在合法分片范围内
+    return std::min(idx, k_num_shards_ - 1);
+}
+
 void MemTable::put(const std::string &key, const EValue &value)
 {
     LOG_DEBUG("MemTable::put key={}", key.c_str());
@@ -103,7 +124,28 @@ std::optional<EValue> MemTable::get(const std::string &key) const
         return std::nullopt;
     }
 }
+std::optional<EValue> MemTable::get(std::string_view key) const
+{
+    size_t idx = get_shard_index(key);
 
+    if (!bloom_filters_[idx]->may_contain(key))
+    {
+        LOG_DEBUG("MemTable::get key={} BloomFilter miss", key.c_str());
+        return std::nullopt;
+    }
+
+    try
+    {
+        auto result = tables_[idx]->get(key);
+        LOG_DEBUG("MemTable::get key={} found", key.c_str());
+        return result;
+    }
+    catch (const std::exception &e)
+    {
+        LOG_WARN("MemTable::get key={} exception: {}", key, e.what());
+        return std::nullopt;
+    }
+}
 bool MemTable::remove(const std::string &key)
 {
     LOG_DEBUG("MemTable::remove key={} (Logical Delete)", key.c_str());

@@ -255,6 +255,52 @@ bool Storage::write_memtable(const std::string &key, EValue &value)
     return true;
 }
 
+bool Storage::write_batch(std::vector<std::pair<std::string, EValue>> &batch)
+{
+    size_t i = 0;
+    while (i < batch.size())
+    {
+        try
+        {
+            for (; i < batch.size(); ++i)
+            {
+                memtable_->put(batch[i].first, batch[i].second);
+            }
+            if (memtable_->should_flush())
+            {
+                rotate_memtable();
+            }
+        }
+        catch (const std::overflow_error &e)
+        {
+            // 这是预期内的安全异常：内存表满了。换个新表继续写剩下的，天衣无缝。
+            rotate_memtable();
+        }
+        catch (const std::exception &e)
+        {
+            // 致命异常！（极大概率是 std::bad_alloc 内存耗尽）
+            // 发生了“半写脏数据”，且无法回滚。
+
+            // 核心修改：熔断引擎！禁止任何后续的读写操作。
+            // 强迫业务侧重启，重启后通过 WAL 恢复来抛弃这次失败的事务。
+            this->closed_.store(true);
+
+            // 尽最大努力把已经成功的 WAL 缓冲区刷入磁盘，防止丢失之前的好数据！
+            if (this->wal_)
+            {
+                this->wal_->sync();
+            }
+            // LOG_FATAL大概率会直接终止程序
+            LOG_FATAL("FATAL ERROR during batch write: {}. Storage engine is now CORRUPTED and will close.", e.what());
+
+            // 抛出一个明确的致命异常，让外层的宿主程序决定是 catch 还是崩溃。
+            // 外层不 catch 就会自然 terminate；
+            throw std::runtime_error("STORAGE_ENGINE_FATAL_CORRUPTION: " + std::string(e.what()));
+        }
+    }
+    return true;
+}
+
 std::optional<EyaValue> Storage::get(const std::string &key) const
 {
     std::optional<EValue> result;
@@ -278,7 +324,28 @@ std::optional<EValue> Storage::get_raw(const std::string &key) const
     }
     return std::nullopt;
 }
-
+std::optional<EyaValue> Storage::get(std::string_view key) const
+{
+    std::optional<EValue> result;
+    if (get_from_latest(key, result))
+    {
+        return result->value;
+    }
+    if (get_from_old(key, result))
+    {
+        return result->value;
+    }
+    return std::nullopt;
+}
+std::optional<EValue> Storage::get_raw(std::string_view key) const
+{
+    std::optional<EValue> result;
+    if (get_from_latest(key, result) || get_from_old(key, result))
+    {
+        return result;
+    }
+    return std::nullopt;
+}
 bool Storage::get_from_latest(const std::string &key, std::optional<EValue> &value) const
 {
     std::optional<EValue> result;
@@ -339,7 +406,83 @@ bool Storage::get_from_old(const std::string &key, std::optional<EValue> &value)
     return false;
 }
 
+bool Storage::get_from_latest(std::string_view key, std::optional<EValue> &value) const
+{
+    std::optional<EValue> result;
+    try
+    {
+        result = memtable_->get(key);
+        if (result.has_value())
+        {
+            if (result->is_expired() || result->is_deleted())
+            {
+                return false;
+            }
+            value = result.value();
+            return true;
+        }
+    }
+    catch (const std::out_of_range &e)
+    {
+        return false;
+    }
+    catch (const std::exception &e)
+    {
+        LOG_ERROR("Exception caught while getting key: {}, error: {}", key, e.what());
+        return false;
+    }
+    return false;
+}
+bool Storage::get_from_old(std::string_view key, std::optional<EValue> &value) const
+{
+    std::optional<EValue> result;
+    // 查 Immutable MemTables
+    result = get_from_immutable_memtables(key);
+    if (result.has_value())
+    {
+        if (result->is_expired() || result->is_deleted())
+        {
+            return false;
+        }
+        value = result.value();
+        return true;
+    }
+
+    // 查 SSTable
+    if (sstable_manager_)
+    {
+        EValue ev;
+        if (sstable_manager_->get(std::string(key), &ev))
+        {
+            if (ev.is_expired() || ev.is_deleted())
+            {
+                return false;
+            }
+            value = ev;
+            return true;
+        }
+    }
+    return false;
+}
+
 std::optional<EValue> Storage::get_from_immutable_memtables(const std::string &key) const
+{
+    std::shared_lock<std::shared_mutex> lock(immutable_mutex_);
+
+    // 从最新到最旧查询 Immutable MemTables
+    for (auto it = immutable_memtables_.rbegin(); it != immutable_memtables_.rend(); ++it)
+    {
+        auto result = it->second->get(key);
+        if (result.has_value())
+        {
+            return result;
+        }
+    }
+
+    return std::nullopt;
+}
+
+std::optional<EValue> Storage::get_from_immutable_memtables(std::string_view key) const
 {
     std::shared_lock<std::shared_mutex> lock(immutable_mutex_);
 
@@ -362,6 +505,11 @@ bool Storage::contains(const std::string &key) const
     return get_from_latest(key, result) || get_from_old(key, result);
 }
 
+bool Storage::contains(const std::string_view key) const
+{
+    std::optional<EValue> result;
+    return get_from_latest(key, result) || get_from_old(key, result);
+}
 std::vector<std::pair<std::string, EyaValue>> Storage::range(
     const std::string &start_key,
     const std::string &end_key, bool is_internal) const
@@ -787,6 +935,13 @@ Response Storage::execute(uint8_t type, std::vector<std::string> &args)
         // 直接构造锁对象并放入 optional，无拷贝操作
         write_lock.emplace(write_mutex_);
     }
+    // 防数据踩踏的行级锁
+    std::optional<std::unique_lock<std::mutex>> row_lock;
+    if (isWriteOperation(type) && !args.empty())
+    {
+        size_t hash_idx = std::hash<std::string_view>{}(args[0]) % KEY_LOCK_SIZE;
+        row_lock.emplace(key_locks_[hash_idx]);
+    }
     try
     {
         Response response;
@@ -928,6 +1083,13 @@ Response Storage::execute(uint8_t type, std::vector<std::string_view> &args)
     {
         // 直接构造锁对象并放入 optional，无拷贝操作
         write_lock.emplace(write_mutex_);
+    }
+    // 防数据踩踏的行级锁
+    std::optional<std::unique_lock<std::mutex>> row_lock;
+    if (isWriteOperation(type) && !args.empty())
+    {
+        size_t hash_idx = std::hash<std::string_view>{}(args[0]) % KEY_LOCK_SIZE;
+        row_lock.emplace(key_locks_[hash_idx]);
     }
     try
     {

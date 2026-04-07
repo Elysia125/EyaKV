@@ -29,6 +29,7 @@ class VectorProcessor;
 class SetProcessor;
 class ZSetProcessor;
 
+#define KEY_LOCK_SIZE 16384 // 分段锁数量
 /**
  * @brief Storage 类是存储引擎的统一入口。
  *
@@ -132,6 +133,13 @@ public:
      * 3. 读取 SSTable
      */
     std::optional<EValue> get_raw(const std::string &key) const;
+    /**
+     * @brief 重载版本
+     */
+    std::optional<EyaValue> get(std::string_view key) const;
+    std::optional<EValue> get_raw(std::string_view key) const;
+
+    bool contains(std::string_view key) const;
 
     Response execute(uint8_t type, std::vector<std::string> &args);
 
@@ -228,6 +236,8 @@ private:
     std::unique_ptr<Wal> wal_;
     // Processors
     std::unordered_map<uint8_t, std::shared_ptr<ValueProcessor>> processors_;
+    std::mutex key_locks_[KEY_LOCK_SIZE]; // 分片的行级锁，减少锁冲突
+
     // 配置
     const bool enable_wal_;
     const bool read_only_;
@@ -295,6 +305,13 @@ private:
      * 同样遵循从新到旧的顺序。
      */
     std::optional<EValue> get_from_immutable_memtables(const std::string &key) const;
+    /**
+     * @brief 重载版本
+     * 在所有 Immutable MemTable 中查找 key。
+     * 同样遵循从新到旧的顺序。
+     * 适用于内部调用，避免不必要的字符串复制。
+     */
+    std::optional<EValue> get_from_immutable_memtables(std::string_view key) const;
 
     /**
      * @brief 工厂方法：创建一个配置好的新 MemTable 实例。
@@ -305,6 +322,11 @@ private:
      * @brief 内部写入实现，处理 WAL 和 MemTable 的写入。
      */
     bool write_memtable(const std::string &key, EValue &value);
+    /**
+     * @brief 批量写入实现，处理 WAL 和 MemTable 的写入。
+     */
+    bool write_batch(std::vector<std::pair<std::string, EValue>> &batch);
+
     /**
      * @brief 获取处理器
      */
@@ -374,7 +396,14 @@ private:
      * @brief 根据key从旧数据中获取
      */
     bool get_from_old(const std::string &key, std::optional<EValue> &value) const;
-
+    /**
+     * @brief 根据key从最新数据中获取（重载版本）
+     */
+    bool get_from_latest(std::string_view key, std::optional<EValue> &value) const;
+    /**
+     * @brief 根据key从旧数据中获取（重载版本）
+     */
+    bool get_from_old(std::string_view key, std::optional<EValue> &value) const;
     /**
      * @brief 获取所有的keys
      */
