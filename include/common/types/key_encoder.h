@@ -12,6 +12,8 @@
 #include <arpa/inet.h>
 #endif
 #include "common/util/encode_utils.h"
+#include "common/util/string_utils.h"
+
 enum class ColumnFamily : uint8_t
 {
     kDefault = 0,
