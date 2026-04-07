@@ -1,6 +1,15 @@
 #ifndef SSTABLE_H_
 #define SSTABLE_H_
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 #include <string>
 #include <vector>
 #include <map>
@@ -23,6 +32,114 @@ using BlockDataPtr = std::shared_ptr<BlockData>;
 using BlockCache = LRUCache<std::string, BlockDataPtr>;
 
 class Storage;
+
+/**
+ * @brief 内存映射文件读取器，支持跨平台的 mmap 实现。
+ */
+class MmapReader
+{
+public:
+    MmapReader() = default;
+    ~MmapReader() { close(); }
+
+    bool open(const std::string &filepath)
+    {
+        close();
+#ifdef _WIN32
+        hFile_ = CreateFileA(filepath.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (hFile_ == INVALID_HANDLE_VALUE)
+            return false;
+
+        LARGE_INTEGER size;
+        if (!GetFileSizeEx(hFile_, &size))
+        {
+            close();
+            return false;
+        }
+        size_ = size.QuadPart;
+        if (size_ == 0)
+            return true; // 空文件
+
+        hMapping_ = CreateFileMappingA(hFile_, NULL, PAGE_READONLY, 0, 0, NULL);
+        if (hMapping_ == NULL)
+        {
+            close();
+            return false;
+        }
+
+        data_ = (const char *)MapViewOfFile(hMapping_, FILE_MAP_READ, 0, 0, 0);
+        if (data_ == nullptr)
+        {
+            close();
+            return false;
+        }
+#else
+        int fd = ::open(filepath.c_str(), O_RDONLY);
+        if (fd < 0)
+            return false;
+
+        struct stat st;
+        if (::fstat(fd, &st) < 0)
+        {
+            ::close(fd);
+            return false;
+        }
+        size_ = st.st_size;
+        if (size_ == 0)
+        {
+            ::close(fd);
+            return true;
+        }
+
+        void *ptr = ::mmap(nullptr, size_, PROT_READ, MAP_SHARED, fd, 0);
+        ::close(fd); // mmap后可以安全关闭fd
+        if (ptr == MAP_FAILED)
+            return false;
+        data_ = static_cast<const char *>(ptr);
+#endif
+        return true;
+    }
+
+    void close()
+    {
+#ifdef _WIN32
+        if (data_)
+        {
+            UnmapViewOfFile(data_);
+            data_ = nullptr;
+        }
+        if (hMapping_)
+        {
+            CloseHandle(hMapping_);
+            hMapping_ = NULL;
+        }
+        if (hFile_ != INVALID_HANDLE_VALUE)
+        {
+            CloseHandle(hFile_);
+            hFile_ = INVALID_HANDLE_VALUE;
+        }
+#else
+        if (data_)
+        {
+            ::munmap(const_cast<char *>(data_), size_);
+            data_ = nullptr;
+        }
+#endif
+        size_ = 0;
+    }
+
+    const char *data() const { return data_; }
+    size_t size() const { return size_; }
+    bool is_valid() const { return data_ != nullptr; }
+
+private:
+    const char *data_ = nullptr;
+    size_t size_ = 0;
+#ifdef _WIN32
+    HANDLE hFile_ = INVALID_HANDLE_VALUE;
+    HANDLE hMapping_ = NULL;
+#endif
+};
 
 /**
  * @brief SSTable 文件格式:
@@ -129,7 +246,7 @@ public:
      * @param block_cache 块缓存
      */
     explicit SSTable(const std::string &filepath, std::shared_ptr<BlockCache> block_cache = nullptr);
-    ~SSTable();
+    ~SSTable() = default;
 
     // 禁止拷贝
     SSTable(const SSTable &) = delete;
@@ -200,7 +317,8 @@ public:
 
 private:
     std::string filepath_;
-    mutable FILE *file_;
+    // mutable FILE *file_;
+    MmapReader mmap_reader_;
     SSTableFooter footer_;
     std::vector<IndexEntry> index_;
     BloomFilter bloom_filter_;

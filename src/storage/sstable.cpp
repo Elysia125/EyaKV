@@ -13,7 +13,7 @@
 #include <windows.h>
 #include <io.h>
 // Windows 下模拟 pread，实现线程安全的原子读取，解除并发时的 fseek 游标竞争
-inline bool pread_exact(FILE *file, void *buffer, size_t size, uint64_t offset)
+/*inline bool pread_exact(FILE *file, void *buffer, size_t size, uint64_t offset)
 {
     HANDLE hFile = (HANDLE)_get_osfhandle(_fileno(file));
     OVERLAPPED overlapped = {0};
@@ -21,17 +21,16 @@ inline bool pread_exact(FILE *file, void *buffer, size_t size, uint64_t offset)
     overlapped.OffsetHigh = static_cast<DWORD>((offset >> 32) & 0xFFFFFFFF);
     DWORD bytesRead = 0;
     return ReadFile(hFile, buffer, static_cast<DWORD>(size), &bytesRead, &overlapped) && bytesRead == size;
-}
+}*/
 #else
 #include <unistd.h>
 // Linux/macOS 的原生原子读取，天生无锁
-inline bool pread_exact(FILE *file, void *buffer, size_t size, uint64_t offset)
+/*inline bool pread_exact(FILE *file, void *buffer, size_t size, uint64_t offset)
 {
     return pread(fileno(file), buffer, size, offset) == (ssize_t)size;
-}
+}*/
 #endif
 // SSTableFooter 实现
-
 std::string SSTableFooter::serialize() const
 {
     std::string result;
@@ -134,126 +133,61 @@ SSTable::SSTable(const std::string &filepath, std::shared_ptr<BlockCache> block_
     }
 }
 
-SSTable::~SSTable()
-{
-    if (file_ != nullptr)
-    {
-        LOG_INFO("SSTable::~SSTable: Closing file {}", filepath_.c_str());
-        fclose(file_);
-        file_ = nullptr;
-        LOG_INFO("SSTable::~SSTable: File {} closed", filepath_.c_str());
-    }
-}
-
 bool SSTable::load()
 {
-    file_ = fopen(filepath_.c_str(), "rb");
-    if (file_ == nullptr)
+    if (!mmap_reader_.open(filepath_))
     {
-        LOG_ERROR("Cannot open SSTable file: {}", filepath_.c_str());
+        LOG_ERROR("Cannot open or mmap SSTable file: {}", filepath_.c_str());
         return false;
     }
 
-    // 获取文件大小
-    fseek(file_, 0, SEEK_END);
-    size_t file_size = ftell(file_);
-
+    size_t file_size = mmap_reader_.size();
     if (file_size < SSTableFooter::SIZE)
     {
         LOG_ERROR("SSTable file too small: {}", filepath_.c_str());
-        fclose(file_);
-        file_ = nullptr;
+        mmap_reader_.close();
         return false;
     }
-    // 读取level
-    uint32_t level;
-    fseek(file_, file_size - sizeof(level), SEEK_SET);
-    if (fread(&level, 1, sizeof(level), file_) != sizeof(level))
-    {
-        LOG_ERROR("Failed to read level from SSTable: {}", filepath_.c_str());
-        fclose(file_);
-        file_ = nullptr;
-        return false;
-    }
-    // 读取 Footer
-    fseek(file_, file_size - sizeof(level) - SSTableFooter::SIZE, SEEK_SET);
-    std::vector<char> footer_data(SSTableFooter::SIZE);
-    if (fread(footer_data.data(), 1, SSTableFooter::SIZE, file_) != SSTableFooter::SIZE)
-    {
-        LOG_ERROR("Failed to read footer from SSTable: {}", filepath_.c_str());
-        fclose(file_);
-        file_ = nullptr;
-        return false;
-    }
-    footer_ = SSTableFooter::deserialize(footer_data.data());
 
-    // 验证魔数
+    const char *base_ptr = mmap_reader_.data();
+
+    // 1. 读取 level (最后 4 字节)
+    uint32_t level;
+    std::memcpy(&level, base_ptr + file_size - sizeof(level), sizeof(level));
+
+    // 2. 读取 Footer
+    footer_ = SSTableFooter::deserialize(base_ptr + file_size - sizeof(level) - SSTableFooter::SIZE);
+
     if (footer_.magic != SSTABLE_MAGIC_NUMBER)
     {
         LOG_ERROR("Invalid SSTable magic number: {}", filepath_.c_str());
-        fclose(file_);
-        file_ = nullptr;
+        mmap_reader_.close();
         return false;
     }
 
-    // 读取 min_key 和 max_key
+    // 3. 读取 min_key 和 max_key (直接拷贝字符串)
     std::string min_key, max_key;
     if (footer_.min_key_size > 0)
     {
-        fseek(file_, footer_.min_key_offset, SEEK_SET);
-        min_key.resize(footer_.min_key_size);
-        if (fread(&min_key[0], 1, footer_.min_key_size, file_) != footer_.min_key_size)
-        {
-            LOG_ERROR("Failed to read min_key from SSTable: {}", filepath_.c_str());
-            fclose(file_);
-            file_ = nullptr;
-            return false;
-        }
+        min_key.assign(base_ptr + footer_.min_key_offset, footer_.min_key_size);
     }
     if (footer_.max_key_size > 0)
     {
-        fseek(file_, footer_.max_key_offset, SEEK_SET);
-        max_key.resize(footer_.max_key_size);
-        if (fread(&max_key[0], 1, footer_.max_key_size, file_) != footer_.max_key_size)
-        {
-            LOG_ERROR("Failed to read max_key from SSTable: {}", filepath_.c_str());
-            fclose(file_);
-            file_ = nullptr;
-            return false;
-        }
+        max_key.assign(base_ptr + footer_.max_key_offset, footer_.max_key_size);
     }
 
-    // 读取索引块
-    fseek(file_, footer_.index_block_offset, SEEK_SET);
-    std::vector<char> index_data(footer_.index_block_size);
-    if (fread(index_data.data(), 1, footer_.index_block_size, file_) != footer_.index_block_size)
-    {
-        LOG_ERROR("Failed to read index block from SSTable: {}", filepath_.c_str());
-        fclose(file_);
-        file_ = nullptr;
-        return false;
-    }
-
+    // 4. 读取索引块
     size_t offset = 0;
     while (offset < footer_.index_block_size)
     {
-        index_.push_back(IndexEntry::deserialize(index_data.data(), offset));
+        index_.push_back(IndexEntry::deserialize(base_ptr + footer_.index_block_offset, offset));
     }
 
-    // 读取布隆过滤器
-    fseek(file_, footer_.bloom_filter_offset, SEEK_SET);
-    std::vector<char> bloom_data(footer_.bloom_filter_size);
-    if (fread(bloom_data.data(), 1, footer_.bloom_filter_size, file_) != footer_.bloom_filter_size)
-    {
-        LOG_ERROR("Failed to read bloom filter from SSTable: {}", filepath_.c_str());
-        fclose(file_);
-        file_ = nullptr;
-        return false;
-    }
+    // 5. 读取布隆过滤器
     size_t bloom_offset = 0;
-    bloom_filter_ = BloomFilter::deserialize(bloom_data.data(), bloom_offset);
+    bloom_filter_ = BloomFilter::deserialize(base_ptr + footer_.bloom_filter_offset, bloom_offset);
 
-    // 填充元数据
+    // 6. 填充元数据
     meta_.filepath = filepath_;
     meta_.min_key = min_key;
     meta_.max_key = max_key;
@@ -261,12 +195,10 @@ bool SSTable::load()
     meta_.entry_count = footer_.entry_count;
     meta_.level = level;
 
-    // 从文件名提取序列号
     std::filesystem::path path(filepath_);
-    std::string filename = path.stem().string();
     try
     {
-        meta_.sequence_number = std::stoull(filename);
+        meta_.sequence_number = std::stoull(path.stem().string());
     }
     catch (...)
     {
@@ -274,7 +206,6 @@ bool SSTable::load()
     }
 
     LOG_INFO("Loaded SSTable: {} with {} entries", filepath_.c_str(), footer_.entry_count);
-
     return true;
 }
 
@@ -366,14 +297,7 @@ BlockDataPtr SSTable::read_data_block(size_t block_index) const
     }
 
     const auto &idx = index_[block_index];
-    std::vector<char> block_data(idx.block_size);
-
-    // 2. 缓存未命中，原子读取磁盘
-    if (!pread_exact(file_, block_data.data(), idx.block_size, idx.block_offset))
-    {
-        LOG_ERROR("Failed to read data block from SSTable: {}", filepath_.c_str());
-        return entries;
-    }
+    const char *block_ptr = mmap_reader_.data() + idx.block_offset;
 
     // 3. 反序列化
     size_t offset = 0;
@@ -382,25 +306,25 @@ BlockDataPtr SSTable::read_data_block(size_t block_index) const
         if (offset + sizeof(uint32_t) > idx.block_size)
             break;
         uint32_t key_len;
-        std::memcpy(&key_len, block_data.data() + offset, sizeof(key_len));
+        std::memcpy(&key_len, block_ptr + offset, sizeof(key_len));
         offset += sizeof(key_len);
 
         if (offset + key_len > idx.block_size)
             break;
-        std::string key(block_data.data() + offset, key_len);
+        std::string key(block_ptr + offset, key_len);
         offset += key_len;
 
         if (offset + sizeof(uint32_t) > idx.block_size)
             break;
         uint32_t value_len;
-        std::memcpy(&value_len, block_data.data() + offset, sizeof(value_len));
+        std::memcpy(&value_len, block_ptr + offset, sizeof(value_len));
         offset += sizeof(value_len);
 
         if (offset + value_len > idx.block_size)
             break;
 
         size_t value_offset = 0;
-        EValue value = deserialize(block_data.data() + offset, value_offset);
+        EValue value = deserialize(block_ptr + offset, value_offset);
         offset += value_len;
 
         entries->emplace_back(std::move(key), std::move(value));
